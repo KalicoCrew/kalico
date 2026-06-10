@@ -147,6 +147,25 @@ class BridgeKinematics:
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
 
+    def active_rails(self, dx, dy, dz):
+        moved = {
+            axis: abs(delta) > 1e-9
+            for axis, delta in zip("xyz", (dx, dy, dz))
+        }
+        coupled = dict(moved)
+        if self.kinematics == "corexy":
+            coupled["x"] = coupled["y"] = moved["x"] or moved["y"]
+        elif self.kinematics == "hybrid_corexy":
+            coupled["x"] = moved["x"] or moved["y"]
+        active = []
+        for rail in self.rails:
+            if isinstance(rail, servo_axis.ServoRail):
+                if moved[rail.axis]:
+                    active.append(rail)
+            elif coupled[rail.get_name(short=True)[0]]:
+                active.append(rail)
+        return active
+
     def calc_position(self, stepper_positions):
         def rail_pos(rail):
             vals = [
@@ -337,8 +356,7 @@ class MotionToolhead(ToolHead):
             de,
             feedrate,
         )
-        enable_print_time = self.get_last_move_time()
-        self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
+        self._fire_active_callbacks(dx, dy, dz, de)
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_move(dx, dy, dz, de, feedrate)
         self._bump_pending_end_time(
@@ -347,33 +365,28 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
         self._sync_print_time()
 
-    def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
+    def _fire_active_callbacks(self, dx, dy, dz, de):
         if self.kin is None:
             return False
-        if print_time is None:
-            print_time = self.get_last_move_time()
         fired = False
-        for s in self.kin.get_steppers():
-            if not s._active_callbacks:
-                continue
-            cbs = s._active_callbacks
-            s._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
-            fired = True
-        for rail in getattr(self.kin, "rails", ()):
-            if not isinstance(rail, servo_axis.ServoRail):
-                continue
-            if not rail._active_callbacks:
-                continue
-            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
-            if abs(axis_delta) <= 1e-9:
-                continue
-            cbs = rail._active_callbacks
-            rail._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
-            fired = True
+        for rail in self.kin.active_rails(dx, dy, dz):
+            if isinstance(rail, servo_axis.ServoRail):
+                holders = (rail,)
+            else:
+                holders = rail.get_steppers()
+            for holder in holders:
+                if not holder._active_callbacks:
+                    continue
+                cbs = holder._active_callbacks
+                holder._active_callbacks = []
+                for cb in cbs:
+                    # A callback may block for ~100ms of synchronous TMC
+                    # register init (UART), so each one gets a freshly
+                    # computed print_time: a single shared value goes
+                    # stale and schedules later enable-pin writes in the
+                    # MCU's past ("Timer too close", bench 2026-06-10).
+                    cb(self.get_last_move_time())
+                fired = True
         return fired
 
     def drip_move(self, newpos, speed, drip_completion):

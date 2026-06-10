@@ -651,6 +651,9 @@ impl Reactor {
 
         match decoded {
             crate::host_io::parser::DecodedFrame::Response { name, params } => {
+                if name == "shutdown" || name == "is_shutdown" {
+                    self.fail_pending_on_mcu_shutdown(&name, &params);
+                }
                 let await_len_before = self.awaiting_response.len();
                 if let Some(idx) = self.awaiting_response.find_match(&name) {
                     let entry = self.awaiting_response.remove(idx);
@@ -1168,6 +1171,51 @@ impl Reactor {
 }
 
 impl Reactor {
+    /// A shutdown MCU answers every command with `is_shutdown`, which
+    /// matches no waiting call by name — without this, each pending and
+    /// future call rides out its full timeout serially (observed as a
+    /// frozen klippy reactor, 15s per call). Failing everything now keeps
+    /// the failure prompt; the `shutdown`/`is_shutdown` frame itself still
+    /// flows through the passthrough path so klippy can report the reason.
+    fn fail_pending_on_mcu_shutdown(
+        &mut self,
+        response_name: &str,
+        params: &crate::transport::MessageParams,
+    ) {
+        if self.awaiting_response.len() == 0 && self.pending_submissions.is_empty() {
+            return;
+        }
+        let reason = params
+            .fields
+            .get("static_string_id")
+            .and_then(|v| match v {
+                crate::transport::MessageValue::U32(n) => Some(*n as i32),
+                crate::transport::MessageValue::I32(n) => Some(*n),
+                _ => None,
+            })
+            .and_then(|id| self.parser.static_strings.get(&id).cloned())
+            .unwrap_or_else(|| format!("unresolved reason ({response_name})"));
+        tracing::error!(
+            subsystem = "mcu-comms",
+            event = "mcu_shutdown_fail_fast",
+            response = %response_name,
+            %reason,
+            awaiting = self.awaiting_response.len(),
+            pending = self.pending_submissions.len(),
+            "MCU reports shutdown; failing pending calls instead of timing out"
+        );
+        for entry in self.awaiting_response.drain_all() {
+            let _ = entry
+                .completion
+                .send(Err(TransportError::McuShutdown(reason.clone())));
+        }
+        for p in self.pending_submissions.drain(..) {
+            let _ = p
+                .completion
+                .send(Err(TransportError::McuShutdown(reason.clone())));
+        }
+    }
+
     fn flush_all_completions(&mut self) {
         self.pending_clock_sent_raw = None;
         for entry in self.awaiting_response.drain_all() {
@@ -1344,3 +1392,6 @@ mod fire_and_forget_typed_routing;
 
 #[cfg(test)]
 mod io_fault_propagation;
+
+#[cfg(test)]
+mod a9_mcu_shutdown_fail_fast;

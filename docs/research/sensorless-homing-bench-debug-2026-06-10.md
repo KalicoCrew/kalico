@@ -110,6 +110,38 @@ with secondary restore errors (`6eb0ea0c7`).
    (`5ed168da5`-adjacent) so a stalled reactor doesn't shed sensor
    responses within four seconds.
 
+9. **Shared enable print_time starved by inline TMC init** (bench
+   2026-06-10 07:54, session up 5.5h, clocksync HEALTHY — this is not
+   bug 7 again). G28 X homed fine; the retract's `move()` computed ONE
+   `enable_print_time` (est+0.25s) and `_fire_active_callbacks` enabled
+   ALL steppers with it. Each UART Z driver's `_do_enable_bridge` runs
+   ~90–100ms of synchronous tmcuart register init inline, so by
+   stepper_z2 (third Z) the shared print_time was ~40ms in the bottom's
+   past → its enable-pin write → "Timer too close" → bottom shutdown →
+   z2's tmcuart init blocked 15s (is_shutdown matches no waiter) →
+   reactor frozen, G28 "hangs", cascade. Three fixes:
+   - `_fire_active_callbacks` recomputes `get_last_move_time()` per
+     callback — a blocking init can no longer stale the next stepper's
+     schedule.
+   - `BridgeKinematics.active_rails(dx, dy, dz)` — kinematics-aware
+     motor coupling (corexy: x/y move ⇒ A+B rails; hybrid_corexy:
+     x ⇐ dx|dy). `move()` now enables only rails that move: an X
+     retract no longer touches Z at all (closes the "enables ALL
+     steppers" deviation, which this bug proved load-bearing).
+   - `homing.py` enables the *coupled* rails for the homing axis, not
+     just the homed rail — previously corexy X homing never enabled the
+     B motors and relied on leftover session state.
+
+10. **Bridge calls to a shutdown MCU each rode out the full 15s timeout**
+    (the amplifier in every klippy freeze this series). A shutdown
+    klipper MCU answers every command with `is_shutdown`, which matches
+    no waiter by name. The reactor now fails all pending and queued
+    calls immediately with `TransportError::McuShutdown(reason)` (reason
+    resolved from `static_string_id`) when `shutdown`/`is_shutdown`
+    arrives; subsequent calls fail at round-trip speed instead of 15s.
+    The frame still passes through to klippy for the canonical
+    "MCU 'x' shutdown: …" report.
+
 ## Simulator status (kalico-sim, full mode)
 
 A G28-cycling G-code (home, re-home, post-home move, home again) FAILS in
@@ -125,13 +157,10 @@ H723 homed repeatably tonight where the sim faults.
 
 ## Known deviations left open (documented, not blocking)
 
-- `motion_toolhead._fire_active_callbacks` enables ALL kinematic steppers on
-  any move (upstream enables lazily per stepping motor). Harmless since the
-  clocksync fix, but Z holds current after any XY move. A correct filter
-  needs kinematics knowledge (corexy X-only ⇒ both A and B motors).
 - `kalico-host-rt` response matching (`AwaitingResponse::find_match`) matches
   by response name only; concurrent same-name calls (three tmcuart polls)
-  rely on FIFO ordering and eviction timing.
+  rely on FIFO ordering and eviction timing. (The shutdown half of this —
+  is_shutdown matching no waiter — is fixed by bug 10's fail-fast.)
 - The `homing.py` G28 is single-pass (no slow second approach). Canonical
   for sensorless; revisit if switch-based homing accuracy matters later.
 

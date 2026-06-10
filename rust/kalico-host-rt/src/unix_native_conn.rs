@@ -61,6 +61,7 @@ fn clone_transport_error(err: &TransportError) -> TransportError {
         TransportError::Parse(s) => TransportError::Parse(s.clone()),
         TransportError::DispatcherTimeout => TransportError::DispatcherTimeout,
         TransportError::Backpressure => TransportError::Backpressure,
+        TransportError::McuShutdown(s) => TransportError::McuShutdown(s.clone()),
     }
 }
 

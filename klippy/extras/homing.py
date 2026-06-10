@@ -136,8 +136,11 @@ class Homing:
         )
 
         stepper_enable = self.printer.lookup_object("stepper_enable")
-        for s in rail.get_steppers():
-            stepper_enable.motor_debug_enable(s.get_name(), True)
+        homing_deltas = [0.0, 0.0, 0.0]
+        homing_deltas[axis] = 1.0
+        for active_rail in kin.active_rails(*homing_deltas):
+            for s in active_rail.get_steppers():
+                stepper_enable.motor_debug_enable(s.get_name(), True)
 
         self._set_homing_current(toolhead, rail, pre_homing=True)
         try:
