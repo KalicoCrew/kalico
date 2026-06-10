@@ -16,7 +16,8 @@
  *   touch_probe_fn   60B8  uint16
  *   phys_outputs     60FE:01 uint32
  *
- * TxPDO 0x1B01 (28 bytes):
+ * TxPDO 0x1A00 (32 bytes) — variable mapping, rewritten via SDO at every
+ * bringup (drive does not persist PDO mapping across power cycles):
  *   error_code       603F  uint16
  *   statusword       6041  uint16
  *   position_actual  6064  int32
@@ -26,6 +27,7 @@
  *   tp1_pos          60BA  int32
  *   tp2_pos          60BC  int32
  *   digital_inputs   60FD  uint32
+ *   position_demand  6062  int32
  */
 #pragma pack(push, 1)
 typedef struct {
@@ -44,6 +46,7 @@ typedef struct {
     int32_t  tp1_pos;
     int32_t  tp2_pos;
     uint32_t digital_inputs;
+    int32_t  position_demand;
 } in_t;
 #pragma pack(pop)
 
@@ -90,6 +93,39 @@ static void go_realtime(int cpu, int prio) {
     if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) perror("ec_rt: SCHED_FIFO (continuing)");
 }
 
+/* The drive's fixed TxPDO 1B01h cannot carry 6062h; the variable TPDO 1A00h
+ * (max 10 objects / 40 bytes) can. Mapping is RAM-only on the drive, so it
+ * must be rewritten in PRE-OP at every bringup. Entry format per CoE:
+ * index<<16 | subindex<<8 | bit-length. */
+static int map_tx_pdo_1a00(void) {
+    static const uint32_t entries[10] = {
+        0x603F0010, /* error_code       u16 */
+        0x60410010, /* statusword       u16 */
+        0x60640020, /* position_actual  i32 */
+        0x60770010, /* torque_actual    i16 */
+        0x60F40020, /* following_error  i32 */
+        0x60B90010, /* tp_status        u16 */
+        0x60BA0020, /* tp1_pos          i32 */
+        0x60BC0020, /* tp2_pos          i32 */
+        0x60FD0020, /* digital_inputs   u32 */
+        0x60620020, /* position_demand  i32 */
+    };
+    uint8_t  zero8  = 0;
+    uint8_t  count  = 10;
+    uint16_t assign = 0x1A00;
+    uint8_t  one    = 1;
+    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(zero8), &zero8, EC_TIMEOUTRXM) <= 0) return -1;
+    for (int i = 0; i < 10; i++) {
+        uint32_t v = entries[i];
+        if (ec_SDOwrite(1, 0x1A00, (uint8_t)(i + 1), FALSE, sizeof(v), &v, EC_TIMEOUTRXM) <= 0) return -1;
+    }
+    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(count),  &count,  EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x01, FALSE, sizeof(assign), &assign, EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(one),    &one,    EC_TIMEOUTRXM) <= 0) return -1;
+    return 0;
+}
+
 static int rt_exchange(int64_t *toff) {
     int64_t off = 0;
     add_ts(&g_ts, g_cycle_ns + (toff ? *toff : 0));
@@ -110,6 +146,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     if (!ec_init(ifname)) return -1;
     if (ec_config_init(FALSE) <= 0) { ec_close(); return -2; }
 
+    if (map_tx_pdo_1a00() != 0) { ec_close(); return -6; }
+
     /*
      * SDO bring-up order is identical to ec_spin.c and must be preserved
      * exactly: mode first, then both sync-type subindices, then cycle-time
@@ -129,6 +167,14 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
     ec_config_map(&IOmap);
+    if (ec_slave[1].Obytes != sizeof(out_t) || ec_slave[1].Ibytes != sizeof(in_t)) {
+        fprintf(stderr,
+                "ec_rt: PDO size mismatch — mapped out=%u in=%u, expected out=%zu in=%zu\n",
+                (unsigned)ec_slave[1].Obytes, (unsigned)ec_slave[1].Ibytes,
+                sizeof(out_t), sizeof(in_t));
+        ec_close();
+        return -7;
+    }
     /* If SAFE-OP is not reached, PDOs are not mapped and ec_slave[1].outputs may
      * be NULL/stale — bail before dereferencing it in the stabilize loop. */
     if (ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4) != EC_STATE_SAFE_OP) {
@@ -234,6 +280,16 @@ int32_t  ec_rt_get_position_actual(void)        { return g_in->position_actual; 
 uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
+
+void ec_rt_get_telemetry(ec_telemetry_t *out) {
+    out->error_code      = g_in->error_code;
+    out->statusword      = g_in->statusword;
+    out->position_actual = g_in->position_actual;
+    out->torque_actual   = g_in->torque_actual;
+    out->following_error = g_in->following_error;
+    out->position_demand = g_in->position_demand;
+    out->target_position = g_out->target_position;
+}
 
 void ec_rt_disable(void) {
     g_enabled = 0;
