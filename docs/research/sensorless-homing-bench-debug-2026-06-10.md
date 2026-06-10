@@ -142,6 +142,42 @@ with secondary restore errors (`6eb0ea0c7`).
     The frame still passes through to klippy for the canonical
     "MCU 'x' shutdown: …" report.
 
+11. **Trip→Stop race with the pump** (bench 2026-06-10 13:19, second
+    evening session). G28 homed and stopped correctly, then -310
+    StepsPerSampleExceeded (axis 0, **740 steps** — 46ms × 100mm/s ×
+    160/mm ≈ one drip window) latched during trip processing, before
+    the host even logged the trigger. The trip handler sent
+    `Flush`/`DripDisarm` to the pump **fire-and-forget** and immediately
+    issued the MCU `Stop` from its own thread. `Stop` discards the
+    engine ring and halts — but nothing gates later pushes — so a piece
+    the pump wrote to the wire *after* the Stop frame landed in the
+    empty ring and executed from the halted position: a ~46ms position
+    jump. Intermittent because the window is only a pump send-batch in
+    flight at trip time (homes 1–3 that evening passed). Fix:
+    `PumpMsg::Barrier(ack)` — the trip handler (and `home_abort`) now
+    waits for the pump to acknowledge the flush before issuing Stop;
+    after the ack the pump's queues for those axes are empty and it can
+    never emit another piece for them, so the discard is complete by
+    construction. The -310 steps/sample check remains the loud backstop
+    for any future discontinuity (it is what caught this).
+
+    Side findings from the same session, settled:
+    - The 13:19:07 "USB drop + both-MCU reset" was a **commanded
+      FIRMWARE_RESTART** (kernel disconnect expected) — not a crash.
+    - `fg_freeze pc=134350674` (in every replay) decodes to
+      `tmcuart_task` → `sendf` (`src/tmcuart.c:338`): the foreground
+      blocking in klipper's TX path once klippy stops draining USB,
+      then IWDG-resetting. Aftermath of host death, never the cause;
+      the IWDG reset is the correct recovery. The iwdg counter
+      confirms: no increment on the commanded reset, +1 on the
+      post-abort freeze.
+    - `[junction] overlap_risk tick_jump_us=-74.4` on a chained-backoff
+      replan join: −74µs ≈ 7.4µm at 100mm/s, sub-step, did not
+      contribute. Watch if replan joins ever show larger negatives.
+    - The is_shutdown fail-fast (bug 10) worked as designed: current
+      restore failed promptly, no 15s reactor freezes anywhere in the
+      trace.
+
 ## Simulator status (kalico-sim, full mode)
 
 A G28-cycling G-code (home, re-home, post-home move, home again) FAILS in

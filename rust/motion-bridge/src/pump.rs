@@ -235,6 +235,13 @@ pub enum PumpMsg {
     Flush(Vec<AxisKey>),
     DripArm(DripArm),
     DripDisarm(u64),
+    /// Acknowledged once every preceding message has been applied and no
+    /// send batch is in progress. Senders that must guarantee the pump can
+    /// no longer emit pieces for flushed axes (the homing Stop sequence)
+    /// wait on this before issuing the MCU-side discard: a piece written
+    /// to the wire after the discard executes from the halted position
+    /// (bench 2026-06-10: -310, 740 steps — one drip window at 100mm/s).
+    Barrier(std::sync::mpsc::SyncSender<()>),
     Shutdown,
 }
 
@@ -612,6 +619,9 @@ pub fn run_pump<S, F, C, A, O, D>(
                 if cohort.as_ref().map_or(false, |co| co.id == c) {
                     *cohort = None;
                 }
+            }
+            PumpMsg::Barrier(ack) => {
+                let _ = ack.send(());
             }
         }
         true

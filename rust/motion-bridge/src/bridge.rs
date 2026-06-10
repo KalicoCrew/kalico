@@ -2978,6 +2978,18 @@ impl PyMotionBridge {
         {
             let _ = tx.send(crate::pump::PumpMsg::Flush(ctx.all_axis_keys));
             let _ = tx.send(crate::pump::PumpMsg::DripDisarm(ctx.cohort));
+            let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+            let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+            let barrier =
+                py.allow_threads(move || ack_rx.recv_timeout(std::time::Duration::from_secs(1)));
+            if barrier.is_err() {
+                tracing::error!(
+                    "home_abort: pump did not acknowledge the flush barrier — \
+                     commanded_pos is STALE; a firmware restart is required"
+                );
+                self.finish_homing();
+                return;
+            }
         }
 
         self.finish_homing();
@@ -3130,6 +3142,16 @@ impl PyMotionBridge {
                 if let Some(tx) = pump_tx_opt {
                     let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+                    let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+                    if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                        let _ = run.notify.send(Err(
+                            "EndstopTrip: pump did not acknowledge the flush barrier — \
+                             cannot Stop while the pump may still emit pieces"
+                                .into(),
+                        ));
+                        return;
+                    }
                 }
 
                 let mut stop_errors: Vec<String> = Vec::new();
