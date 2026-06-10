@@ -46,6 +46,7 @@ class EtherCatNode:
         # runs on "klippy:connect" — so the handle is populated before the
         # planner is built. This mirrors MCU._mcu_identify's claim_mcu call.
         self.printer.register_event_handler("klippy:mcu_identify", self._claim)
+        self.printer.load_object(config, "servo_capture")
 
     def _derive_counts_per_mm(self):
         # ServoRails are not printer objects (the toolhead builds them directly

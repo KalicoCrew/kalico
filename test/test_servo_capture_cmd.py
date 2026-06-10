@@ -1,0 +1,161 @@
+import pytest
+
+from klippy.extras import servo_capture
+
+
+class FakeGcode:
+    def __init__(self):
+        self.commands = {}
+
+    def register_command(self, name, func, desc=None):
+        assert name not in self.commands
+        self.commands[name] = func
+
+
+class FakeNode:
+    def __init__(self, handle):
+        self._h = handle
+
+    def get_bridge_handle(self):
+        return self._h
+
+
+class FakeBridge:
+    def __init__(self, stop_result=(0, 1234, None)):
+        self.start_calls = []
+        self.stop_calls = []
+        self._stop_result = stop_result
+
+    def start_servo_capture(self, handle, path, started_utc, drive_name):
+        self.start_calls.append((handle, path, started_utc, drive_name))
+
+    def stop_servo_capture(self, handle):
+        self.stop_calls.append(handle)
+        return self._stop_result
+
+
+class FakePrinter:
+    command_error = RuntimeError
+
+    def __init__(self, objs):
+        self._objs = objs
+
+    def lookup_object(self, name):
+        return self._objs[name]
+
+    def lookup_objects(self, module=None):
+        prefix = module + " "
+        return [
+            (name, obj)
+            for name, obj in self._objs.items()
+            if name == module or name.startswith(prefix)
+        ]
+
+
+class FakeConfig:
+    def __init__(self, printer):
+        self._printer = printer
+
+    def get_printer(self):
+        return self._printer
+
+
+class FakeGcmd:
+    error = RuntimeError
+
+    def __init__(self, **params):
+        self._params = params
+        self.responses = []
+
+    def get(self, name, default=None):
+        return self._params.get(name, default)
+
+    def respond_info(self, msg):
+        self.responses.append(msg)
+
+
+def make_capture(nodes=None, bridge=None):
+    gcode = FakeGcode()
+    objs = {"gcode": gcode, "motion_bridge": bridge or FakeBridge()}
+    for name, handle in (nodes or {"x": 7}).items():
+        objs["ethercat_node " + name] = FakeNode(handle)
+    printer = FakePrinter(objs)
+    sc = servo_capture.ServoCapture(FakeConfig(printer))
+    return sc, gcode, objs["motion_bridge"]
+
+
+def test_registers_both_commands():
+    _, gcode, _ = make_capture()
+    assert "SERVO_CAPTURE_START" in gcode.commands
+    assert "SERVO_CAPTURE_STOP" in gcode.commands
+
+
+def test_start_defaults_to_sole_servo_and_builds_path():
+    sc, gcode, bridge = make_capture()
+    gcmd = FakeGcmd(NAME="xtune")
+    gcode.commands["SERVO_CAPTURE_START"](gcmd)
+    assert len(bridge.start_calls) == 1
+    handle, path, started_utc, drive_name = bridge.start_calls[0]
+    assert handle == 7
+    assert drive_name == "x"
+    assert "/servo_captures/" in path
+    assert path.endswith(".scap")
+    assert "xtune_" in path
+    assert started_utc.endswith("Z")
+    assert any("started" in r for r in gcmd.responses)
+
+
+def test_start_rejects_bad_name():
+    sc, gcode, bridge = make_capture()
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(NAME="../evil"))
+    assert bridge.start_calls == []
+
+
+def test_start_rejects_unknown_servo_and_comma_list():
+    sc, gcode, bridge = make_capture()
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(SERVO="nope"))
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(SERVO="a,b"))
+    assert bridge.start_calls == []
+
+
+def test_double_start_rejected_in_klippy():
+    sc, gcode, _ = make_capture()
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+
+
+def test_stop_without_start_rejected():
+    sc, gcode, bridge = make_capture()
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
+    assert bridge.stop_calls == []
+
+
+def test_stop_reports_samples():
+    sc, gcode, bridge = make_capture()
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    gcmd = FakeGcmd()
+    gcode.commands["SERVO_CAPTURE_STOP"](gcmd)
+    assert bridge.stop_calls == [7]
+    assert any("1234" in r for r in gcmd.responses)
+
+
+def test_stop_overflow_raises_with_failed_filename():
+    bridge = FakeBridge(stop_result=(-323, 999, 4096))
+    sc, gcode, _ = make_capture(bridge=bridge)
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    with pytest.raises(RuntimeError, match="failed.scap"):
+        gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
+    # state cleared: a new capture can start
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+
+
+def test_start_without_bridge_handle_fails_loudly():
+    sc, gcode, bridge = make_capture(nodes={"x": None})
+    with pytest.raises(RuntimeError, match="no bridge handle"):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert bridge.start_calls == []
