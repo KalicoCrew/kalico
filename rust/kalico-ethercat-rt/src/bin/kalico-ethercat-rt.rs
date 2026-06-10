@@ -1,5 +1,6 @@
 //! Usage: kalico-ethercat-rt <ifname> [--socket PATH] [--cycle-us N]
 //!        [--counts-per-mm F] [--rt-cpu N] [--rt-prio N]
+//!        [--velocity-ff] [--dynamics-profile PATH] [--torque-clamp-pct F]
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
+use kalico_ethercat_rt::dynamics::{clamp_torque, DynamicsModel};
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::server::FrameServer;
@@ -48,6 +50,29 @@ fn main() {
     let rt_prio: i32 = arg_val(&args, "--rt-prio")
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
+    let velocity_ff = args.iter().any(|a| a == "--velocity-ff");
+    let torque_clamp_tenths: i16 = arg_val(&args, "--torque-clamp-pct")
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|pct| (pct * 10.0) as i16)
+        .unwrap_or(300);
+    let dynamics = arg_val(&args, "--dynamics-profile").map(|path| {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("ec-rt: dynamics profile {path}: {e}");
+            std::process::exit(1);
+        });
+        let model = DynamicsModel::from_toml_str(&text).unwrap_or_else(|e| {
+            eprintln!("ec-rt: dynamics profile {path} invalid: {e:?}");
+            std::process::exit(1);
+        });
+        if model.n != NUM_AXES {
+            eprintln!(
+                "ec-rt: dynamics profile {path} has {} axes, endpoint drives {NUM_AXES}",
+                model.n
+            );
+            std::process::exit(1);
+        }
+        model
+    });
     let cycle_ns = cycle_us * 1000;
     let telemetry_period = u64::try_from(cycle_us)
         .map(|u| (500_000u64 / u).max(1))
@@ -59,10 +84,12 @@ fn main() {
     let mut heartbeat_sent = false;
 
     let mut server = FrameServer::bind(&socket).expect("bind socket");
-    eprintln!("ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}");
+    eprintln!(
+        "ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm} \
+         velocity_ff={velocity_ff} dynamics={} clamp={torque_clamp_tenths}",
+        dynamics.is_some()
+    );
 
-    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
-    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = on_sigterm as *const () as libc::sighandler_t;
@@ -115,6 +142,7 @@ fn main() {
 
     let mut gate = TorqueGate::new();
     let mut prdiv = 0u64;
+    let mut ff_saturation = 0u32;
     let mut wkc_consecutive = 0u8;
     'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
@@ -241,7 +269,7 @@ fn main() {
                 server.respond(&status_heartbeat_frame(
                     ENGINE_STATE_FAULT,
                     &[ring.retired_count()],
-                    0,
+                    ff_saturation,
                 ));
                 unsafe {
                     ffi::ec_rt_disable();
@@ -252,15 +280,50 @@ fn main() {
         }
 
         if gate.state() == TorqueState::Enabled {
-            if let Some((pos_mm, _vel_mm_s, _acc_mm_s2)) = ring.sample(now) {
+            if let Some((pos_mm, vel_mm_s, acc_mm_s2)) = ring.sample(now) {
                 let map = cmap.get_or_insert_with(|| {
                     let actual = unsafe { ffi::ec_rt_get_position_actual() };
                     CountMap::new(counts_per_mm, actual, f64::from(pos_mm))
                 });
                 let counts = map.target_counts(f64::from(pos_mm));
-                unsafe { ffi::ec_rt_set_target_position(counts) };
+                let vel_offset = if velocity_ff {
+                    (f64::from(vel_mm_s) * counts_per_mm).round() as i32
+                } else {
+                    0
+                };
+                let torque_offset = match &dynamics {
+                    Some(model) => {
+                        let raw = model.torque_ff(0, &[acc_mm_s2], &[vel_mm_s]);
+                        if !raw.is_finite() {
+                            eprintln!(
+                                "ec-rt: FAULT non-finite torque FF (acc={acc_mm_s2} vel={vel_mm_s}) — disabling"
+                            );
+                            server.respond(&status_heartbeat_frame(
+                                ENGINE_STATE_FAULT,
+                                &[ring.retired_count()],
+                                ff_saturation,
+                            ));
+                            unsafe {
+                                ffi::ec_rt_disable();
+                                ffi::ec_rt_shutdown();
+                            }
+                            std::process::exit(1);
+                        }
+                        clamp_torque(raw, torque_clamp_tenths, &mut ff_saturation)
+                    }
+                    None => 0,
+                };
+                unsafe {
+                    ffi::ec_rt_set_target_position(counts);
+                    ffi::ec_rt_set_velocity_offset(vel_offset);
+                    ffi::ec_rt_set_torque_offset(torque_offset);
+                }
             } else {
                 cmap = None;
+                unsafe {
+                    ffi::ec_rt_set_velocity_offset(0);
+                    ffi::ec_rt_set_torque_offset(0);
+                }
             }
         }
 
@@ -274,7 +337,7 @@ fn main() {
             server.respond(&status_heartbeat_frame(
                 ENGINE_STATE_FAULT,
                 &[current_retired],
-                0,
+                ff_saturation,
             ));
 
             #[cfg(feature = "hw")]
@@ -322,7 +385,11 @@ fn main() {
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-            server.respond(&status_heartbeat_frame(engine_state, &[current_retired], 0));
+            server.respond(&status_heartbeat_frame(
+                engine_state,
+                &[current_retired],
+                ff_saturation,
+            ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
             if current_retired != 0 {
@@ -333,17 +400,19 @@ fn main() {
         prdiv += 1;
         if prdiv >= telemetry_period {
             prdiv = 0;
-            let (sw, err, pos, ferr) = unsafe {
+            let (sw, err, pos, ferr, vel_act, tq_act) = unsafe {
                 (
                     ffi::ec_rt_get_statusword(),
                     ffi::ec_rt_get_error_code(),
                     ffi::ec_rt_get_position_actual(),
                     ffi::ec_rt_get_following_error(),
+                    ffi::ec_rt_get_velocity_actual(),
+                    ffi::ec_rt_get_torque_actual(),
                 )
             };
             eprintln!(
                 "ec-rt: wkc={wkc} sw=0x{sw:04x} err=0x{err:04x} pos={pos} ferr={ferr} toff={toff} \
-                 ring_len={} retired={}",
+                 ring_len={} retired={} vel_act={vel_act} tq_act={tq_act} ff_sat={ff_saturation}",
                 ring.is_empty() as u8 ^ 1,
                 current_retired,
             );
