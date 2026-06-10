@@ -358,10 +358,18 @@ fn stop_capture_response_round_trip() {
     let msg = StopCaptureResponse {
         result: -323,
         samples: 12_345,
-        overflow_cycle: u64::MAX,
+        overflow_cycle: StopCaptureResponse::NO_OVERFLOW,
     };
     let buf = msg.encoded_to_vec();
     assert_eq!(StopCaptureResponse::decode(&buf).unwrap(), msg);
+}
+
+#[test]
+fn get_str_zero_length_decodes_to_empty() {
+    use crate::codec::{get_str, Cursor};
+    let buf = [0u8, 0];
+    let mut c = Cursor::new(&buf);
+    assert_eq!(get_str(&mut c).unwrap(), "");
 }
 
 #[test]
@@ -375,5 +383,6 @@ fn capture_message_kinds_round_trip_u16() {
     ] {
         assert_eq!(kind.as_u16(), raw);
         assert_eq!(MessageKind::from_u16(raw), Some(kind));
+        assert!(!kind.is_event());
     }
 }

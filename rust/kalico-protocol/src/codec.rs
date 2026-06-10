@@ -175,7 +175,6 @@ pub fn get_f32(c: &mut Cursor<'_>) -> Result<f32, DecodeError> {
     Ok(f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
-/// u16-LE length prefix + UTF-8 bytes.
 pub fn put_str(out: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
     assert!(
@@ -188,11 +187,11 @@ pub fn put_str(out: &mut Vec<u8>, s: &str) {
 
 pub fn get_str(c: &mut Cursor<'_>) -> Result<String, DecodeError> {
     let len = get_u16(c)? as usize;
-    let mut bytes = vec![0u8; len];
-    for b in &mut bytes {
-        *b = get_u8(c)?;
+    if len > c.remaining() {
+        return Err(DecodeError::UnexpectedEof);
     }
-    String::from_utf8(bytes).map_err(|_| DecodeError::BadUtf8)
+    let slice = c.take(len)?;
+    String::from_utf8(slice.to_vec()).map_err(|_| DecodeError::BadUtf8)
 }
 
 /// Read a `u32_le`-length-prefixed `f32` array. Validates that the claimed

@@ -360,12 +360,15 @@ impl Decode for StopCapture {
     }
 }
 
-/// `overflow_cycle == u64::MAX` means no overflow occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopCaptureResponse {
     pub result: i32,
     pub samples: u64,
     pub overflow_cycle: u64,
+}
+
+impl StopCaptureResponse {
+    pub const NO_OVERFLOW: u64 = u64::MAX;
 }
 
 impl Encode for StopCaptureResponse {
