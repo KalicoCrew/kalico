@@ -575,6 +575,7 @@ fn main() {
                      {} consecutive bad cycles, halting",
                     kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
                 );
+                unsafe { ffi::ec_rt_dump_al_state() };
                 break;
             }
         }

@@ -50,6 +50,10 @@ int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct);
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
+/* Re-reads AL state of slave 1 and prints state + ALstatuscode to stderr.
+ * Diagnostic for WKC-loss halts: names why the drive left OP. */
+void ec_rt_dump_al_state(void);
+
 void ec_rt_shutdown(void);
 
 /* SDO upload from slave 1. On entry *size is the buffer capacity; on success

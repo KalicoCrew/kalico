@@ -415,6 +415,13 @@ void ec_rt_disable(void) {
     }
 }
 
+void ec_rt_dump_al_state(void) {
+    ec_readstate();
+    fprintf(stderr,
+            "ec_rt: slave1 state=0x%02x al=0x%04x docheckstate=%d\n",
+            ec_slave[1].state, ec_slave[1].ALstatuscode, ec_group[0].docheckstate);
+}
+
 void ec_rt_shutdown(void) {
     ec_dcsync0(1, FALSE, 0, 0);
     ec_slave[0].state = EC_STATE_INIT;
