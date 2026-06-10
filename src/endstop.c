@@ -23,8 +23,8 @@ struct endstop {
 static struct task_wake endstop_trip_wake;
 
 // Timer context (IRQ): capture the trip clock here for accuracy, but defer
-// the transport write to the task below — kalico_transport_send_frame uses a
-// shared tx_buf and the USB transmit cursor, neither safe against the
+// the transport write to endstop_trip_task — kalico_transport_send_frame uses
+// a shared tx_buf and the USB transmit cursor, neither safe against the
 // foreground from IRQ.
 static uint_fast8_t
 endstop_event(struct timer *t)
@@ -42,22 +42,6 @@ endstop_event(struct timer *t)
     e->time.waketime += e->rest_ticks;
     return SF_RESCHEDULE;
 }
-
-void
-endstop_trip_task(void)
-{
-    if (!sched_check_wake(&endstop_trip_wake))
-        return;
-    uint8_t oid;
-    struct endstop *e;
-    foreach_oid(oid, e, command_config_endstop) {
-        if (!e->trip_pending)
-            continue;
-        e->trip_pending = 0;
-        kalico_native_emit_endstop_trip(e->endstop_id, e->trip_clock);
-    }
-}
-DECL_TASK(endstop_trip_task);
 
 void
 command_config_endstop(uint32_t *args)
@@ -106,3 +90,19 @@ command_endstop_query_state(uint32_t *args)
     sendf("endstop_state oid=%c armed=%c pin_value=%c", args[0], e->armed, raw);
 }
 DECL_COMMAND(command_endstop_query_state, "endstop_query_state oid=%c");
+
+void
+endstop_trip_task(void)
+{
+    if (!sched_check_wake(&endstop_trip_wake))
+        return;
+    uint8_t oid;
+    struct endstop *e;
+    foreach_oid(oid, e, command_config_endstop) {
+        if (!e->trip_pending)
+            continue;
+        e->trip_pending = 0;
+        kalico_native_emit_endstop_trip(e->endstop_id, e->trip_clock);
+    }
+}
+DECL_TASK(endstop_trip_task);
