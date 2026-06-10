@@ -56,7 +56,9 @@ impl Default for KalicoHostIoConfig {
         Self {
             trace_capacity: 256,
             host_event_capacity: 64,
-            runtime_event_capacity: 64,
+            // Sized so a klippy reactor stalled in one 15s bridge_call doesn't
+            // drop sensor PassthroughResponses (~17 events/s on the bench).
+            runtime_event_capacity: 512,
             default_call_timeout: Duration::from_millis(100),
             identify_timeout: Duration::from_millis(15_000),
             default_dispatcher_timeout: Duration::from_secs(30),
