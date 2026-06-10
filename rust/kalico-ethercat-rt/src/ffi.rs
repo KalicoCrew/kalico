@@ -26,6 +26,14 @@ extern "C" {
 
     pub fn ec_rt_get_following_error() -> i32;
 
+    pub fn ec_rt_set_velocity_offset(counts_per_s: i32);
+
+    pub fn ec_rt_set_torque_offset(tenths_pct: i16);
+
+    pub fn ec_rt_get_velocity_actual() -> i32;
+
+    pub fn ec_rt_get_torque_actual() -> i16;
+
     pub fn ec_rt_disable();
 
     pub fn ec_rt_shutdown();

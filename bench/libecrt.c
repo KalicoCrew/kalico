@@ -8,15 +8,17 @@
 #include "ethercat.h"
 
 /*
- * PDO layout must match the drive's active mapping exactly.
+ * PDO layout must match the variable mapping written in pdo_remap().
  *
- * RxPDO 0x1701 (12 bytes):
+ * RxPDO 0x1600 (18 bytes):
  *   controlword      6040  uint16
  *   target_position  607A  int32
  *   touch_probe_fn   60B8  uint16
  *   phys_outputs     60FE:01 uint32
+ *   velocity_offset  60B1  int32   (counts/s, speed FF when C01.13=5)
+ *   torque_offset    60B2  int16   (0.1% rated, torque FF when C01.16=5)
  *
- * TxPDO 0x1B01 (28 bytes):
+ * TxPDO 0x1A00 (32 bytes):
  *   error_code       603F  uint16
  *   statusword       6041  uint16
  *   position_actual  6064  int32
@@ -26,6 +28,7 @@
  *   tp1_pos          60BA  int32
  *   tp2_pos          60BC  int32
  *   digital_inputs   60FD  uint32
+ *   velocity_actual  606C  int32
  */
 #pragma pack(push, 1)
 typedef struct {
@@ -33,6 +36,8 @@ typedef struct {
     int32_t  target_position;
     uint16_t touch_probe_fn;
     uint32_t phys_outputs;
+    int32_t  velocity_offset;
+    int16_t  torque_offset;
 } out_t;
 typedef struct {
     uint16_t error_code;
@@ -44,8 +49,11 @@ typedef struct {
     int32_t  tp1_pos;
     int32_t  tp2_pos;
     uint32_t digital_inputs;
+    int32_t  velocity_actual;
 } in_t;
 #pragma pack(pop)
+_Static_assert(sizeof(out_t) == 18, "RxPDO 0x1600 mapping is 18 bytes");
+_Static_assert(sizeof(in_t)  == 32, "TxPDO 0x1A00 mapping is 32 bytes");
 
 static char    IOmap[4096];
 static out_t  *g_out;
@@ -101,6 +109,59 @@ static int rt_exchange(int64_t *toff) {
     return wkc;
 }
 
+/* Variable PDO mapping (manual 8.3.1): PRE-OP only, not EEPROM-retained,
+ * so it is rewritten on every bring-up. Sequence: clear SM assignment ->
+ * clear map -> write entries -> write entry count -> reassign SM. */
+static int pdo_remap(void) {
+    static const uint32_t rx[6] = {
+        0x60400010, 0x607A0020, 0x60B80010, 0x60FE0120, 0x60B10020, 0x60B20010,
+    };
+    static const uint32_t tx[10] = {
+        0x603F0010, 0x60410010, 0x60640020, 0x60770010, 0x60F40020,
+        0x60B90010, 0x60BA0020, 0x60BC0020, 0x60FD0020, 0x606C0020,
+    };
+    uint8_t  zero = 0, cnt;
+    uint16_t pdo;
+    int ok = 1, i;
+
+    ok &= ec_SDOwrite(1, 0x1C12, 0x00, FALSE, sizeof zero, &zero, EC_TIMEOUTRXM) > 0;
+    ok &= ec_SDOwrite(1, 0x1600, 0x00, FALSE, sizeof zero, &zero, EC_TIMEOUTRXM) > 0;
+    for (i = 0; i < 6; i++)
+        ok &= ec_SDOwrite(1, 0x1600, (uint8_t)(i + 1), FALSE, sizeof rx[i], (void *)&rx[i], EC_TIMEOUTRXM) > 0;
+    cnt = 6;
+    ok &= ec_SDOwrite(1, 0x1600, 0x00, FALSE, sizeof cnt, &cnt, EC_TIMEOUTRXM) > 0;
+    pdo = 0x1600;
+    ok &= ec_SDOwrite(1, 0x1C12, 0x01, FALSE, sizeof pdo, &pdo, EC_TIMEOUTRXM) > 0;
+    cnt = 1;
+    ok &= ec_SDOwrite(1, 0x1C12, 0x00, FALSE, sizeof cnt, &cnt, EC_TIMEOUTRXM) > 0;
+
+    ok &= ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof zero, &zero, EC_TIMEOUTRXM) > 0;
+    ok &= ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof zero, &zero, EC_TIMEOUTRXM) > 0;
+    for (i = 0; i < 10; i++)
+        ok &= ec_SDOwrite(1, 0x1A00, (uint8_t)(i + 1), FALSE, sizeof tx[i], (void *)&tx[i], EC_TIMEOUTRXM) > 0;
+    cnt = 10;
+    ok &= ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof cnt, &cnt, EC_TIMEOUTRXM) > 0;
+    pdo = 0x1A00;
+    ok &= ec_SDOwrite(1, 0x1C13, 0x01, FALSE, sizeof pdo, &pdo, EC_TIMEOUTRXM) > 0;
+    cnt = 1;
+    ok &= ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof cnt, &cnt, EC_TIMEOUTRXM) > 0;
+
+    return ok ? 0 : -6;
+}
+
+/* FF sources to "communication" (60B1h/60B2h) at 100.0% scale.
+ * C01.13 -> 0x2001:14h, C01.14 -> 0x2001:15h, C01.16 -> 0x2001:17h,
+ * C01.17 -> 0x2001:18h (group C01 = index 2001h, subindex = param + 1). */
+static int ff_routing(void) {
+    uint16_t src = 5, pct = 1000;
+    int ok = 1;
+    ok &= ec_SDOwrite(1, 0x2001, 0x14, FALSE, sizeof src, &src, EC_TIMEOUTRXM) > 0;
+    ok &= ec_SDOwrite(1, 0x2001, 0x15, FALSE, sizeof pct, &pct, EC_TIMEOUTRXM) > 0;
+    ok &= ec_SDOwrite(1, 0x2001, 0x17, FALSE, sizeof src, &src, EC_TIMEOUTRXM) > 0;
+    ok &= ec_SDOwrite(1, 0x2001, 0x18, FALSE, sizeof pct, &pct, EC_TIMEOUTRXM) > 0;
+    return ok ? 0 : -7;
+}
+
 int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
@@ -126,6 +187,11 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_SDOwrite(1, 0x1C32, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C33, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
 
+    int rc = pdo_remap();
+    if (rc != 0) { ec_close(); return rc; }
+    rc = ff_routing();
+    if (rc != 0) { ec_close(); return rc; }
+
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
     ec_config_map(&IOmap);
@@ -142,6 +208,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     g_out->target_position = 0;
     g_out->touch_probe_fn  = 0;
     g_out->phys_outputs    = 0;
+    g_out->velocity_offset = 0;
+    g_out->torque_offset   = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &g_ts);
     int64_t toff = 0;
@@ -234,12 +302,18 @@ int32_t  ec_rt_get_position_actual(void)        { return g_in->position_actual; 
 uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
+void ec_rt_set_velocity_offset(int32_t counts_per_s) { g_out->velocity_offset = counts_per_s; }
+void ec_rt_set_torque_offset(int16_t tenths_pct)     { g_out->torque_offset  = tenths_pct; }
+int32_t ec_rt_get_velocity_actual(void)              { return g_in->velocity_actual; }
+int16_t ec_rt_get_torque_actual(void)                { return g_in->torque_actual; }
 
 void ec_rt_disable(void) {
     g_enabled = 0;
     for (int i = 0; i < 100; i++) {
         g_out->controlword = 0x0006;
         g_out->target_position = g_in->position_actual;
+        g_out->velocity_offset = 0;
+        g_out->torque_offset   = 0;
         int64_t t = 0;
         rt_exchange(&t);
     }
