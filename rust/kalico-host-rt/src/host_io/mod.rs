@@ -377,6 +377,9 @@ impl KalicoHostIo {
                     "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
+                // abort() skips the non_blocking appender's flush; let the worker drain
+                // or the EXIT_ON_FAULT reason dies with the process (silent SIGABRT).
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
                     std::process::abort();
                 }

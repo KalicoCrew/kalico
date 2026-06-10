@@ -495,6 +495,14 @@ class MotionToolhead(ToolHead):
         self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def stats(self, eventtime):
+        # check_active drives SecondarySync.calibrate_clock — without this
+        # call every second, a secondary MCU's print-time mapping freezes at
+        # its connect-time slew and drifts ~ms per second until the first
+        # clock-scheduled command lands in its past ("Timer too close" on the
+        # first Z enable minutes after boot).
+        max_queue_time = max(self.print_time, self._mcu_pending_end_time)
+        for m in self.all_mcus:
+            m.check_active(max_queue_time, eventtime)
         return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
             self.print_time,
             self.print_stall,
