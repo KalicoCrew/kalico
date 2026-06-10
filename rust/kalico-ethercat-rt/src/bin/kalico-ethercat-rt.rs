@@ -36,6 +36,17 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
 
 struct FfiSdoBus;
 
+fn ffi_sdo_error(abort: u32) -> i32 {
+    if abort == 0 {
+        return ERR_SDO_TRANSPORT;
+    }
+    debug_assert!(
+        abort < 0x8000_0000,
+        "CoE abort code 0x{abort:08x} would collide with local error codes as i32"
+    );
+    abort as i32
+}
+
 impl SdoBus for FfiSdoBus {
     fn read(&mut self, index: u16, subindex: u8) -> Result<(u8, [u8; 4]), i32> {
         let mut buf = [0u8; 8];
@@ -45,11 +56,7 @@ impl SdoBus for FfiSdoBus {
             ffi::ec_rt_sdo_read(index, subindex, buf.as_mut_ptr(), &mut size, &mut abort)
         };
         if rc != 0 {
-            return Err(if abort != 0 {
-                abort as i32
-            } else {
-                ERR_SDO_TRANSPORT
-            });
+            return Err(ffi_sdo_error(abort));
         }
         if !(1..=4).contains(&size) {
             return Err(ERR_SDO_UNSUPPORTED_SIZE);
@@ -71,11 +78,7 @@ impl SdoBus for FfiSdoBus {
             )
         };
         if rc != 0 {
-            return Err(if abort != 0 {
-                abort as i32
-            } else {
-                ERR_SDO_TRANSPORT
-            });
+            return Err(ffi_sdo_error(abort));
         }
         Ok(())
     }

@@ -243,6 +243,12 @@ fn main() {
                     } else {
                         execute_sdo_read(&mut sdo_bus, &msg)
                     };
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt-stub: SdoRead 0x{:04x}.{} failed result={}",
+                            msg.index, msg.subindex, resp.result
+                        );
+                    }
                     server.respond(&sdo_read_response_frame(correlation_id, &resp));
                 }
                 Command::SdoWrite {
