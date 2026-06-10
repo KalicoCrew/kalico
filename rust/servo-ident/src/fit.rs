@@ -1,6 +1,7 @@
 use crate::linalg::{solve_spd, sym_eig_extremes};
 use crate::model::{PhysicalParams, Structure};
 
+#[derive(Clone)]
 pub struct FitInput {
     pub structure: Structure,
     /// Per motor, equal lengths: acc[motor][sample] (mm/s²).
@@ -11,6 +12,7 @@ pub struct FitInput {
 }
 
 pub struct FitOptions {
+    /// Refusal threshold on `FitResult::condition` (column-scaled Gram).
     pub max_condition: f64,
     pub saturation_abs: f64,
     pub max_saturated_fraction: f64,
@@ -39,8 +41,13 @@ pub enum FitError {
 #[derive(Debug)]
 pub struct FitResult {
     pub params: PhysicalParams,
+    /// In-sample RMS (0.1% rated units); optimism bias is negligible for
+    /// sample counts far above the parameter count.
     pub rms_residual: f64,
+    /// λmax/λmin of the column-scaled Gram matrix — an excitation-quality
+    /// score, not cond(AᵀA).
     pub condition: f64,
+    /// Time samples per motor; regression rows = samples × motor count.
     pub samples: usize,
 }
 
