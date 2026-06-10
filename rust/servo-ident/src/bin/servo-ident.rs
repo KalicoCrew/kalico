@@ -12,6 +12,15 @@ fn arg(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
 }
 
+fn opt_f64(args: &[String], key: &str) -> Option<f64> {
+    arg(args, key).map(|v| {
+        v.parse().unwrap_or_else(|_| {
+            eprintln!("servo-ident: bad {key} {v:?}");
+            std::process::exit(1);
+        })
+    })
+}
+
 fn req(args: &[String], key: &str) -> String {
     arg(args, key).unwrap_or_else(|| {
         eprintln!("servo-ident: missing required {key}");
@@ -65,9 +74,9 @@ fn main() {
         r.samples, r.rms_residual, r.condition
     );
     if let (Some(t), Some(j), Some(d)) = (
-        arg(&args, "--rated-torque-nm").and_then(|v| v.parse::<f64>().ok()),
-        arg(&args, "--rotor-inertia-kgm2").and_then(|v| v.parse::<f64>().ok()),
-        arg(&args, "--rotation-distance-mm").and_then(|v| v.parse::<f64>().ok()),
+        opt_f64(&args, "--rated-torque-nm"),
+        opt_f64(&args, "--rotor-inertia-kgm2"),
+        opt_f64(&args, "--rotation-distance-mm"),
     ) {
         let n = r.params.mass.len();
         let m_light = if n == 2 {

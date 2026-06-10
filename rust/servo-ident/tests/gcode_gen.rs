@@ -11,10 +11,10 @@ fn strokes_stay_in_bounds_and_reach_peak_speed() {
         reps: 3,
     };
     let g = generate(&e).unwrap();
-    assert!(g.contains("SET_VELOCITY_LIMIT ACCEL=1000"));
-    assert!(g.contains("SET_VELOCITY_LIMIT ACCEL=3000"));
-    assert!(g.contains("F18000"));
-    assert!(g.contains("M400"));
+    assert!(g.lines().any(|l| l == "SET_VELOCITY_LIMIT ACCEL=1000 ACCEL_TO_DECEL=1000"));
+    assert!(g.lines().any(|l| l == "SET_VELOCITY_LIMIT ACCEL=3000 ACCEL_TO_DECEL=3000"));
+    assert!(g.lines().any(|l| l == "G1 X210 F18000"));
+    assert!(g.lines().any(|l| l == "M400"));
     for line in g.lines().filter(|l| l.starts_with("G1 X")) {
         let x: f64 = line[4..]
             .split_whitespace()
@@ -24,6 +24,10 @@ fn strokes_stay_in_bounds_and_reach_peak_speed() {
             .unwrap();
         assert!((10.0..=210.0).contains(&x), "{line}");
     }
+    // 2 accels × 2 speeds × 3 reps × 2 directions = 24 G1 lines
+    assert_eq!(g.lines().filter(|l| l.starts_with("G1 ")).count(), 24);
+    // 2 accels × 2 speeds = 4 M400 lines
+    assert_eq!(g.lines().filter(|l| *l == "M400").count(), 4);
 }
 
 #[test]
