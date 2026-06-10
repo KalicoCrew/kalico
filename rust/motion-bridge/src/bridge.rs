@@ -818,10 +818,31 @@ impl PyMotionBridge {
     }
 
     fn set_torque(&self, mcu_handle: u32, value: bool, print_time: f64) -> PyResult<()> {
+        let reference_mcu = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            *mcus
+                .iter()
+                .find(|(_, mc)| mc.label == "mcu")
+                .map(|(raw, _)| raw)
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(
+                        "set_torque: no MCU labeled 'mcu' claimed — \
+                         cannot resolve the print_time reference clock",
+                    )
+                })?
+        };
         let execute_at_ns = {
             let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let host_secs = router
+                .print_time_to_host_secs(mcu_handle_from_raw(reference_mcu), print_time)
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "set_torque: reference mcu {reference_mcu} clock not synced — \
+                         cannot convert print_time {print_time}"
+                    ))
+                })?;
             router
-                .host_time_to_mcu_clock(mcu_handle_from_raw(mcu_handle), print_time)
+                .host_time_to_mcu_clock(mcu_handle_from_raw(mcu_handle), host_secs)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!(
                         "set_torque: no clock mapping for mcu {mcu_handle}: {e:?}"

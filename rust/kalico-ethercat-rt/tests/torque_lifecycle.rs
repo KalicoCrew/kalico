@@ -215,17 +215,25 @@ fn double_enable_rejects_and_exits() {
 }
 
 #[test]
-fn disable_in_past_rejects_and_exits() {
+fn disable_in_past_executes_immediately() {
     let (mut guard, conn, path) = spawn_and_claim("tq-past", &[]);
 
     let r1 = set_torque(&conn, true, now_ns() + 50_000_000);
     assert_eq!(r1, 0, "enable must return 0, got {r1}");
 
     let r2 = set_torque(&conn, false, 1);
-    assert_eq!(r2, -311, "disable-in-past must return -311, got {r2}");
+    assert_eq!(r2, 0, "disable with past not-before must ack 0, got {r2}");
 
-    let mut child = guard.defuse();
-    wait_for_exit(&mut child, Instant::now() + Duration::from_secs(4));
+    thread::sleep(Duration::from_millis(200));
+
+    let r3 = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(
+        r3, 0,
+        "re-enable after past disable executed must return 0 (gate Parked), got {r3}"
+    );
+
+    drop(conn);
+    let _ = guard.defuse().wait();
     let _ = std::fs::remove_file(&path);
 }
 
