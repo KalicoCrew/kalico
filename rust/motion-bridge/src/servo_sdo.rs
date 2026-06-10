@@ -8,6 +8,8 @@ use kalico_protocol::messages::{
     MessageKind, SdoRead, SdoReadResponse, SdoWrite, SdoWriteResponse,
 };
 
+/// Mailbox round trips take milliseconds; 5 s also covers the probe +
+/// readback-verify a single SdoWrite performs endpoint-side.
 const SDO_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn send_sdo_read(

@@ -848,9 +848,26 @@ impl PyMotionBridge {
 
     fn sdo_read(&self, mcu_handle: u32, index: u16, subindex: u8) -> PyResult<(u8, u32)> {
         let conn = self.ethercat_conn(mcu_handle, "sdo_read")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_sdo_read",
+            mcu_handle,
+            index,
+            subindex,
+            "servo SDO read"
+        );
         let r = crate::servo_sdo::send_sdo_read(&conn, index, subindex)
             .map_err(PyRuntimeError::new_err)?;
         if r.result != 0 {
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_sdo_read_failed",
+                mcu_handle,
+                index,
+                subindex,
+                result = r.result,
+                "servo SDO read failed"
+            );
             return Err(PyRuntimeError::new_err(format!(
                 "SDO read 0x{index:04x}.{subindex}: {}",
                 crate::servo_sdo::failure_text(r.result)
@@ -887,13 +904,15 @@ impl PyMotionBridge {
                 mcu_handle,
                 index,
                 subindex,
+                size,
                 value,
                 result = r.result,
                 "servo SDO write failed"
             );
             let readback = u32::from_le_bytes(r.readback_data);
             return Err(PyRuntimeError::new_err(format!(
-                "SDO write 0x{index:04x}.{subindex} = {value}: {} (drive reports raw 0x{readback:x})",
+                "SDO write 0x{index:04x}.{subindex} = {value} (size {size}): {} \
+                 (drive reports raw 0x{readback:x})",
                 crate::servo_sdo::failure_text(r.result)
             )));
         }
