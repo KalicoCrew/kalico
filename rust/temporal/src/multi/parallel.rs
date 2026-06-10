@@ -67,14 +67,23 @@ pub(crate) fn fan_out_solves(
         match r {
             Ok(profile) => {
                 let success = is_success(profile.status);
-                // Always sync v_start/v_end to the actual profile endpoints so
-                // the forward/reverse sweeps propagate the achieved velocity
-                // even on infeasible solves.
-                if let Some(first) = profile.samples.first() {
-                    states[idx].v_start = first.v;
+                // Sync junction velocities to the actual profile endpoints so
+                // the sweeps propagate the achieved velocity even on infeasible
+                // solves — but never the pinned batch boundaries: overwriting
+                // chain 0's v_start with an infeasible solve's garbage primal
+                // silently replans a different boundary state (and ends in the
+                // v_start=0-with-pinned-a_start hard error downstream).
+                let start_is_pinned_boundary = idx == 0;
+                let end_is_pinned_boundary = idx + 1 == n_chains;
+                if !start_is_pinned_boundary {
+                    if let Some(first) = profile.samples.first() {
+                        states[idx].v_start = first.v;
+                    }
                 }
-                if let Some(last) = profile.samples.last() {
-                    states[idx].v_end = last.v;
+                if !end_is_pinned_boundary {
+                    if let Some(last) = profile.samples.last() {
+                        states[idx].v_end = last.v;
+                    }
                 }
                 states[idx].profile = Some(profile);
                 if success {

@@ -23,6 +23,20 @@ fn straight_chain() -> ChainGrid {
     ChainGrid::from_segment_grids(vec![grid], vec![limits()])
 }
 
+/// 1 mm straight segment — far too short to decelerate from 500 mm/s to rest
+/// under a_max = 5 000 mm/s² (stopping distance ≈ 25 mm), so every SOCP call
+/// is infeasible and the solver returns a garbage-primal profile.
+fn short_straight_chain() -> ChainGrid {
+    let curve = VectorNurbs::<f64, 3>::try_new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+    )
+    .unwrap();
+    let grid = sample_arclength_grid(&curve, 20).unwrap();
+    ChainGrid::from_segment_grids(vec![grid], vec![limits()])
+}
+
 #[test]
 fn fan_out_processes_all_dirty() {
     let chains: Vec<ChainGrid> = (0..4).map(|_| straight_chain()).collect();
@@ -70,4 +84,48 @@ fn pinned_both_endpoints_returns_failed_status_unmodified() {
          must return a non-success status, got {:?}",
         profile.status,
     );
+}
+
+/// Regression test for the boundary-clobber bug: when chain 0's SOCP is
+/// infeasible (segment too short to carry the pinned v_start), the solver
+/// returns a garbage-primal profile whose first sample has v ≈ 0.  The old
+/// code unconditionally synced states[0].v_start to that garbage value.  On
+/// the immediately-following re-solve (dirty stays true after infeasible),
+/// schedule_chain_with_tolerance rejected v_start ≈ 0 + a_start = Some(...)
+/// with InvalidEndpointAccel, crashing the planner.
+///
+/// The fix guards the sync: chain 0's v_start is a pinned batch boundary and
+/// must never be overwritten regardless of the solve outcome.
+#[test]
+fn pinned_v_start_not_overwritten_by_infeasible_chain0_solve() {
+    const PINNED_V_START: f64 = 500.0;
+    const PINNED_A_START: f64 = 50.0;
+
+    let chain = short_straight_chain();
+    let mut states = vec![ChainState {
+        v_start: PINNED_V_START,
+        v_end: 0.0,
+        a_start: Some(PINNED_A_START),
+        profile: None,
+        dirty: true,
+    }];
+
+    // First solve: infeasible because 1 mm cannot carry 500 mm/s.  The old
+    // code would overwrite v_start with the garbage primal's first sample.
+    fan_out_solves(&[chain.clone()], &mut states, 1)
+        .expect("fan_out_solves must not return BatchError on infeasible profile");
+
+    assert_eq!(
+        states[0].v_start, PINNED_V_START,
+        "chain 0's pinned v_start must be unchanged after an infeasible solve; \
+         got {} instead of {}",
+        states[0].v_start, PINNED_V_START,
+    );
+
+    // After an infeasible solve dirty stays true, so a second call re-solves.
+    // With the bug, v_start was now ≈ 0 while a_start = Some(...), which
+    // triggers InvalidEndpointAccel("a_start requires v_start > 0 ...") and
+    // propagates as BatchError::Segment.
+    fan_out_solves(&[chain], &mut states, 1)
+        .expect("second fan_out_solves must not return InvalidEndpointAccel after the first");
 }
