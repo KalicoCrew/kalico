@@ -63,11 +63,14 @@ if git rev-parse --abbrev-ref "$BRANCH" >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Pull + build on the Pi: F401 firmware AND the host-side pyo3 cdylib.
-#    klippy imports klippy/motion_bridge_native.so — a stale cdylib against new
-#    klippy Python crashes at runtime (AttributeError on new bridge methods).
+# 1. Pull + build on the Pi: F401 firmware, the host-side pyo3 cdylib, AND the
+#    EtherCAT endpoint. klippy imports klippy/motion_bridge_native.so — a stale
+#    cdylib against new klippy Python crashes at runtime (AttributeError on new
+#    bridge methods). klippy also spawns rust/target/release/kalico-ethercat-rt —
+#    a stale endpoint silently drops wire messages it predates (host-side
+#    transport timeout instead of an error).
 # ---------------------------------------------------------------------------
-say "Pulling $BRANCH and building F401 firmware + motion-bridge cdylib on the Pi..."
+say "Pulling $BRANCH and building F401 firmware + motion-bridge cdylib + ethercat endpoint on the Pi..."
 pi bash -se <<EOF || die "pull/build failed"
 set -euo pipefail
 cd $REPO
@@ -81,7 +84,13 @@ ls -l out/klipper.bin
 make -f Makefile.kalico motion-bridge -j\$(nproc)
 test -f klippy/motion_bridge_native.so || { echo "ERROR: motion_bridge_native.so missing after build"; exit 1; }
 ls -l klippy/motion_bridge_native.so
+make -f Makefile.kalico ethercat-endpoint-hw
+test -f rust/target/release/kalico-ethercat-rt || { echo "ERROR: kalico-ethercat-rt missing after build"; exit 1; }
+ls -l rust/target/release/kalico-ethercat-rt
 EOF
+
+say "Re-applying capabilities to the EtherCAT endpoint (raw sockets, RT prio)..."
+pisudo "setcap cap_net_raw,cap_sys_nice,cap_ipc_lock+ep ~dderg/kalico/rust/target/release/kalico-ethercat-rt"
 
 # ---------------------------------------------------------------------------
 # 2. Hold klippy down (Restart=no drop-in + disable the CH340 udev autostart).
