@@ -322,6 +322,7 @@ def run_simulation(
     verbose: bool = False,
     phase_stepping: bool = False,
     homing_test: bool = False,
+    motion_state_test: bool = False,
     serve: bool = False,
     serve_data_dir=None,
 ) -> SimResult:
@@ -614,6 +615,76 @@ def run_simulation(
                     },
                 )
 
+            if motion_state_test:
+                log.info("Motion-state test: move, then query mid-move state")
+
+                send_gcode(
+                    api_socket,
+                    "SET_KINEMATIC_POSITION X=150 Y=150 Z=100",
+                    timeout=10,
+                )
+                send_gcode(api_socket, "G4 P500", timeout=15)
+                send_gcode(api_socket, "G1 X170 F600", timeout=30)
+                send_gcode(api_socket, "M400", timeout=30)
+
+                offset = len(klippy_log.read_bytes())
+                resp = send_gcode(
+                    api_socket, "KALICO_SIM_MOTION_STATE T_AGO=1.0", timeout=15
+                )
+                out, offset = _log_tail_since(klippy_log, offset)
+                log.info("KALICO_SIM_MOTION_STATE: %s", out or resp)
+
+                klippy_content = (
+                    klippy_log.read_text(errors="replace")
+                    if klippy_log.exists()
+                    else ""
+                )
+
+                ms_error = None
+                if isinstance(resp, dict) and resp.get("error"):
+                    ms_error = f"KALICO_SIM_MOTION_STATE failed: {resp['error']}"
+                elif "shutdown:" in klippy_content.lower():
+                    for line in klippy_content.split("\n"):
+                        if "shutdown:" in line.lower():
+                            ms_error = f"MCU shutdown during motion-state test: {line.strip()}"
+                            break
+                else:
+                    m = re.search(
+                        r"x: pos=([0-9.eE+-]+) vel=([0-9.eE+-]+)", out
+                    )
+                    if not m:
+                        ms_error = f"no x-axis state in response: {out!r}"
+                    else:
+                        pos, vel = float(m.group(1)), float(m.group(2))
+                        if not (150.5 < pos < 169.5):
+                            ms_error = (
+                                "x pos %.4f not strictly interior to move span (150.5, 169.5) — endpoint clamp or wrong print_time?"
+                                % pos
+                            )
+                        elif vel <= 5.0:
+                            ms_error = (
+                                "x vel %.4f not strictly moving (expected > 5 mm/s mid-cruise) — query may have landed at rest"
+                                % vel
+                            )
+                success = ms_error is None
+                error = ms_error
+                wall_end = time.monotonic()
+                wall_time_s = wall_end - wall_start
+
+                return SimResult(
+                    success=success,
+                    print_time_s=0,
+                    wall_time_s=wall_time_s,
+                    speedup=0,
+                    error=error,
+                    klippy_log=klippy_content,
+                    mcu_logs={
+                        mcu.name: open(mcu.log_path).read()
+                        for mcu in mcus
+                        if pathlib.Path(mcu.log_path).exists()
+                    },
+                )
+
             if gcode_path:
                 gcode_name = gcode_path.name
                 resp = send_gcode(
@@ -699,8 +770,6 @@ G1 Z125 F300
             if print_time_s == 0:
                 try:
                     klippy_content = klippy_log.read_text(errors="replace")
-                    import re
-
                     for line in reversed(klippy_content.split("\n")):
                         m = re.search(r"print_time=(\d+\.?\d*)", line)
                         if m:
@@ -1928,6 +1997,11 @@ def main():
         help="Run [probe] / virtual endstop validation for one variant",
     )
     parser.add_argument(
+        "--test-motion-state",
+        action="store_true",
+        help="Move, then query mid-move commanded state via motion_state_at",
+    )
+    parser.add_argument(
         "--repo",
         type=str,
         default=str(REPO_ROOT),
@@ -1983,6 +2057,7 @@ def main():
             verbose=args.verbose,
             phase_stepping=args.phase_test,
             homing_test=args.homing_test,
+            motion_state_test=args.test_motion_state,
             serve=args.serve,
             serve_data_dir=args.data_dir,
         )

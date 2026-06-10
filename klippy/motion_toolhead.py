@@ -281,6 +281,11 @@ class MotionToolhead(ToolHead):
             desc="[sim] Drive a Linux-MCU GPIO level (test fixture)",
         )
         gcode.register_command(
+            "KALICO_SIM_MOTION_STATE",
+            self.cmd_KALICO_SIM_MOTION_STATE,
+            desc="[sim] Query commanded motion state at a past print_time",
+        )
+        gcode.register_command(
             "KALICO_DIAG_DUMP",
             self.cmd_KALICO_DIAG_DUMP,
             desc="Emit the live MCU diag snapshot (cause discriminators + "
@@ -900,6 +905,24 @@ class MotionToolhead(ToolHead):
             gcmd.respond_info(
                 "KALICO_DIAG_DUMP: no MCU exposes kalico_diag_dump"
             )
+
+    def cmd_KALICO_SIM_MOTION_STATE(self, gcmd):
+        print_time = gcmd.get_float("PRINT_TIME", None)
+        t_ago = gcmd.get_float("T_AGO", None)
+        if (print_time is None) == (t_ago is None):
+            raise gcmd.error("specify exactly one of PRINT_TIME or T_AGO")
+        if t_ago is not None:
+            print_time = self.get_last_move_time() - t_ago
+        if self.bridge is None:
+            raise gcmd.error("motion_bridge not available")
+        state = self.bridge.motion_state_at(self.mcu, print_time=print_time)
+        parts = [
+            "%s: pos=%.6f vel=%.6f accel=%.6f" % (name, p, v, a)
+            for name, (p, v, a) in sorted(state.items())
+        ]
+        gcmd.respond_info(
+            "motion_state @%.6f: %s" % (print_time, " | ".join(parts))
+        )
 
     def cmd_KALICO_SIM_STEP_COUNT(self, gcmd):
         oid = gcmd.get_int("OID", 0, minval=0)
