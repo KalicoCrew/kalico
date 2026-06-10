@@ -817,18 +817,7 @@ impl PyMotionBridge {
                  (init_planner not run?)"
             )));
         }
-        let conn = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("set_torque: unknown mcu_handle {mcu_handle}"))
-            })?;
-            mc.endpoint_conn.clone().ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "set_torque: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
-                    mc.label
-                ))
-            })?
-        };
+        let conn = self.ethercat_conn(mcu_handle, "set_torque")?;
         tracing::info!(
             subsystem = "bridge",
             event = "servo_torque_command",
@@ -855,6 +844,60 @@ impl PyMotionBridge {
             )));
         }
         Ok(())
+    }
+
+    fn sdo_read(&self, mcu_handle: u32, index: u16, subindex: u8) -> PyResult<(u8, u32)> {
+        let conn = self.ethercat_conn(mcu_handle, "sdo_read")?;
+        let r = crate::servo_sdo::send_sdo_read(&conn, index, subindex)
+            .map_err(PyRuntimeError::new_err)?;
+        if r.result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "SDO read 0x{index:04x}.{subindex}: {}",
+                crate::servo_sdo::failure_text(r.result)
+            )));
+        }
+        Ok((r.size, u32::from_le_bytes(r.data)))
+    }
+
+    fn sdo_write(
+        &self,
+        mcu_handle: u32,
+        index: u16,
+        subindex: u8,
+        size: u8,
+        value: i64,
+    ) -> PyResult<(u8, u32)> {
+        let conn = self.ethercat_conn(mcu_handle, "sdo_write")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_sdo_write",
+            mcu_handle,
+            index,
+            subindex,
+            size,
+            value,
+            "servo SDO write"
+        );
+        let r = crate::servo_sdo::send_sdo_write(&conn, index, subindex, size, value)
+            .map_err(PyRuntimeError::new_err)?;
+        if r.result != 0 {
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_sdo_write_failed",
+                mcu_handle,
+                index,
+                subindex,
+                value,
+                result = r.result,
+                "servo SDO write failed"
+            );
+            let readback = u32::from_le_bytes(r.readback_data);
+            return Err(PyRuntimeError::new_err(format!(
+                "SDO write 0x{index:04x}.{subindex} = {value}: {} (drive reports raw 0x{readback:x})",
+                crate::servo_sdo::failure_text(r.result)
+            )));
+        }
+        Ok((r.readback_size, u32::from_le_bytes(r.readback_data)))
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
@@ -2978,6 +3021,19 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_run.lock().unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    fn ethercat_conn(&self, mcu_handle: u32, what: &str) -> PyResult<Arc<UnixNativeConn>> {
+        let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+        let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("{what}: unknown mcu_handle {mcu_handle}"))
+        })?;
+        mc.endpoint_conn.clone().ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "{what}: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                mc.label
+            ))
+        })
     }
 
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
