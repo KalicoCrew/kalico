@@ -184,6 +184,9 @@ fn main() {
                         }
                     }
                 }
+                Command::SdoRead { .. } | Command::SdoWrite { .. } => {
+                    todo!("wired in the endpoint task")
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }

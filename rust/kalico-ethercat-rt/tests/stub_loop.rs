@@ -163,6 +163,9 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     }
                     Command::ClaimHandshake { .. } => {}
                     Command::SetTorque { .. } => {}
+                    Command::SdoRead { .. } | Command::SdoWrite { .. } => {
+                        todo!("wired in the endpoint task")
+                    }
                     Command::Unknown { .. } => {}
                 }
             }
@@ -181,6 +184,8 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     | Command::QueryRuntimeCaps { .. }
                     | Command::ClaimHandshake { .. }
                     | Command::SetTorque { .. }
+                    | Command::SdoRead { .. }
+                    | Command::SdoWrite { .. }
                     | Command::PushPieces { .. } => {}
                 }
             }
