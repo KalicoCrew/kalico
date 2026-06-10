@@ -70,6 +70,8 @@ struct McuConnection {
 
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
+const ETHERCAT_CLOCK_FREQ_HZ: u32 = 1_000_000_000;
+
 #[derive(Debug, thiserror::Error)]
 enum RuntimeCapsError {
     #[error("kalico_call QueryRuntimeCaps: {0}")]
@@ -862,22 +864,8 @@ impl PyMotionBridge {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let handle = router.claim_mcu(label);
         let raw = handle.raw();
-        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
-            raw,
-            McuConnection {
-                label: label.to_owned(),
-                serial_path: String::new(),
-                baud: 0,
-                host_io: None,
-                runtime_rx: None,
-                runtime_caps: None,
-                identify_caps: 0,
-                kalico_native_supported: true,
-                ethercat_socket: Some(socket_path.to_owned()),
-                endpoint_process: Some(child),
-                endpoint_conn: Some(Arc::new(conn)),
-            },
-        );
+        drop(router);
+        self.register_ethercat_mcu(raw, label, socket_path, child, conn);
         Ok(raw)
     }
 
@@ -2471,10 +2459,9 @@ impl PyMotionBridge {
             let now_ns = crate::motion_node::monotonic_ns();
             for &mcu_id in &ethercat_mcu_ids {
                 let mcu_h = mcu_handle_from_raw(mcu_id);
-                // freq=1e9: EtherCAT timestamps are CLOCK_MONOTONIC_RAW nanoseconds.
                 let _ = router.set_clock_est_from_sample(
                     mcu_h,
-                    1_000_000_000.0_f64,
+                    f64::from(ETHERCAT_CLOCK_FREQ_HZ),
                     Instant::now(),
                     now_ns,
                 );
@@ -3687,6 +3674,38 @@ impl PyMotionBridge {
                 let _ = run.notify.send(outcome);
             })
             .expect("spawn homing-trip-handler");
+    }
+}
+
+impl PyMotionBridge {
+    fn register_ethercat_mcu(
+        &self,
+        raw: u32,
+        label: &str,
+        socket_path: &str,
+        child: std::process::Child,
+        conn: UnixNativeConn,
+    ) {
+        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            raw,
+            McuConnection {
+                label: label.to_owned(),
+                serial_path: String::new(),
+                baud: 0,
+                host_io: None,
+                runtime_rx: None,
+                runtime_caps: None,
+                identify_caps: 0,
+                kalico_native_supported: true,
+                ethercat_socket: Some(socket_path.to_owned()),
+                endpoint_process: Some(child),
+                endpoint_conn: Some(Arc::new(conn)),
+            },
+        );
+        self.nominal_clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(raw, ETHERCAT_CLOCK_FREQ_HZ);
     }
 }
 
