@@ -42,4 +42,19 @@ fn c0006_matches_hand_calculation() {
     let expect = (j_total - rotor) / rotor * 100.0;
     let got = c0006_recommendation(0.0123, 1.27, 40.0, rotor);
     assert!((got - expect).abs() < 1e-9, "{got} vs {expect}");
+    assert!((got - 269.69).abs() < 0.01, "independent pin: {got}");
+}
+
+#[test]
+fn renders_integer_valued_floats_as_toml_floats() {
+    let p = PhysicalParams {
+        mass: vec![vec![2.0]],
+        viscous: vec![0.0],
+        coulomb_fwd: vec![1.0],
+        coulomb_rev: vec![-1.0],
+    };
+    let toml_text = render_profile(&p, &["x"], &[1.0]);
+    assert!(toml_text.contains("mass = [[2.0]]"), "{toml_text}");
+    assert!(toml_text.contains("viscous = [0.0]"), "{toml_text}");
+    assert!(toml_text.contains("fit_rms_residual = [1.0]"), "{toml_text}");
 }

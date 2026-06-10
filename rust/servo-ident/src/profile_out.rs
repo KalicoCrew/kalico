@@ -1,19 +1,30 @@
 use crate::model::{PhysicalParams, COULOMB_DEADBAND_MM_S};
 
+fn fmt_float(x: f64) -> String {
+    assert!(x.is_finite(), "profile value must be finite, got {x}");
+    let s = format!("{x}");
+    if s.contains(['.', 'e', 'E']) {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
 pub fn render_profile(p: &PhysicalParams, axes: &[&str], rms_residual: &[f64]) -> String {
     let fmt_vec = |v: &[f64]| {
-        let inner: Vec<String> = v.iter().map(|x| format!("{x}")).collect();
+        let inner: Vec<String> = v.iter().map(|&x| fmt_float(x)).collect();
         format!("[{}]", inner.join(", "))
     };
     let mass_rows: Vec<String> = p.mass.iter().map(|row| fmt_vec(row)).collect();
     let axes_q: Vec<String> = axes.iter().map(|a| format!("\"{a}\"")).collect();
     format!(
-        "version = 1\naxes = [{}]\nmass = [{}]\nviscous = {}\ncoulomb_fwd = {}\ncoulomb_rev = {}\ncoulomb_deadband_mm_s = {COULOMB_DEADBAND_MM_S}\nfit_rms_residual = {}\n",
+        "version = 1\naxes = [{}]\nmass = [{}]\nviscous = {}\ncoulomb_fwd = {}\ncoulomb_rev = {}\ncoulomb_deadband_mm_s = {}\nfit_rms_residual = {}\n",
         axes_q.join(", "),
         mass_rows.join(", "),
         fmt_vec(&p.viscous),
         fmt_vec(&p.coulomb_fwd),
         fmt_vec(&p.coulomb_rev),
+        fmt_float(COULOMB_DEADBAND_MM_S),
         fmt_vec(rms_residual),
     )
 }
