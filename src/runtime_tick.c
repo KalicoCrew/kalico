@@ -177,7 +177,8 @@ DECL_INIT(runtime_init);
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
 #define KALICO_FAST_STATUS_MAX_AXES 8
-#define KALICO_FAST_STATUS_RING_OCCUPANCY 4
+#define KALICO_FAST_STATUS_RETIREMENT_MIN_TICKS \
+    ((uint32_t)((CONFIG_CLOCK_FREQ) / 100))
 
 void
 runtime_drain(void)
@@ -219,9 +220,7 @@ runtime_drain(void)
         }
     }
 
-    // Fresh nonzero last_error → emit + Klipper shutdown. shutdown() is safe in
-    // foreground (DECL_TASK) but NOT from ISR. last_acted_error suppresses
-    // re-emit on the post-longjmp trailing pass.
+    // shutdown() is safe in foreground (DECL_TASK) but NOT from ISR.
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
@@ -246,28 +245,26 @@ runtime_drain(void)
 
     {
         static uint32_t last_retired_seen[KALICO_FAST_STATUS_MAX_AXES];
-        uint32_t occ[KALICO_FAST_STATUS_MAX_AXES];
         uint32_t retired[KALICO_FAST_STATUS_MAX_AXES];
         uint8_t st = 0;
         uint16_t fc = 0;
-        int32_t no = kalico_runtime_get_occupancy(runtime_handle, occ,
-                                                  KALICO_FAST_STATUS_MAX_AXES);
         int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
                                                   retired,
                                                   KALICO_FAST_STATUS_MAX_AXES);
-        if (no > 0 && nr > 0) {
-            int32_t n = no < nr ? no : nr;
-            uint8_t emit = 0;
-            for (int32_t i = 0; i < n; i++) {
+        static uint8_t pending_advance;
+        if (nr > 0) {
+            for (int32_t i = 0; i < nr; i++) {
                 if (retired[i] != last_retired_seen[i]) {
-                    if (occ[i] <= KALICO_FAST_STATUS_RING_OCCUPANCY)
-                        emit = 1;
+                    pending_advance = 1;
                     last_retired_seen[i] = retired[i];
                 }
             }
-            if (emit) {
+            uint32_t elapsed = cur_time - last_status_emit_time;
+            if (pending_advance
+                && elapsed >= KALICO_FAST_STATUS_RETIREMENT_MIN_TICKS) {
                 send_status_heartbeat();
-                last_status_emit_time = timer_read_time();
+                last_status_emit_time = cur_time;
+                pending_advance = 0;
             }
         }
     }

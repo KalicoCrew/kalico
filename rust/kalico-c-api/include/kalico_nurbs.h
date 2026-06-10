@@ -52,6 +52,8 @@ int32_t kalico_runtime_discard_pending(kalico_nurbs_KalicoRuntime *rt);
 
 uint32_t kalico_runtime_enqueue_success_lo(kalico_nurbs_KalicoRuntime *rt);
 
+int32_t kalico_runtime_gate_pieces(kalico_nurbs_KalicoRuntime *rt);
+
 double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
 
 float kalico_runtime_get_axis_motor(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
@@ -121,6 +123,8 @@ int32_t kalico_runtime_set_stepper_offset(kalico_nurbs_KalicoRuntime *rt,
 int32_t kalico_runtime_stream_flush(kalico_nurbs_KalicoRuntime *rt, uint32_t *out_credit_epoch);
 
 void kalico_runtime_tick_sample(kalico_nurbs_KalicoRuntime *rt);
+
+int32_t kalico_runtime_ungate_pieces(kalico_nurbs_KalicoRuntime *rt);
 
 int32_t kalico_runtime_write_piece(kalico_nurbs_KalicoRuntime *rt,
                                    uint8_t axis_idx,
