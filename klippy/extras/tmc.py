@@ -6,7 +6,8 @@
 import collections
 import logging
 
-from klippy import stepper
+from klippy import pins, stepper
+from klippy.bridge_endstop import BridgeEndstop, allocate_provider_id
 
 ######################################################################
 # Field helpers
@@ -283,12 +284,6 @@ class TMCCommandHelper:
         self._post_enable_cb = None
         self.stepper_enable = self.printer.load_object(config, "stepper_enable")
         self.printer.register_event_handler(
-            "stepper:sync_mcu_position", self._handle_sync_mcu_pos
-        )
-        self.printer.register_event_handler(
-            "stepper:set_sdir_inverted", self._handle_sync_mcu_pos
-        )
-        self.printer.register_event_handler(
             "klippy:mcu_identify", self._handle_mcu_identify
         )
         self.printer.register_event_handler(
@@ -417,46 +412,11 @@ class TMCCommandHelper:
                 % (prev_cur, prev_hold_cur, prev_home_cur)
             )
 
-    # Stepper phase tracking
     def _get_phases(self):
         return (256 >> self.fields.get_field("mres")) * 4
 
     def get_phase_offset(self):
         return self.mcu_phase_offset, self._get_phases()
-
-    def _query_phase(self):
-        field_name = "mscnt"
-        if self.fields.lookup_register(field_name, None) is None:
-            # TMC2660 uses MSTEP
-            field_name = "mstep"
-        reg = self.mcu_tmc.get_register(self.fields.lookup_register(field_name))
-        return self.fields.get_field(field_name, reg)
-
-    def _handle_sync_mcu_pos(self, stepper):
-        if stepper.get_name() != self.stepper_name:
-            return
-        try:
-            driver_phase = self._query_phase()
-        except self.printer.command_error as e:
-            logging.info("Unable to obtain tmc %s phase", self.stepper_name)
-            self.mcu_phase_offset = None
-            enable_line = self.stepper_enable.lookup_enable(self.stepper_name)
-            if enable_line.is_motor_enabled():
-                raise
-            return
-        if not stepper.get_dir_inverted()[0]:
-            driver_phase = 1023 - driver_phase
-        phases = self._get_phases()
-        phase = int(float(driver_phase) / 1024 * phases + 0.5) % phases
-        moff = (phase - stepper.get_mcu_position()) % phases
-        if self.mcu_phase_offset is not None and self.mcu_phase_offset != moff:
-            logging.warning(
-                "Stepper %s phase change (was %d now %d)",
-                self.stepper_name,
-                self.mcu_phase_offset,
-                moff,
-            )
-        self.mcu_phase_offset = moff
 
     # Stepper enable/disable tracking
     def _do_enable(self, print_time):
@@ -467,25 +427,8 @@ class TMCCommandHelper:
             self._init_registers()
             if self._post_enable_cb is not None:
                 self._post_enable_cb()
-            if self._post_enable_cb is not None:
-                did_reset = False
-            else:
-                did_reset = self.echeck_helper.start_checks()
-            if did_reset:
-                self.mcu_phase_offset = None
-            # Calculate phase offset
-            if self.mcu_phase_offset is not None:
-                return
-            gcode = self.printer.lookup_object("gcode")
-            with gcode.get_mutex():
-                if self.mcu_phase_offset is not None:
-                    return
-                logging.info(
-                    "Pausing toolhead to calculate %s phase offset",
-                    self.stepper_name,
-                )
-                self.printer.lookup_object("toolhead").wait_moves()
-                self._handle_sync_mcu_pos(self.stepper)
+            if self._post_enable_cb is None:
+                self.echeck_helper.start_checks()
         except (self.printer.command_error, RuntimeError) as e:
             self.printer.invoke_shutdown(
                 "TMC %s _do_enable failed: %s" % (self.stepper_name, e)
@@ -540,19 +483,8 @@ class TMCCommandHelper:
             self._init_registers()
             if self._post_enable_cb is not None:
                 self._post_enable_cb()
-            if self._post_enable_cb is not None:
-                did_reset = False
-            else:
-                did_reset = self.echeck_helper.start_checks()
-            if did_reset:
-                self.mcu_phase_offset = None
-            if self.mcu_phase_offset is not None:
-                return
-            logging.info(
-                "Calculating %s phase offset (bridge mode, inline)",
-                self.stepper_name,
-            )
-            self._handle_sync_mcu_pos(self.stepper)
+            if self._post_enable_cb is None:
+                self.echeck_helper.start_checks()
         except (self.printer.command_error, RuntimeError) as e:
             self.printer.invoke_shutdown(
                 "TMC %s _do_enable_bridge failed: %s" % (self.stepper_name, e)
@@ -652,11 +584,9 @@ class TMCCommandHelper:
 ######################################################################
 
 
-# Helper class for "sensorless homing"
 class TMCVirtualPinHelper:
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
-        self.config_section = config
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
         if self.fields.lookup_register("diag0_stall") is not None:
@@ -672,38 +602,47 @@ class TMCVirtualPinHelper:
         self.mcu_endstop = None
         self.en_pwm = False
         self.pwmthrs = self.coolthrs = self.thigh = 0
-        # Register virtual_endstop pin
         name_parts = config.get_name().split()
         ppins = self.printer.lookup_object("pins")
         ppins.register_chip("%s_%s" % (name_parts[0], name_parts[-1]), self)
 
-    def setup_pin(self, pin_type, pin_params):
-        # Validate pin
-        ppins = self.printer.lookup_object("pins")
-        if pin_type != "endstop" or pin_params["pin"] != "virtual_endstop":
-            raise ppins.error("tmc virtual endstop only useful as endstop")
+    def setup_bridge_endstop(self, pin_params, axis):
+        if pin_params["pin"] != "virtual_endstop":
+            raise pins.error(
+                "tmc drivers only provide the virtual pin 'virtual_endstop',"
+                " not '%s'" % (pin_params["pin"],)
+            )
         if pin_params["invert"] or pin_params["pullup"]:
-            raise ppins.error("Can not pullup/invert tmc virtual pin")
+            raise pins.error("Can not pullup/invert tmc virtual endstop")
         if self.diag_pin is None:
-            raise ppins.error("tmc virtual endstop requires diag pin config")
-        # Setup for sensorless homing
-        self.printer.register_event_handler(
-            "homing:homing_move_begin", self.handle_homing_move_begin
-        )
-        self.printer.register_event_handler(
-            "homing:homing_move_end", self.handle_homing_move_end
-        )
-        self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
-        self.mcu_endstop._is_sensorless_diag = True
-        self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
-        self.mcu_endstop._sensorless_trip_immediately = (
-            self.config_section.getboolean("homing_trip_immediately", False)
-        )
+            raise pins.error("tmc virtual endstop requires diag pin config")
+        if self.mcu_endstop is None:
+            ppins = self.printer.lookup_object("pins")
+            diag_params = ppins.parse_pin(
+                self.diag_pin, can_invert=True, can_pullup=True
+            )
+            if not hasattr(diag_params["chip"], "create_oid"):
+                raise pins.error(
+                    "tmc diag pin '%s' must be a GPIO pin on an MCU"
+                    % (self.diag_pin,)
+                )
+            self.mcu_endstop = BridgeEndstop(
+                diag_params, allocate_provider_id(self.printer)
+            )
         return self.mcu_endstop
 
-    def handle_homing_move_begin(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
+    def trip_move_begin(self, entry):
+        self.arm()
+
+    def trip_move_end(self, entry):
+        self.disarm()
+
+    def arm(self):
+        if self.fields.lookup_register("sgthrs", None) is not None:
+            sg_val = self.fields.set_field(
+                "sgthrs", self.fields.get_field("sgthrs")
+            )
+            self.mcu_tmc.set_register("SGTHRS", sg_val)
         # Enable/disable stealthchop
         self.pwmthrs = self.fields.get_field("tpwmthrs")
         reg = self.fields.lookup_register("en_pwm_mode", None)
@@ -731,9 +670,7 @@ class TMCVirtualPinHelper:
             th_val = self.fields.set_field("thigh", 0)
             self.mcu_tmc.set_register(reg, th_val)
 
-    def handle_homing_move_end(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
+    def disarm(self):
         # Restore stealthchop/spreadcycle
         reg = self.fields.lookup_register("en_pwm_mode", None)
         if reg is None:

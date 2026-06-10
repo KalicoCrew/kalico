@@ -8,7 +8,6 @@ fn make_enqueue(key: AxisKey, pieces: Vec<(PieceEntry, f64)>, fresh_stream: bool
         pieces,
         fresh_stream,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: None,
     })
 }
 
@@ -234,7 +233,6 @@ fn flush_clears_queued_pieces_and_junctions() {
             .collect(),
         fresh_stream: true,
         lead_secs,
-        drip_cohort: None,
     }))
     .unwrap();
 
@@ -258,7 +256,6 @@ fn flush_clears_queued_pieces_and_junctions() {
         )],
         fresh_stream: false,
         lead_secs,
-        drip_cohort: None,
     }))
     .unwrap();
     {
@@ -333,7 +330,6 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
             .collect(),
         fresh_stream: true,
         lead_secs,
-        drip_cohort: None,
     }))
     .unwrap();
 
@@ -355,7 +351,6 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
         )],
         fresh_stream: false,
         lead_secs,
-        drip_cohort: None,
     }))
     .unwrap();
     {
@@ -400,6 +395,65 @@ fn flush_unknown_key_is_noop() {
     };
     tx.send(PumpMsg::Flush(vec![never_enqueued])).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn barrier_ack_means_flushed_axes_emit_nothing() {
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let sink = RecordingSink::new();
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+
+    tx.send(make_enqueue(
+        key,
+        (0..3).map(|i| make_piece(i as u64)).collect(),
+        false,
+    ))
+    .unwrap();
+    tx.send(PumpMsg::Flush(vec![key])).unwrap();
+    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+    tx.send(PumpMsg::Barrier(ack_tx)).unwrap();
+
+    let sink_clone = sink.clone();
+    let handle = std::thread::spawn(move || {
+        run_pump(rx, sink_clone, |_| 8, |_| None, |_| {}, |_, _| {}, |_| {});
+    });
+
+    ack_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("barrier must be acknowledged");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+
+    assert!(
+        sink.recorded().is_empty(),
+        "pieces flushed before the barrier must never reach the sink; got {:?}",
+        sink.recorded()
+    );
+}
+
+#[test]
+fn barrier_acks_on_idle_pump() {
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+    let handle = std::thread::spawn(move || {
+        run_pump(
+            rx,
+            RecordingSink::new(),
+            |_| 8,
+            |_| None,
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
+    });
+    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+    tx.send(PumpMsg::Barrier(ack_tx)).unwrap();
+    ack_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("barrier on an idle pump must ack promptly");
     tx.send(PumpMsg::Shutdown).unwrap();
     handle.join().unwrap();
 }

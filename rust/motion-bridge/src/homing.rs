@@ -168,6 +168,24 @@ pub fn reconstruct_axis_position(
     eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock).map_err(|e| e.to_string())
 }
 
+#[allow(clippy::implicit_hasher)]
+pub fn trajectory_final_position(
+    axis_key: AxisKey,
+    homing_traj: &Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>>,
+) -> Result<f64, String> {
+    let traj = homing_traj.lock().unwrap_or_else(|p| p.into_inner());
+    let pieces = traj
+        .get(&axis_key)
+        .ok_or_else(|| ReconstructError::NoTrajectoryPieces(axis_key).to_string())?;
+    let last = pieces.last().ok_or_else(|| {
+        format!(
+            "trajectory_final_position: piece list for axis {axis_key:?} is empty \
+             (populated during dispatch but now zero-length — broken invariant)"
+        )
+    })?;
+    Ok(last.coeffs[3] as f64)
+}
+
 pub fn broadcast_stop<S, F>(
     mcu_ids: &std::collections::HashSet<u32, S>,
     axis_mcu: u32,

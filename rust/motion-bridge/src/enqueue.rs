@@ -66,13 +66,24 @@ where
                     pieces,
                     fresh_stream,
                     lead_secs,
-                    drip_cohort: None,
                 });
             }
         }
     }
 
     out
+}
+
+fn is_constant_piece(coeffs: &[f64; 4]) -> bool {
+    coeffs[0].to_bits() == coeffs[1].to_bits()
+        && coeffs[1].to_bits() == coeffs[2].to_bits()
+        && coeffs[2].to_bits() == coeffs[3].to_bits()
+}
+
+struct MergedPiece {
+    coeffs: [f64; 4],
+    duration: f64,
+    curve_u_start: f64,
 }
 
 fn flatten_axis<P>(
@@ -88,9 +99,9 @@ where
     P: Fn(u32, f64) -> u64,
 {
     let bps = nurbs::bezier::extract_bezier_pieces(curve);
-    let mut out = Vec::with_capacity(bps.len());
+    let mut merged: Vec<MergedPiece> = Vec::with_capacity(bps.len());
 
-    for (piece_idx, bp) in bps.iter().enumerate() {
+    for bp in bps.iter() {
         let bern = bp.to_bernstein();
 
         assert!(
@@ -109,14 +120,35 @@ where
         }
 
         let duration = bp.u_end - bp.u_start;
-        let subs = match max_piece_secs {
-            Some(m) => subdivide_bernstein(coeffs_f64, duration, m),
-            None => vec![(coeffs_f64, duration)],
+
+        if is_constant_piece(&coeffs_f64) {
+            if let Some(last) = merged.last_mut() {
+                if is_constant_piece(&last.coeffs)
+                    && last.coeffs[0].to_bits() == coeffs_f64[0].to_bits()
+                {
+                    last.duration += duration;
+                    continue;
+                }
+            }
+        }
+        merged.push(MergedPiece {
+            coeffs: coeffs_f64,
+            duration,
+            curve_u_start: bp.u_start,
+        });
+    }
+
+    let mut out = Vec::with_capacity(merged.len() * 8);
+
+    for (piece_idx, mp) in merged.iter().enumerate() {
+        let subs: Vec<([f64; 4], f64)> = match max_piece_secs {
+            Some(m) => subdivide_bernstein(mp.coeffs, mp.duration, m),
+            None => vec![(mp.coeffs, mp.duration)],
         };
 
-        let mut offset = 0.0;
+        let mut sub_offset = 0.0_f64;
         for (sub_idx, (sub_coeffs, sub_dur)) in subs.iter().enumerate() {
-            let host_secs = t0 + bp.u_start + offset;
+            let host_secs = t0 + mp.curve_u_start + sub_offset;
             let start_time = project(mcu_id, host_secs);
 
             let mut coeffs = [0.0_f32; 4];
@@ -131,7 +163,7 @@ where
                 axis = axis_idx,
                 piece_idx,
                 sub_idx,
-                u_start = bp.u_start,
+                u_start = host_secs - t0,
                 margin_us,
                 start_ns = start_time,
                 "[dispatch-margin]"
@@ -147,7 +179,7 @@ where
                 host_secs,
             ));
 
-            offset += sub_dur;
+            sub_offset += sub_dur;
         }
     }
 
@@ -160,10 +192,6 @@ pub fn subdivide_bernstein(
     max_piece_secs: f64,
 ) -> Vec<([f64; 4], f64)> {
     if duration <= max_piece_secs {
-        return vec![(coeffs, duration)];
-    }
-    let c0 = coeffs[0];
-    if coeffs.iter().all(|&c| (c - c0).abs() <= 1e-9) {
         return vec![(coeffs, duration)];
     }
     let n = (duration / max_piece_secs).ceil() as usize;
