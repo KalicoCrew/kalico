@@ -6,6 +6,7 @@
 import logging
 import math
 
+from .. import structured_log
 from . import tmc, tmc2130
 
 TMC_FREQUENCY = 12000000.0
@@ -575,12 +576,14 @@ class TMC5160:
         coil_b = int(round(248.0 * math.sin(angle)))
         xdirect_val = ((coil_b & 0xFFFF) << 16) | (coil_a & 0xFFFF)
         self.mcu_tmc.set_register("XTARGET", xdirect_val)
-        logging.info(
-            "TMC5160 XDIRECT preload: mscnt=%d coil_a=%d coil_b=%d raw=0x%08x",
-            mscnt,
-            coil_a,
-            coil_b,
-            xdirect_val,
+        structured_log.event(
+            "phase_stepping",
+            "xdirect_preload",
+            msg="XDIRECT preload",
+            stepper=self.name,
+            mscnt=mscnt,
+            coil_a=coil_a,
+            coil_b=coil_b,
         )
         state = self._query_phase_state()
         self._phase_axis_idx = state["axis_idx"]
@@ -596,7 +599,14 @@ class TMC5160:
         # fix the arbitration; until then, suppress the checks.
         self._echeck_helper.stop_checks()
         self._phase_mode_active = True
-        logging.info("TMC5160 %s: phase mode entered", self.name)
+        structured_log.event(
+            "phase_stepping",
+            "enter",
+            msg="phase mode entered",
+            stepper=self.name,
+            axis_idx=self._phase_axis_idx,
+            mscnt=mscnt,
+        )
 
     def exit_phase_mode(self):
         if not self._phase_mode_active:
@@ -609,6 +619,14 @@ class TMC5160:
         )
         state = self._query_phase_state()
         if state["mode"] != 1:
+            structured_log.event(
+                "phase_stepping",
+                "mode_desync",
+                level=logging.ERROR,
+                msg="phase mode bookkeeping desync",
+                stepper=self.name,
+                mcu_mode=state["mode"],
+            )
             raise self.printer.command_error(
                 "phase mode bookkeeping desync on %s: host=phase mcu=%d"
                 % (self.name, state["mode"])
@@ -627,6 +645,15 @@ class TMC5160:
             if state["settled"] and state["phase"] == self._cached_mscnt:
                 break
             if reactor.monotonic() > deadline:
+                structured_log.event(
+                    "phase_stepping",
+                    "jog_timeout",
+                    level=logging.ERROR,
+                    msg="phase handover jog did not settle",
+                    stepper=self.name,
+                    phase=state["phase"],
+                    target=self._cached_mscnt,
+                )
                 raise self.printer.command_error(
                     "phase handover jog did not settle on %s "
                     "(phase=%d target=%d)"
@@ -641,8 +668,13 @@ class TMC5160:
         set_axis_mode.send([self._phase_axis_idx, 0])
         self._echeck_helper.start_checks()
         self._phase_mode_active = False
-        logging.info(
-            "TMC5160 %s: phase mode exited (pulse stepping)", self.name
+        structured_log.event(
+            "phase_stepping",
+            "exit",
+            msg="phase mode exited (pulse stepping)",
+            stepper=self.name,
+            axis_idx=self._phase_axis_idx,
+            mscnt=self._cached_mscnt,
         )
 
     def get_phase_config(self):
