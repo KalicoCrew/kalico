@@ -27,7 +27,7 @@ fn linear_segment(x_start: f64, x_end: f64, t_start: f64, t_end: f64) -> FittedS
 }
 
 #[test]
-fn pad_single_segment_extends_with_constants() {
+fn pad_single_segment_extends_left_by_velocity_right_by_constant() {
     let fitted = vec![linear_segment(0.0, 10.0, 0.0, 1.0)];
     let t_sm_half = 0.1;
 
@@ -52,12 +52,22 @@ fn pad_single_segment_extends_with_constants() {
         pieces.last().unwrap().u_end
     );
 
-    let left_val = pieces[0].evaluate(pieces[0].u_start);
+    // The left pad is a constant-velocity continuation of the entry motion (slope 10 through
+    // position 0 at the t=0 seam), NOT a constant-position hold: holding position injects a
+    // phantom velocity step that the shaper convolves into a spurious acceleration spike.
+    let left = &pieces[0];
     assert!(
-        left_val.abs() < 1e-10,
-        "left pad should hold 0.0, got {left_val}"
+        left.evaluate(0.0).abs() < 1e-9,
+        "left pad must meet the segment start at position 0, got {}",
+        left.evaluate(0.0),
+    );
+    let left_slope = left.differentiate().evaluate(left.u_start);
+    assert!(
+        (left_slope - 10.0).abs() < 1e-6,
+        "left pad must continue at the entry velocity 10, got slope {left_slope}",
     );
 
+    // The trailing edge faces an unknown future, so it still holds the end position constant.
     let right_val = pieces
         .last()
         .unwrap()

@@ -190,10 +190,17 @@ fn collect_left_padding(
     }
 
     if cursor > pad_target {
-        let start_val = first_axis_value(seg_idx, axis, fitted);
+        let (t0, start_val, start_slope) = first_axis_boundary(seg_idx, axis, fitted);
         let ext_start = pad_target.max(batch_t_start - t_sm_half);
         if cursor > ext_start {
-            pieces.push(constant_piece(start_val, ext_start, cursor, target_degree));
+            let value_at_ext_start = start_val + start_slope * (ext_start - t0);
+            pieces.push(linear_piece(
+                value_at_ext_start,
+                start_slope,
+                ext_start,
+                cursor,
+                target_degree,
+            ));
         }
     }
 
@@ -331,14 +338,36 @@ fn find_halos_in_range(e_halos: &[EHalo], t_lo: f64, t_hi: f64) -> Vec<&EHalo> {
         .collect()
 }
 
-fn first_axis_value(seg_idx: usize, axis: usize, fitted: &[FittedSegment]) -> f64 {
+fn first_axis_boundary(seg_idx: usize, axis: usize, fitted: &[FittedSegment]) -> (f64, f64, f64) {
     for i in (0..=seg_idx).rev() {
         let pieces = extract_bezier_pieces(&fitted[i].axes[axis]);
         if let Some(first) = pieces.first() {
-            return first.evaluate(first.u_start);
+            let t0 = first.u_start;
+            let value = first.evaluate(t0);
+            let slope = first.differentiate().evaluate(t0);
+            return (t0, value, slope);
         }
     }
-    0.0
+    (fitted[seg_idx].t_start, 0.0, 0.0)
+}
+
+fn linear_piece(
+    value_at_start: f64,
+    slope: f64,
+    t_start: f64,
+    t_end: f64,
+    degree: usize,
+) -> BezierPiece<f64> {
+    let mut coeffs = vec![0.0; degree + 1];
+    coeffs[0] = value_at_start;
+    if degree >= 1 {
+        coeffs[1] = slope;
+    }
+    BezierPiece {
+        u_start: t_start,
+        u_end: t_end,
+        coeffs,
+    }
 }
 
 fn last_axis_value(seg_idx: usize, axis: usize, fitted: &[FittedSegment]) -> f64 {
