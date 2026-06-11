@@ -165,8 +165,8 @@ struct ActiveCapture {
 
 /// All file I/O runs on one persistent `capture-io` thread, spawned once.
 /// The DC thread's start/push/stop are channel operations only: file opens,
-/// writes, fsync, and rename stall for SD-card eternities (100+ ms), and any
-/// >~3 ms pause in cyclic frames trips the drive's sync-error counter
+/// writes, fsync, and rename stall for SD-card eternities (100+ ms), and a
+/// pause in cyclic frames beyond ~3 ms trips the drive's sync-error counter
 /// (ErC1.1 / AL 0x001a). Thread creation is banned on the DC thread for the
 /// same reason — under mlockall(MCL_FUTURE) a pthread spawn prefaults and
 /// locks the new stack, which is milliseconds by itself.

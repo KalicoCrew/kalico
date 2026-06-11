@@ -59,8 +59,7 @@ def find_named_steps(captures_dir, step_names):
         matches = [p for p in glob.glob(pattern) if STEP_RE.search(p)]
         if not matches:
             raise SystemExit(
-                "sweep step %r has no capture in %s"
-                % (name, captures_dir)
+                "sweep step %r has no capture in %s" % (name, captures_dir)
             )
         path = max(matches)
         files.append((gains_from_name(path), path))
@@ -204,7 +203,9 @@ def render(steps, out_path):
     spec_ax.axvspan(*RESONANCE_BAND_HZ, alpha=0.06, color="red")
     spec_ax.set_xlabel("Hz")
     spec_ax.set_ylabel("ferr amplitude (um)")
-    spec_ax.set_title("Cruise following-error spectrum (red band: resonance watch)")
+    spec_ax.set_title(
+        "Cruise following-error spectrum (red band: resonance watch)"
+    )
     spec_ax.legend(fontsize=8)
     spec_ax.grid(True, which="both", alpha=0.3)
     time_ax.set_xlabel("s into cruise")
@@ -272,11 +273,15 @@ def recommend(steps):
     best_err = min(m["ferr_std_um"] for _, m in clean)
     good = [(g, m) for g, m in clean if m["ferr_std_um"] <= best_err * 1.3]
     gains, _ = max(good, key=lambda gm: gm[0][1])
-    note = "highest gain whose cruise error stays within 30%% of the best (%.0f um)" % best_err
+    note = (
+        "highest gain whose cruise error stays within 30%% of the best (%.0f um)"
+        % best_err
+    )
     rejected = [
         (g, m)
         for g, m in steps
-        if g[1] > gains[1] and (m["resonant"] or m["ferr_std_um"] > best_err * 1.3)
+        if g[1] > gains[1]
+        and (m["resonant"] or m["ferr_std_um"] > best_err * 1.3)
     ]
     if rejected:
         worst = rejected[0]
@@ -285,14 +290,19 @@ def recommend(steps):
             if worst[1]["resonant"]
             else "cruise error degraded to %.0f um" % worst[1]["ferr_std_um"]
         )
-        note += "; ceiling: %.0f Hz step rejected (%s)" % (worst[0][1] / 10.0, why)
+        note += "; ceiling: %.0f Hz step rejected (%s)" % (
+            worst[0][1] / 10.0,
+            why,
+        )
     return gains, note
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("captures", nargs="*", help="explicit .scap files")
-    p.add_argument("--captures-dir", default="~/printer_data/logs/servo_captures")
+    p.add_argument(
+        "--captures-dir", default="~/printer_data/logs/servo_captures"
+    )
     p.add_argument("--tag", default="cal")
     p.add_argument(
         "--steps",
@@ -319,9 +329,7 @@ def main(argv=None):
             files.append((gains, path))
         files.sort(key=lambda kp: kp[0][1])
     elif args.steps:
-        files = find_named_steps(
-            args.captures_dir, args.steps.split(",")
-        )
+        files = find_named_steps(args.captures_dir, args.steps.split(","))
     else:
         files = find_sweep_files(args.captures_dir, args.tag)
     if not files:
@@ -341,7 +349,15 @@ def main(argv=None):
 
     print(
         "%-16s %7s %7s %7s %12s %8s %s"
-        % ("pos/spd/Ti", "lag ms", "err um", "low um", "res peak", "ovsh um", "resonant")
+        % (
+            "pos/spd/Ti",
+            "lag ms",
+            "err um",
+            "low um",
+            "res peak",
+            "ovsh um",
+            "resonant",
+        )
     )
     for gains, met in steps:
         print(

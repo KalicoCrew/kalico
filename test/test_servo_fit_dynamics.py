@@ -9,7 +9,9 @@ _SCRIPT = os.path.join(
     "scripts",
     "servo_fit_dynamics.py",
 )
-_spec = importlib.util.spec_from_file_location("servo_fit_dynamics_script", _SCRIPT)
+_spec = importlib.util.spec_from_file_location(
+    "servo_fit_dynamics_script", _SCRIPT
+)
 sfd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sfd)
 
@@ -52,7 +54,9 @@ def test_profile_name_carries_capture_timestamp(tmp_path):
 
 
 def test_ident_cmd_without_physical_params():
-    cmd = sfd.ident_cmd("/bin/servo-ident", "/tmp/c.csv", "node_x", "/o.toml", _args())
+    cmd = sfd.ident_cmd(
+        "/bin/servo-ident", "/tmp/c.csv", "node_x", "/o.toml", _args()
+    )
     assert cmd == [
         "/bin/servo-ident",
         "--capture",

@@ -29,14 +29,10 @@ SETTLE_HOLD_MS = 50
 
 
 def resolve_newest_capture(captures_dir, name):
-    pattern = os.path.join(
-        os.path.expanduser(captures_dir), name + "_*.scap"
-    )
+    pattern = os.path.join(os.path.expanduser(captures_dir), name + "_*.scap")
     matches = [p for p in glob.glob(pattern) if CAPTURE_TS_RE.search(p)]
     if not matches:
-        raise SystemExit(
-            "no capture named %r in %s" % (name, captures_dir)
-        )
+        raise SystemExit("no capture named %r in %s" % (name, captures_dir))
     return max(matches)
 
 
@@ -146,7 +142,9 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
     if "velocity_offset" in (data.dtype.names or ()):
         moving = (data["flags"] & FLAG_MOTION_ACTIVE) != 0
         metrics["ff_velocity_offset_max"] = int(
-            np.max(np.abs(data["velocity_offset"][moving])) if moving.any() else 0
+            np.max(np.abs(data["velocity_offset"][moving]))
+            if moving.any()
+            else 0
         )
         metrics["ff_torque_offset_max"] = int(
             np.max(np.abs(data["torque_offset"][moving])) if moving.any() else 0

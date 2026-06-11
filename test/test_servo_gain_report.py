@@ -8,7 +8,9 @@ _SCRIPT = os.path.join(
     "scripts",
     "servo_gain_report.py",
 )
-_spec = importlib.util.spec_from_file_location("servo_gain_report_script", _SCRIPT)
+_spec = importlib.util.spec_from_file_location(
+    "servo_gain_report_script", _SCRIPT
+)
 sgr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sgr)
 
