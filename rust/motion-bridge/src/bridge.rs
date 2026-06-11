@@ -137,6 +137,12 @@ fn message_for_claim_error(label: &str, interface: &str, e: &EndpointClaimError)
                 "ethercat {label}: EtherCAT bus on {interface}: no slaves responding \
                  (bringup rc=-{fault_code}) — check cable and drive power, then FIRMWARE_RESTART"
             ),
+            // 10/11/12 are host-side RT-acquisition failures, not the drive.
+            10 | 11 | 12 => format!(
+                "ethercat {label}: realtime endpoint could not acquire RT scheduling \
+                 (bringup rc=-{fault_code}) — grant CAP_SYS_NICE + CAP_IPC_LOCK to \
+                 klipper.service and isolate a CPU core, then FIRMWARE_RESTART"
+            ),
             // 0 = no bringup rc (e.g. the stub's simulated failure) — omit the suffix.
             0 => format!(
                 "ethercat {label}: drive (slave {slave_idx}) offline \
@@ -212,6 +218,24 @@ mod claim_error_message_tests {
             msg,
             "ethercat node_x: drive (slave 1) offline \
              (bringup rc=-5) — check drive power, then FIRMWARE_RESTART"
+        );
+    }
+
+    #[test]
+    fn rt_acquisition_failure_names_the_capability() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveOffline {
+                slave_idx: 1,
+                fault_code: 12,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: realtime endpoint could not acquire RT scheduling \
+             (bringup rc=-12) — grant CAP_SYS_NICE + CAP_IPC_LOCK to \
+             klipper.service and isolate a CPU core, then FIRMWARE_RESTART"
         );
     }
 
