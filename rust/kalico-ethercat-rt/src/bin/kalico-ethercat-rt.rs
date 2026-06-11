@@ -188,12 +188,10 @@ fn main() {
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
 
-    let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
-    let rc = unsafe { ffi::ec_rt_bringup(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
-    if rc != 0 {
+    fn bringup_fail(server: &mut FrameServer, rc: i32) -> ! {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
         let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
+        if let Some(cid) = wait_for_claim(server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
             let reply = single_slave_reply(
                 1,
                 SlaveState::Offline,
@@ -206,7 +204,12 @@ fn main() {
         }
         std::process::exit(1);
     }
-    eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
+
+    let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
+    let rc = unsafe { ffi::ec_rt_bringup_preop(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
+    if rc != 0 {
+        bringup_fail(&mut server, rc);
+    }
 
     let run_limits: (u32, u16) = {
         let mut ferr = 0u32;
@@ -215,10 +218,7 @@ fn main() {
         let rc = unsafe { ffi::ec_rt_read_limits(&mut ferr, &mut tmo, &mut tq) };
         if rc != 0 {
             eprintln!("ec-rt: SDO read of protection limits failed rc={rc} — aborting bringup");
-            unsafe {
-                ffi::ec_rt_disable();
-                ffi::ec_rt_shutdown();
-            }
+            unsafe { ffi::ec_rt_shutdown() };
             std::process::exit(1);
         }
         eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
@@ -231,10 +231,7 @@ fn main() {
             let rc = unsafe { ffi::ec_rt_write_limits(run.0, run.1) };
             if rc != 0 {
                 eprintln!("ec-rt: SDO write of session limits failed rc={rc} — aborting bringup");
-                unsafe {
-                    ffi::ec_rt_disable();
-                    ffi::ec_rt_shutdown();
-                }
+                unsafe { ffi::ec_rt_shutdown() };
                 std::process::exit(1);
             }
             eprintln!(
@@ -244,6 +241,12 @@ fn main() {
         }
         run
     };
+
+    let rc = unsafe { ffi::ec_rt_bringup_finish() };
+    if rc != 0 {
+        bringup_fail(&mut server, rc);
+    }
+    eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
     match wait_for_claim_while_cycling(
         &mut server,

@@ -1,5 +1,6 @@
-//! Callers must ensure no concurrent access and that `ec_rt_bringup` has
-//! succeeded before calling any other function.
+//! Callers must ensure no concurrent access. `ec_rt_bringup_preop` must
+//! succeed before SDO access; `ec_rt_bringup_finish` must succeed before
+//! anything that touches process data (cycle, targets, offsets, telemetry).
 #![allow(unsafe_code)]
 
 use std::os::raw::{c_char, c_int};
@@ -22,12 +23,14 @@ const _: () = assert!(
 );
 
 extern "C" {
-    pub fn ec_rt_bringup(
+    pub fn ec_rt_bringup_preop(
         ifname: *const c_char,
         cycle_ns: i64,
         rt_cpu: c_int,
         rt_prio: c_int,
     ) -> c_int;
+
+    pub fn ec_rt_bringup_finish() -> c_int;
 
     pub fn ec_rt_enable() -> c_int;
 

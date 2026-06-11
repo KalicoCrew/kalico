@@ -166,9 +166,24 @@ static int remap_volatile_tx_pdo_1a00(void) {
     return rewrite_1a00_entry_table();
 }
 
+/* If the deadline has gone stale (a blocking SDO transaction or a wait
+ * between exchanges overran the cycle), re-anchor to now instead of letting
+ * clock_nanosleep return immediately cycle after cycle: that catch-up burst
+ * sends frames far outside the drive's SYNC0 window and reads as sync loss
+ * (AL 0x001A / ErC1.1). One late-but-paced frame is recoverable; a burst of
+ * misaligned ones is not. */
+static void reanchor_if_stale(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t behind_ns = (now.tv_sec - g_ts.tv_sec) * 1000000000LL
+                      + (now.tv_nsec - g_ts.tv_nsec);
+    if (behind_ns > g_cycle_ns) g_ts = now;
+}
+
 static int rt_exchange(int64_t *toff) {
     int64_t off = 0;
     add_ts(&g_ts, g_cycle_ns + (toff ? *toff : 0));
+    reanchor_if_stale();
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &g_ts, NULL);
     ec_send_processdata();
     int wkc = ec_receive_processdata(EC_TIMEOUTRET);
@@ -267,7 +282,12 @@ static void clear_latched_alarm_in_preop(void) {
                 "the post-OP park loop will keep pulsing\n", err);
 }
 
-int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
+/* Phase 1: up to PRE-OP with PDO maps, mode, sync types, and FF routing
+ * written. The caller does its session SDO work (drive limits, params)
+ * after this returns — in PRE-OP the drive expects no process data, so
+ * blocking mailbox transactions cannot trip the sync-loss monitor the way
+ * they do once OP starts. */
+int ec_rt_bringup_preop(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
     g_enabled  = 0;
@@ -306,7 +326,13 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         ec_close();
         return EC_RT_ERR_FF_ROUTING;
     }
+    return 0;
+}
 
+/* Phase 2: DC config, SAFE-OP, stabilize, OP, CiA402 park. From the moment
+ * SYNC0 starts here, the caller must never pause process data — every wait
+ * goes through ec_rt_cycle. */
+int ec_rt_bringup_finish(void) {
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
     ec_config_map(&IOmap);
