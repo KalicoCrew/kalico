@@ -229,11 +229,11 @@ static int remap_volatile_rx_pdo_1600(void) {
     return rewrite_1600_entry_table();
 }
 
-/* FF sources to "communication" (60B1h/60B2h) at 100.0% scale.
+/* FF sources to "communication" (60B1h/60B2h).
  * C01.13 -> 0x2001:14h, C01.14 -> 0x2001:15h, C01.16 -> 0x2001:17h,
  * C01.17 -> 0x2001:18h (group C01 = index 2001h, subindex = hex param + 1). */
 static int route_feedforward_to_communication(void) {
-    uint16_t src = 5, pct = 1000;
+    uint16_t src = 5, pct = 0; /* 0% additional feedforward */
     if (remap_write(0x2001, 0x14, &src, sizeof(src)) != 0) return -1;
     if (remap_write(0x2001, 0x15, &pct, sizeof(pct)) != 0) return -1;
     if (remap_write(0x2001, 0x17, &src, sizeof(src)) != 0) return -1;

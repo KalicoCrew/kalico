@@ -115,7 +115,11 @@ position_max: 300
 
 Bring-up now performs the **variable PDO remap** (1600h/1A00h via SDO in
 PRE-OP; exit rc -6 on failure) and the **FF-routing SDO writes** (C01.13/16 =
-5, C01.14/17 = 1000; exit rc -10 on failure) before the DC stabilize loop.
+5, C01.14/17 = 0; exit rc -10 on failure) before the DC stabilize loop.
+The percentage registers stay 0 because with source = 5 the drive applies
+60B1h/60B2h at (100% + C01.14/C01.17) — bench-measured 2026-06-12: pct=1000
+doubled the applied feedforward (cruise lead of exactly v/Kp), pct=0 gave
+unity (cruise rms 55 counts at 400 mm/s).
 Both are rewritten on every claim — they are not EEPROM-retained. See
 [`servo-feedforward.md`](servo-feedforward.md) for the FF config keys and
 identification workflow.
