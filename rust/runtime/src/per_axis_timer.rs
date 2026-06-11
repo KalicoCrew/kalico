@@ -12,8 +12,9 @@ pub const MAX_STEPS_PER_EVENT: u32 = 32;
 
 // Lateness tracking — written from the step-output ISR, read by the C
 // diagnostics foreground via kalico_stepout_late_get(). AtomicU32 with Relaxed
-// ordering: the C reader is display-only, no synchronisation required between
-// ISR writes and foreground reads.
+// load/store only: the ISR is the sole writer and the C reader is
+// display-only, so no RMW is needed — which also keeps thumbv6m (Cortex-M0+,
+// no atomic RMW instructions) building.
 static STEPOUT_MAX_LATE_CYCLES: AtomicU32 = AtomicU32::new(0);
 static STEPOUT_LATE_COUNT: AtomicU32 = AtomicU32::new(0);
 static STEPOUT_MAX_DRAINED: AtomicU32 = AtomicU32::new(0);
@@ -21,7 +22,8 @@ static STEPOUT_MAX_DRAINED: AtomicU32 = AtomicU32::new(0);
 fn record_lateness(now: u32, cycle_abs: u32, threshold: u32) {
     let late_cycles = now.wrapping_sub(cycle_abs);
     if late_cycles > threshold {
-        STEPOUT_LATE_COUNT.fetch_add(1, Ordering::Relaxed);
+        let count = STEPOUT_LATE_COUNT.load(Ordering::Relaxed);
+        STEPOUT_LATE_COUNT.store(count.wrapping_add(1), Ordering::Relaxed);
         let prev = STEPOUT_MAX_LATE_CYCLES.load(Ordering::Relaxed);
         if late_cycles > prev {
             STEPOUT_MAX_LATE_CYCLES.store(late_cycles, Ordering::Relaxed);
