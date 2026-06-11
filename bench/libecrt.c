@@ -527,6 +527,11 @@ int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
 }
 
 int ec_rt_park_cycle(int64_t *toff_ns) {
+    if (!g_out || !g_in) {
+        fprintf(stderr,
+                "ec_rt: park_cycle before bringup_finish — PDO map not bound\n");
+        abort();
+    }
     g_out->controlword     = 0;
     g_out->target_position = g_in->position_actual;
     return rt_exchange(toff_ns);

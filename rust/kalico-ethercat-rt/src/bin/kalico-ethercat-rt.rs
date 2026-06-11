@@ -95,32 +95,6 @@ impl SdoBus for FfiSdoBus {
     }
 }
 
-/// Post-bringup claim wait. The drive is already in OP with SYNC0 running, so
-/// its sync-loss monitor (ErC1.1 / AL 0x001A) is armed: every wait iteration
-/// must exchange process data via `ec_rt_cycle` — sleeping here starves the
-/// drive and latches the alarm. `ec_rt_cycle` paces itself to the DC cycle.
-fn wait_for_claim_while_cycling(
-    server: &mut FrameServer,
-    deadline: std::time::Instant,
-) -> Option<u32> {
-    loop {
-        for cmd in server.poll_commands() {
-            if let Command::ClaimHandshake { correlation_id } = cmd {
-                return Some(correlation_id);
-            }
-            eprintln!("ec-rt: unexpected pre-handshake command: {cmd:?}");
-        }
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
-            return None;
-        }
-        let mut toff = 0i64;
-        unsafe { ffi::ec_rt_cycle(&mut toff) };
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ifname = args.get(1).cloned().unwrap_or_else(|| "eth0".into());
@@ -213,13 +187,6 @@ fn main() {
         bringup_fail(&mut server, rc);
     }
 
-    let park_pump = |cycles: usize| {
-        let mut toff = 0i64;
-        for _ in 0..cycles {
-            unsafe { ffi::ec_rt_park_cycle(&mut toff) };
-        }
-    };
-
     let run_limits: (u32, u16) = {
         let mut ferr = 0u32;
         let mut tmo = 0u16;
@@ -230,7 +197,6 @@ fn main() {
             unsafe { ffi::ec_rt_shutdown() };
             std::process::exit(1);
         }
-        park_pump(4);
         eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
         let cli_ferr: Option<u32> =
             arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
@@ -244,7 +210,6 @@ fn main() {
                 unsafe { ffi::ec_rt_shutdown() };
                 std::process::exit(1);
             }
-            park_pump(4);
             eprintln!(
                 "ec-rt: session limits applied: 6065h={} 6072h={}",
                 run.0, run.1
