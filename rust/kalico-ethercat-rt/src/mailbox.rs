@@ -67,6 +67,7 @@ pub struct MailboxWorker {
 /// ErC1.1 on the bench even after moving mailbox work off-loop. SCHED_OTHER
 /// is always preempted by the FIFO DC thread, on any core.
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 fn demote_to_normal_scheduling() {
     unsafe {
         let param = libc::sched_param { sched_priority: 0 };
