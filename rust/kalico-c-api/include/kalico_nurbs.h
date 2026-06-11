@@ -110,6 +110,10 @@ int32_t kalico_runtime_set_axis_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t axis_idx,
                                      uint8_t new_mode);
 
+int32_t kalico_runtime_bind_phase_motor(kalico_nurbs_KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint8_t slot_idx);
+
 int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t stepper_idx,
                                      uint8_t mode,
