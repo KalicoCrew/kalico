@@ -355,17 +355,6 @@ class MCU_trsync:
                 self.REASON_COMMS_TIMEOUT,
             )
         )
-        arm_id = getattr(self, "_bridge_arm_id", None)
-        if arm_id is None:
-            raise self._mcu.error(
-                "bridge MCU_trsync.start: _bridge_arm_id not set "
-                "(homing glue must assign it before start)"
-            )
-        if self._steppers:
-            serial.send(
-                "runtime_stop_on_trigger arm_id=%d trsync_oid=%d"
-                % (arm_id, self._oid)
-            )
         serial.send(
             "trsync_set_timeout oid=%d clock=%d"
             % (self._oid, expire_clock & 0xFFFFFFFF)
