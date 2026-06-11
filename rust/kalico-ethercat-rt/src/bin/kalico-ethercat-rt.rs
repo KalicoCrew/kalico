@@ -16,8 +16,9 @@ use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::dynamics::{clamp_torque, DynamicsModel};
 use kalico_ethercat_rt::ffi;
+use kalico_ethercat_rt::mailbox::{MailboxReply, MailboxRequest, MailboxWorker};
 use kalico_ethercat_rt::scale::CountMap;
-use kalico_ethercat_rt::sdo::{execute_sdo_read, execute_sdo_write, SdoBus};
+use kalico_ethercat_rt::sdo::SdoBus;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
     CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
@@ -254,7 +255,9 @@ fn main() {
     let mut gate = TorqueGate::new();
     let mut capture = Capture::new();
     let mut cycle_index: u64 = 0;
-    let mut sdo_bus = FfiSdoBus;
+    let mailbox = MailboxWorker::spawn(FfiSdoBus, |ferr_counts, torque_tenth_pct| unsafe {
+        ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
+    });
     let mut prdiv = 0u64;
     let mut ff_saturation = 0u32;
     let mut wkc_consecutive = 0u8;
@@ -414,70 +417,91 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let rc = unsafe {
-                        ffi::ec_rt_write_limits(
-                            msg.following_error_counts,
-                            msg.max_torque_tenth_pct,
-                        )
-                    };
-                    if rc != 0 {
-                        eprintln!(
-                            "ec-rt: SetDriveLimits SDO write failed rc={rc} \
-                             ferr={} tq={}",
-                            msg.following_error_counts, msg.max_torque_tenth_pct
-                        );
-                    } else {
-                        eprintln!(
-                            "ec-rt: SetDriveLimits applied ferr={} tq={}",
-                            msg.following_error_counts, msg.max_torque_tenth_pct
-                        );
-                    }
-                    server.respond(&set_drive_limits_response_frame(correlation_id, rc));
+                    mailbox.submit(MailboxRequest::WriteLimits {
+                        correlation_id,
+                        ferr_counts: msg.following_error_counts,
+                        torque_tenth_pct: msg.max_torque_tenth_pct,
+                        restore: false,
+                    });
                 }
                 Command::RestoreDriveLimits { correlation_id } => {
-                    let rc = unsafe { ffi::ec_rt_write_limits(run_limits.0, run_limits.1) };
-                    if rc != 0 {
-                        eprintln!(
-                            "ec-rt: RestoreDriveLimits SDO write failed rc={rc} \
-                             ferr={} tq={}",
-                            run_limits.0, run_limits.1
-                        );
-                    } else {
-                        eprintln!(
-                            "ec-rt: RestoreDriveLimits applied ferr={} tq={}",
-                            run_limits.0, run_limits.1
-                        );
-                    }
-                    server.respond(&restore_drive_limits_response_frame(correlation_id, rc));
+                    mailbox.submit(MailboxRequest::WriteLimits {
+                        correlation_id,
+                        ferr_counts: run_limits.0,
+                        torque_tenth_pct: run_limits.1,
+                        restore: true,
+                    });
                 }
                 Command::SdoRead {
                     correlation_id,
                     msg,
                 } => {
-                    let resp = execute_sdo_read(&mut sdo_bus, &msg);
-                    if resp.result != 0 {
-                        eprintln!(
-                            "ec-rt: SdoRead 0x{:04x}.{} failed result={}",
-                            msg.index, msg.subindex, resp.result
-                        );
-                    }
-                    server.respond(&sdo_read_response_frame(correlation_id, &resp));
+                    mailbox.submit(MailboxRequest::SdoRead {
+                        correlation_id,
+                        msg,
+                    });
                 }
                 Command::SdoWrite {
                     correlation_id,
                     msg,
                 } => {
-                    let resp = execute_sdo_write(&mut sdo_bus, &msg);
-                    if resp.result != 0 {
-                        eprintln!(
-                            "ec-rt: SdoWrite 0x{:04x}.{} value={} size={} failed result={}",
-                            msg.index, msg.subindex, msg.value, msg.size, resp.result
-                        );
-                    }
-                    server.respond(&sdo_write_response_frame(correlation_id, &resp));
+                    mailbox.submit(MailboxRequest::SdoWrite {
+                        correlation_id,
+                        msg,
+                    });
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
+                }
+            }
+        }
+
+        while let Some(reply) = mailbox.try_recv() {
+            match reply {
+                MailboxReply::SdoRead {
+                    correlation_id,
+                    resp,
+                } => {
+                    if resp.result != 0 {
+                        eprintln!("ec-rt: SdoRead failed result={}", resp.result);
+                    }
+                    server.respond(&sdo_read_response_frame(correlation_id, &resp));
+                }
+                MailboxReply::SdoWrite {
+                    correlation_id,
+                    resp,
+                } => {
+                    if resp.result != 0 {
+                        eprintln!("ec-rt: SdoWrite failed result={}", resp.result);
+                    }
+                    server.respond(&sdo_write_response_frame(correlation_id, &resp));
+                }
+                MailboxReply::WriteLimits {
+                    correlation_id,
+                    rc,
+                    ferr_counts,
+                    torque_tenth_pct,
+                    restore,
+                } => {
+                    let what = if restore {
+                        "RestoreDriveLimits"
+                    } else {
+                        "SetDriveLimits"
+                    };
+                    if rc != 0 {
+                        eprintln!(
+                            "ec-rt: {what} SDO write failed rc={rc} \
+                             ferr={ferr_counts} tq={torque_tenth_pct}"
+                        );
+                    } else {
+                        eprintln!("ec-rt: {what} applied ferr={ferr_counts} tq={torque_tenth_pct}");
+                    }
+                    let frame = if restore {
+                        restore_drive_limits_response_frame(correlation_id, rc)
+                    } else {
+                        set_drive_limits_response_frame(correlation_id, rc)
+                    };
+                    server.respond(&frame);
                 }
             }
         }
