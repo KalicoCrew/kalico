@@ -1188,6 +1188,7 @@ PROBE_TEST_VARIANTS = (
     "no-probe",
     "conflict",
     "pullup",
+    "remote",
 )
 
 PROBE_TEST_BOOT_ERRORS = {
@@ -1197,7 +1198,9 @@ PROBE_TEST_BOOT_ERRORS = {
 }
 
 
-def _generate_probe_config(h7_pty: str, gcode_dir: str, variant: str) -> str:
+def _generate_probe_config(
+    h7_pty: str, gcode_dir: str, variant: str, f4_pty: Optional[str] = None
+) -> str:
     """Auto-endstop walls (libsim_intercept.c): X steps→gpio200,
     Y steps→gpio201, Z steps→gpio202 and gpio203."""
     if variant == "gpio-z":
@@ -1206,6 +1209,9 @@ def _generate_probe_config(h7_pty: str, gcode_dir: str, variant: str) -> str:
     elif variant == "pullup":
         z_endstop = "endstop_pin: ^probe:z_virtual_endstop"
         probe_pin = "gpiochip0/gpio202"
+    elif variant == "remote":
+        z_endstop = "endstop_pin: sim_remote_endstop:z_virtual_endstop"
+        probe_pin = "gpiochip0/gpio203"
     elif variant == "conflict":
         z_endstop = (
             "endstop_pin: probe:z_virtual_endstop\nposition_endstop: 1.0"
@@ -1233,6 +1239,25 @@ y_offset: 5.0
 home_xy_position: 125, 125
 z_hop: 10
 z_hop_speed: 15
+"""
+
+    remote_section = ""
+    if variant == "remote":
+        if f4_pty is None:
+            raise ValueError(
+                "probe-test remote: a second (F446) sim MCU is required so"
+                " the trsync lives on a different MCU than the steppers"
+            )
+        probe_section = ""
+        remote_section = f"""
+[mcu bottom]
+serial: {f4_pty}
+
+[sim_remote_endstop]
+mcu: bottom
+trigger_delay: 1.0
+measured_z: 3.25
+trigger_height: 0
 """
     return f"""\
 [mcu]
@@ -1279,7 +1304,7 @@ rotation_distance: 4
 position_min: -5
 position_max: 250
 homing_speed: 5
-{safe_z_section}{probe_section}
+{safe_z_section}{probe_section}{remote_section}
 [input_shaper]
 shaper_freq_x: 50
 shaper_freq_y: 50
@@ -1388,7 +1413,32 @@ def run_probe_test(
                 )
                 log.info("H7 MCU spawned (pid=%d)", mcus[0].process.pid)
 
-            cfg_text = _generate_probe_config(h7_pty, str(gcode_dir), variant)
+            f4_pty = None
+            if expect_boot_error is None and variant == "remote":
+                f4_pty = str(tmp / "klipper_sim_f4")
+                f4_sock_dir = tmp / "sim" / "f4"
+                f4_sock_dir.mkdir(parents=True)
+                f4_elf = repo_root / "out" / "klipper-f4-sim.elf"
+                if not f4_elf.exists():
+                    print("ERROR: missing out/klipper-f4-sim.elf")
+                    return 1
+                mcus.append(
+                    spawn_mcu(
+                        "f4",
+                        f4_elf,
+                        f4_pty,
+                        str(log_dir / "f4.log"),
+                        str(f4_sock_dir),
+                        shim_so,
+                        vtime_so,
+                        verbose,
+                    )
+                )
+                log.info("F4 MCU spawned (pid=%d)", mcus[-1].process.pid)
+
+            cfg_text = _generate_probe_config(
+                h7_pty, str(gcode_dir), variant, f4_pty
+            )
             cfg_path = tmp / "printer.cfg"
             cfg_path.write_text(cfg_text)
             if variant == "safe-z":
@@ -1455,111 +1505,150 @@ def run_probe_test(
 
                 offset = len(klippy_log.read_bytes())
 
-                resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
-                out, offset = _log_tail_since(klippy_log, offset)
-                check(
-                    "query-probe-open",
-                    "probe: open" in out and not resp.get("error"),
-                    [l.strip() for l in out.split("\n") if "probe:" in l][:1]
-                    or resp,
-                )
-
-                resp = send_gcode(api_socket, "PROBE", timeout=60)
-                err = str(resp.get("error", ""))
-                check(
-                    "probe-before-home-rejected",
-                    "Must home before probe" in err,
-                    err or resp,
-                )
-
-                _, offset = _log_tail_since(klippy_log, offset)
-                resp = send_gcode(api_socket, "G28", timeout=180)
-                out, offset = _log_tail_since(klippy_log, offset)
-                check("g28", not resp.get("error"), resp.get("error") or "ok")
-                homing_lines = [
-                    l.strip() for l in out.split("\n") if "homing: " in l
-                ]
-                if variant in ("virtual", "safe-z"):
-                    check(
-                        "g28-z-trigger-height",
-                        any(
-                            "homing: Z trigger=1.5000" in l
-                            for l in homing_lines
-                        ),
-                        homing_lines,
+                if variant == "remote":
+                    resp = send_gcode(api_socket, "G28 Z", timeout=120)
+                    out, offset = _log_tail_since(klippy_log, offset)
+                    g28_err = (
+                        resp.get("error") if isinstance(resp, dict) else None
                     )
-                z = _query_toolhead_z(api_socket)
-                if variant == "safe-z":
-                    expected_z = 10.0
-                elif variant == "virtual":
-                    expected_z = 6.5
+                    check("remote-g28-z", not g28_err, g28_err or "G28 Z ok")
+                    check(
+                        "remote-relay-fired",
+                        "remote trsync terminal report" in out
+                        or "sim_remote_endstop: firing" in out,
+                        "relay/trigger evidence in logs",
+                    )
+                    check(
+                        "remote-measured-override",
+                        "set Z=3.2500" in out,
+                        "homing log should show measured override 3.25",
+                    )
+                    m = re.search(r"trip_to_stop_travel=(-?\d+\.\d+)", out)
+                    check(
+                        "remote-trip-vs-stop",
+                        m is not None and 0.0 <= float(m.group(1)) < 0.5,
+                        m.group(0)
+                        if m
+                        else "no trip_to_stop_travel in homing log",
+                    )
+                    z = _query_toolhead_z(api_socket)
+                    check(
+                        "remote-final-position",
+                        z is not None and abs(z - 8.25) < 0.1,
+                        "z=%s expected ~8.25 (3.25 + 5.0 retract)" % (z,),
+                    )
                 else:
-                    expected_z = 5.0
-                check(
-                    "post-home-retract-z",
-                    z is not None and abs(z - expected_z) < 0.1,
-                    "z=%s expected ~%.1f" % (z, expected_z),
-                )
-                if variant == "safe-z":
-                    pos = _query_toolhead_position(api_socket)
-                    xy_ok = (
-                        pos is not None
-                        and len(pos) >= 2
-                        and abs(pos[0] - 125.0) < 0.5
-                        and abs(pos[1] - 125.0) < 0.5
-                    )
+                    resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
+                    out, offset = _log_tail_since(klippy_log, offset)
                     check(
-                        "g28-at-safe-xy",
-                        xy_ok,
-                        "position=%s expected x,y~125,125" % (pos,),
+                        "query-probe-open",
+                        "probe: open" in out and not resp.get("error"),
+                        [l.strip() for l in out.split("\n") if "probe:" in l][
+                            :1
+                        ]
+                        or resp,
                     )
 
-                resp = send_gcode(api_socket, "PROBE", timeout=90)
-                out, offset = _log_tail_since(klippy_log, offset)
-                probe_lines = [
-                    l.strip() for l in out.split("\n") if " is z=" in l
-                ]
-                expected_probe_z = 1.5 if variant != "gpio-z" else 0.0
-                probe_z = None
-                if probe_lines:
-                    m = re.search(r"is z=(-?\d+\.?\d*)", probe_lines[-1])
-                    if m:
-                        probe_z = float(m.group(1))
-                check(
-                    "probe",
-                    not resp.get("error")
-                    and probe_z is not None
-                    and abs(probe_z - expected_probe_z) < 0.25,
-                    probe_lines or resp.get("error") or resp,
-                )
+                    resp = send_gcode(api_socket, "PROBE", timeout=60)
+                    err = str(resp.get("error", ""))
+                    check(
+                        "probe-before-home-rejected",
+                        "Must home before probe" in err,
+                        err or resp,
+                    )
 
-                resp = send_gcode(
-                    api_socket, "PROBE_ACCURACY SAMPLES=3", timeout=180
-                )
-                out, offset = _log_tail_since(klippy_log, offset)
-                acc_lines = [
-                    l.strip()
-                    for l in out.split("\n")
-                    if "probe accuracy results" in l
-                ]
-                acc_ok = False
-                if acc_lines and not resp.get("error"):
-                    m = re.search(r"range (\d+\.?\d*)", acc_lines[-1])
-                    acc_ok = m is not None and float(m.group(1)) < 0.25
-                check(
-                    "probe-accuracy",
-                    acc_ok,
-                    acc_lines or resp.get("error") or resp,
-                )
+                    _, offset = _log_tail_since(klippy_log, offset)
+                    resp = send_gcode(api_socket, "G28", timeout=180)
+                    out, offset = _log_tail_since(klippy_log, offset)
+                    check(
+                        "g28", not resp.get("error"), resp.get("error") or "ok"
+                    )
+                    homing_lines = [
+                        l.strip() for l in out.split("\n") if "homing: " in l
+                    ]
+                    if variant in ("virtual", "safe-z"):
+                        check(
+                            "g28-z-trigger-height",
+                            any(
+                                "homing: Z trigger=1.5000" in l
+                                for l in homing_lines
+                            ),
+                            homing_lines,
+                        )
+                    z = _query_toolhead_z(api_socket)
+                    if variant == "safe-z":
+                        expected_z = 10.0
+                    elif variant == "virtual":
+                        expected_z = 6.5
+                    else:
+                        expected_z = 5.0
+                    check(
+                        "post-home-retract-z",
+                        z is not None and abs(z - expected_z) < 0.1,
+                        "z=%s expected ~%.1f" % (z, expected_z),
+                    )
+                    if variant == "safe-z":
+                        pos = _query_toolhead_position(api_socket)
+                        xy_ok = (
+                            pos is not None
+                            and len(pos) >= 2
+                            and abs(pos[0] - 125.0) < 0.5
+                            and abs(pos[1] - 125.0) < 0.5
+                        )
+                        check(
+                            "g28-at-safe-xy",
+                            xy_ok,
+                            "position=%s expected x,y~125,125" % (pos,),
+                        )
 
-                resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
-                out, offset = _log_tail_since(klippy_log, offset)
-                check(
-                    "query-probe-open-after",
-                    "probe: open" in out and not resp.get("error"),
-                    [l.strip() for l in out.split("\n") if "probe:" in l][:1]
-                    or resp,
-                )
+                    resp = send_gcode(api_socket, "PROBE", timeout=90)
+                    out, offset = _log_tail_since(klippy_log, offset)
+                    probe_lines = [
+                        l.strip() for l in out.split("\n") if " is z=" in l
+                    ]
+                    expected_probe_z = 1.5 if variant != "gpio-z" else 0.0
+                    probe_z = None
+                    if probe_lines:
+                        m = re.search(r"is z=(-?\d+\.?\d*)", probe_lines[-1])
+                        if m:
+                            probe_z = float(m.group(1))
+                    check(
+                        "probe",
+                        not resp.get("error")
+                        and probe_z is not None
+                        and abs(probe_z - expected_probe_z) < 0.25,
+                        probe_lines or resp.get("error") or resp,
+                    )
+
+                    resp = send_gcode(
+                        api_socket, "PROBE_ACCURACY SAMPLES=3", timeout=180
+                    )
+                    out, offset = _log_tail_since(klippy_log, offset)
+                    acc_lines = [
+                        l.strip()
+                        for l in out.split("\n")
+                        if "probe accuracy results" in l
+                    ]
+                    acc_ok = False
+                    if acc_lines and not resp.get("error"):
+                        m = re.search(r"range (\d+\.?\d*)", acc_lines[-1])
+                        acc_ok = m is not None and float(m.group(1)) < 0.25
+                    check(
+                        "probe-accuracy",
+                        acc_ok,
+                        acc_lines or resp.get("error") or resp,
+                    )
+
+                    resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
+                    out, offset = _log_tail_since(klippy_log, offset)
+                    check(
+                        "query-probe-open-after",
+                        "probe: open" in out and not resp.get("error"),
+                        [l.strip() for l in out.split("\n") if "probe:" in l][
+                            :1
+                        ]
+                        or resp,
+                    )
 
                 shutdown = (
                     b"shutdown:" in klippy_log.read_bytes()

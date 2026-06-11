@@ -30,7 +30,7 @@ struct HomingRun {
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
     window_start_clock: u64,
-    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
+    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3], u64), String>>,
 }
 
 fn abort_after_tracing_appender_drains() {
@@ -503,20 +503,22 @@ pub struct PyMotionBridge {
     planner: Mutex<Option<PlannerHandle>>,
     planner_config: Mutex<PlannerConfig>,
     commanded_pos: Mutex<[f64; 3]>,
-    mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
+    mcu_axis_configs: Arc<Mutex<Vec<McuAxisConfig>>>,
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     nominal_clock_freqs: Arc<Mutex<HashMap<u32, u32>>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
-    pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
+    pump_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
     motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
-    homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
+    homing_result:
+        Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3], u64), String>>>>,
     latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
+    remote_triggers: Mutex<HashMap<u8, (u32, kalico_host_rt::host_io::InterceptorId)>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
     // this and no-op, so double-teardown is provably safe and observable.
@@ -787,13 +789,13 @@ impl PyMotionBridge {
             planner: Mutex::new(None),
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
-            mcu_axis_configs: Mutex::new(Vec::new()),
+            mcu_axis_configs: Arc::new(Mutex::new(Vec::new())),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             nominal_clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             events_dir: Mutex::new(None),
-            pump_tx: Mutex::new(None),
+            pump_tx: Arc::new(Mutex::new(None)),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
             active_drip_cohort: Arc::new(Mutex::new(None)),
@@ -801,6 +803,7 @@ impl PyMotionBridge {
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
             latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
+            remote_triggers: Mutex::new(HashMap::new()),
             shut_down: AtomicBool::new(false),
         }
     }
@@ -3294,7 +3297,7 @@ impl PyMotionBridge {
             .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
 
         let (result_tx, result_rx) =
-            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3]), String>>(1);
+            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3], u64), String>>(1);
 
         {
             let mut run = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
@@ -3346,7 +3349,7 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3])>> {
+    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3], u64)>> {
         let rx = {
             let guard = self.homing_result.lock().unwrap_or_else(|p| p.into_inner());
             match guard.as_ref() {
@@ -3368,10 +3371,112 @@ impl PyMotionBridge {
             }
             Ok(result) => {
                 self.finish_homing();
-                let (trip_pos, final_pos) = result.map_err(PyRuntimeError::new_err)?;
+                let (trip_pos, final_pos, trip_clock) = result.map_err(PyRuntimeError::new_err)?;
                 *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = final_pos;
-                Ok(Some((trip_pos, final_pos)))
+                Ok(Some((trip_pos, final_pos, trip_clock)))
             }
+        }
+    }
+
+    fn arm_remote_trigger(&self, mcu_handle: u32, trsync_oid: u32, endstop_id: u8) -> PyResult<()> {
+        {
+            let armed = self
+                .remote_triggers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if armed.contains_key(&endstop_id) {
+                return Err(PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: endstop_id {endstop_id} is already armed"
+                )));
+            }
+        }
+        let host_io = self
+            .mcus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&mcu_handle)
+            .and_then(|c| c.host_io.as_ref().map(Arc::clone))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: mcu {mcu_handle} has no serial transport"
+                ))
+            })?;
+        let deps = self.trip_deps();
+        let router = Arc::clone(&self.router);
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = host_io
+            .register_frame_interceptor(
+                "trsync_state",
+                Some(trsync_oid),
+                Box::new(move |params| {
+                    let decision = crate::remote_trigger::relay_decision(
+                        params.try_get_u32("can_trigger"),
+                        fired.load(Ordering::SeqCst),
+                    );
+                    if decision != crate::remote_trigger::RelayAction::Fire {
+                        return;
+                    }
+                    fired.store(true, Ordering::SeqCst);
+                    let clock32 = params.try_get_u32("clock").unwrap_or(0);
+                    let reference = router
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .compute_ack_clock(kalico_host_rt::passthrough_queue::McuHandle::from_raw(
+                            mcu_handle,
+                        ))
+                        .unwrap_or(0);
+                    let clock64 = crate::remote_trigger::relay_trip_clock(clock32, reference);
+                    tracing::info!(
+                        subsystem = "trip-relay",
+                        event = "remote_trigger_fired",
+                        mcu = mcu_handle,
+                        endstop_id,
+                        trsync_oid,
+                        clock32,
+                        clock64,
+                        reason = params.try_get_u32("trigger_reason"),
+                        "remote trsync terminal report — dispatching endstop trip"
+                    );
+                    dispatch_endstop_trip(&deps, mcu_handle, endstop_id, clock64);
+                }),
+            )
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: interceptor registration failed: {e:?}"
+                ))
+            })?;
+        self.remote_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(endstop_id, (mcu_handle, id));
+        Ok(())
+    }
+
+    fn disarm_remote_trigger(&self, endstop_id: u8) -> PyResult<()> {
+        let entry = self
+            .remote_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&endstop_id);
+        let Some((mcu_handle, id)) = entry else {
+            return Err(PyRuntimeError::new_err(format!(
+                "disarm_remote_trigger: endstop_id {endstop_id} is not armed"
+            )));
+        };
+        let host_io = self
+            .mcus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&mcu_handle)
+            .and_then(|c| c.host_io.as_ref().map(Arc::clone));
+        match host_io {
+            Some(io) => io.unregister_frame_interceptor(id).map_err(|e| {
+                PyRuntimeError::new_err(format!("disarm_remote_trigger: unregister failed: {e:?}"))
+            }),
+            // MCU detached: its reactor (and the interceptor with it) is
+            // already gone. Disarm runs on cleanup paths — don't mask the
+            // original error.
+            None => Ok(()),
         }
     }
 
@@ -3562,6 +3667,31 @@ impl Drop for PyMotionBridge {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct TripDeps {
+    homing_run: Arc<Mutex<Option<HomingRun>>>,
+    active_drip_cohort: Arc<Mutex<Option<u64>>>,
+    pump_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>>,
+    mcus: Arc<Mutex<HashMap<u32, McuConnection>>>,
+    router: Arc<Mutex<PassthroughRouter>>,
+    motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
+    mcu_axis_configs: Arc<Mutex<Vec<McuAxisConfig>>>,
+}
+
+impl PyMotionBridge {
+    pub(crate) fn trip_deps(&self) -> TripDeps {
+        TripDeps {
+            homing_run: Arc::clone(&self.homing_run),
+            active_drip_cohort: Arc::clone(&self.active_drip_cohort),
+            pump_tx: Arc::clone(&self.pump_tx),
+            mcus: Arc::clone(&self.mcus),
+            router: Arc::clone(&self.router),
+            motion_history: Arc::clone(&self.motion_history),
+            mcu_axis_configs: Arc::clone(&self.mcu_axis_configs),
+        }
+    }
+}
+
 impl PyMotionBridge {
     fn finish_homing(&self) {
         *self
@@ -3598,173 +3728,174 @@ impl PyMotionBridge {
     }
 
     fn handle_endstop_trip(&self, event_mcu: u32, endstop_id: u8, trip_clock: u64) {
-        let run_opt: Option<HomingRun> = {
-            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
-            guard.take()
-        };
-        let run = match run_opt {
-            None => return,
-            Some(r) => r,
-        };
-        if run.endstop_id != endstop_id || run.endstop_mcu != event_mcu {
-            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
-            *guard = Some(run);
-            return;
-        }
+        dispatch_endstop_trip(&self.trip_deps(), event_mcu, endstop_id, trip_clock);
+    }
+}
 
-        {
-            let mut cohort_guard = self
-                .active_drip_cohort
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            *cohort_guard = None;
-        }
+pub(crate) fn dispatch_endstop_trip(
+    deps: &TripDeps,
+    event_mcu: u32,
+    endstop_id: u8,
+    trip_clock: u64,
+) {
+    let run_opt: Option<HomingRun> = {
+        let mut guard = deps.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+        guard.take()
+    };
+    let run = match run_opt {
+        None => return,
+        Some(r) => r,
+    };
+    if run.endstop_id != endstop_id || run.endstop_mcu != event_mcu {
+        let mut guard = deps.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = Some(run);
+        return;
+    }
 
-        let pump_tx_opt = self
-            .pump_tx
+    {
+        let mut cohort_guard = deps
+            .active_drip_cohort
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+            .unwrap_or_else(|p| p.into_inner());
+        *cohort_guard = None;
+    }
 
-        let transports: HashMap<u32, Arc<dyn kalico_host_rt::native_call::NativeCall>> = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            mcus.iter()
-                .filter_map(|(&id, conn)| {
-                    if let Some(io) = conn.host_io.as_ref() {
-                        Some((
+    let pump_tx_opt = deps
+        .pump_tx
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+
+    let transports: HashMap<u32, Arc<dyn kalico_host_rt::native_call::NativeCall>> = {
+        let mcus = deps.mcus.lock().unwrap_or_else(|p| p.into_inner());
+        mcus.iter()
+            .filter_map(|(&id, conn)| {
+                if let Some(io) = conn.host_io.as_ref() {
+                    Some((
+                        id,
+                        Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                    ))
+                } else {
+                    conn.endpoint_conn.as_ref().map(|ec| {
+                        (
                             id,
-                            Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
-                        ))
-                    } else {
-                        conn.endpoint_conn.as_ref().map(|ec| {
-                            (
-                                id,
-                                Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
-                            )
-                        })
-                    }
-                })
-                .collect()
-        };
-
-        let router_arc = Arc::clone(&self.router);
-        let history_arc = Arc::clone(&self.motion_history);
-        let configs: Vec<McuAxisConfig> = self
-            .mcu_axis_configs
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-
-        std::thread::Builder::new()
-            .name("homing-trip-handler".into())
-            .spawn(move || {
-                let stop_timeout = Duration::from_secs(3);
-
-                let stepper_mcu_ids: std::collections::HashSet<u32> =
-                    run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
-
-                if let Some(tx) = pump_tx_opt.as_ref() {
-                    let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
-                    let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                            Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                        )
+                    })
                 }
+            })
+            .collect()
+    };
 
-                use kalico_host_rt::native_call::NativeCall as _;
-                use kalico_protocol::codec::Decode as _;
-                let stop_call =
-                    |mcu_id: u32| -> Result<kalico_protocol::messages::StopResponse, String> {
-                        let transport = transports
-                            .get(&mcu_id)
-                            .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
-                        let (_kind, body) = transport
-                            .kalico_call(
-                                kalico_protocol::MessageKind::Stop,
-                                Vec::new(),
-                                stop_timeout,
-                            )
-                            .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
-                        kalico_protocol::messages::StopResponse::decode(&body)
-                            .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
-                    };
+    let router_arc = Arc::clone(&deps.router);
+    let history_arc = Arc::clone(&deps.motion_history);
+    let configs: Vec<McuAxisConfig> = deps
+        .mcu_axis_configs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
 
-                let discard_clock = match crate::homing::broadcast_stop(
-                    &stepper_mcu_ids,
-                    run.axis_key.mcu_id,
-                    stop_call,
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = run.notify.send(Err(e));
-                        return;
-                    }
+    std::thread::Builder::new()
+        .name("homing-trip-handler".into())
+        .spawn(move || {
+            let stop_timeout = Duration::from_secs(3);
+
+            let stepper_mcu_ids: std::collections::HashSet<u32> =
+                run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
+
+            if let Some(tx) = pump_tx_opt.as_ref() {
+                let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
+                let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+            }
+
+            use kalico_host_rt::native_call::NativeCall as _;
+            use kalico_protocol::codec::Decode as _;
+            let stop_call =
+                |mcu_id: u32| -> Result<kalico_protocol::messages::StopResponse, String> {
+                    let transport = transports
+                        .get(&mcu_id)
+                        .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
+                    let (_kind, body) = transport
+                        .kalico_call(kalico_protocol::MessageKind::Stop, Vec::new(), stop_timeout)
+                        .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
+                    kalico_protocol::messages::StopResponse::decode(&body)
+                        .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
                 };
 
-                let axis = run.axis;
-                let axis_key = run.axis_key;
-                let kinematics = configs
-                    .iter()
-                    .find(|c| c.mcu_id == axis_key.mcu_id)
-                    .map_or(1u8, |c| c.kinematics);
-                let reconstruct_cartesian = |source_mcu: u32,
-                                             clock: u64|
-                 -> Result<[f64; 3], String> {
-                    let motor_pos = crate::homing::reconstruct_axis_position(
-                        source_mcu,
-                        clock,
-                        axis_key,
-                        &router_arc,
-                        &history_arc,
-                        run.window_start_clock,
-                    )?;
-                    let motor_frame =
-                        trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
-                    Ok(crate::kinematics::inverse(kinematics, motor_frame))
-                };
+            let discard_clock = match crate::homing::broadcast_stop(
+                &stepper_mcu_ids,
+                run.axis_key.mcu_id,
+                stop_call,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = run.notify.send(Err(e));
+                    return;
+                }
+            };
 
-                let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
-                    reconstruct_cartesian(axis_key.mcu_id, discard_clock)
-                        .map(|final_pos| (trip, final_pos))
-                });
+            let axis = run.axis;
+            let axis_key = run.axis_key;
+            let kinematics = configs
+                .iter()
+                .find(|c| c.mcu_id == axis_key.mcu_id)
+                .map_or(1u8, |c| c.kinematics);
+            let reconstruct_cartesian = |source_mcu: u32, clock: u64| -> Result<[f64; 3], String> {
+                let motor_pos = crate::homing::reconstruct_axis_position(
+                    source_mcu,
+                    clock,
+                    axis_key,
+                    &router_arc,
+                    &history_arc,
+                    run.window_start_clock,
+                )?;
+                let motor_frame =
+                    trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
+                Ok(crate::kinematics::inverse(kinematics, motor_frame))
+            };
 
-                let outcome = outcome.and_then(|positions| {
-                    if let Some(tx) = pump_tx_opt.as_ref() {
-                        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
-                        let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
-                        if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
-                            return Err("EndstopTrip: pump did not acknowledge the flush barrier \
+            let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
+                reconstruct_cartesian(axis_key.mcu_id, discard_clock)
+                    .map(|final_pos| (trip, final_pos, trip_clock))
+            });
+
+            let outcome = outcome.and_then(|positions| {
+                if let Some(tx) = pump_tx_opt.as_ref() {
+                    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+                    let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+                    if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                        return Err("EndstopTrip: pump did not acknowledge the flush barrier \
                                  before stream resume"
-                                .into());
-                        }
+                            .into());
                     }
-                    for &mcu_id in &stepper_mcu_ids {
-                        let transport = transports.get(&mcu_id).ok_or_else(|| {
-                            format!("ResumeStream: no transport for mcu {mcu_id}")
-                        })?;
-                        let (_kind, body) = transport
-                            .kalico_call(
-                                kalico_protocol::MessageKind::ResumeStream,
-                                Vec::new(),
-                                stop_timeout,
-                            )
-                            .map_err(|e| {
-                                format!("ResumeStream call failed for mcu {mcu_id}: {e:?}")
-                            })?;
-                        let resp = kalico_protocol::messages::ResumeStreamResponse::decode(&body)
-                            .map_err(|e| {
+                }
+                for &mcu_id in &stepper_mcu_ids {
+                    let transport = transports
+                        .get(&mcu_id)
+                        .ok_or_else(|| format!("ResumeStream: no transport for mcu {mcu_id}"))?;
+                    let (_kind, body) = transport
+                        .kalico_call(
+                            kalico_protocol::MessageKind::ResumeStream,
+                            Vec::new(),
+                            stop_timeout,
+                        )
+                        .map_err(|e| format!("ResumeStream call failed for mcu {mcu_id}: {e:?}"))?;
+                    let resp = kalico_protocol::messages::ResumeStreamResponse::decode(&body)
+                        .map_err(|e| {
                             format!("ResumeStream decode failed for mcu {mcu_id}: {e:?}")
                         })?;
-                        if resp.result != 0 {
-                            return Err(format!(
-                                "ResumeStream rejected by mcu {mcu_id}: result={}",
-                                resp.result
-                            ));
-                        }
+                    if resp.result != 0 {
+                        return Err(format!(
+                            "ResumeStream rejected by mcu {mcu_id}: result={}",
+                            resp.result
+                        ));
                     }
-                    Ok(positions)
-                });
-                let _ = run.notify.send(outcome);
-            })
-            .expect("spawn homing-trip-handler");
-    }
+                }
+                Ok(positions)
+            });
+            let _ = run.notify.send(outcome);
+        })
+        .expect("spawn homing-trip-handler");
 }
 
 impl PyMotionBridge {

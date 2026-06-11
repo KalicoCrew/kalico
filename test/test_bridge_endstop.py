@@ -3,6 +3,7 @@ import pytest
 from klippy.bridge_endstop import (
     PROVIDER_ID_FIRST,
     BridgeEndstop,
+    RemoteBridgeEndstop,
     allocate_provider_id,
 )
 
@@ -23,7 +24,15 @@ class FakeMcu:
         self.config_cmds = []
         self.config_callbacks = []
         self.query_cmd = FakeCommand()
-        self.state_cmd = FakeCommand({"oid": 0, "armed": 0, "pin_value": 0})
+        self.state_cmd = FakeCommand(
+            {
+                "oid": 0,
+                "armed": 0,
+                "pin_value": 0,
+                "tripped": 0,
+                "trip_clock": 0,
+            }
+        )
 
     def create_oid(self):
         oid = self.oids
@@ -112,8 +121,79 @@ def test_arm_zero_period_rejected():
     assert mcu.query_cmd.sent == []
 
 
+def test_query_trip_state_not_tripped():
+    mcu = FakeMcu()
+    es = BridgeEndstop(_pin_params(mcu), 7)
+    for cb in mcu.config_callbacks:
+        cb()
+    assert es.query_trip_state() == {"tripped": False, "trip_clock": 0}
+
+
+def test_query_trip_state_tripped_returns_latched_clock():
+    mcu = FakeMcu()
+    es = BridgeEndstop(_pin_params(mcu), 7)
+    for cb in mcu.config_callbacks:
+        cb()
+    mcu.state_cmd.response = {
+        "oid": 0,
+        "armed": 0,
+        "pin_value": 1,
+        "tripped": 1,
+        "trip_clock": 0xDEADBEEF,
+    }
+    assert es.query_trip_state() == {
+        "tripped": True,
+        "trip_clock": 0xDEADBEEF,
+    }
+
+
 def test_provider_ids_allocate_sequentially():
     printer = FakePrinter()
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST + 1
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST + 2
+
+
+class FakeBridge:
+    def __init__(self):
+        self.calls = []
+
+    def arm_remote_trigger(self, mcu_handle, trsync_oid, endstop_id):
+        self.calls.append(("arm", mcu_handle, trsync_oid, endstop_id))
+
+    def disarm_remote_trigger(self, endstop_id):
+        self.calls.append(("disarm", endstop_id))
+
+
+class FakeRemoteMcu:
+    _bridge_handle = 42
+
+
+def _remote_setup():
+    printer = FakePrinter()
+    bridge = FakeBridge()
+    printer.add_object("motion_bridge", bridge)
+    es = RemoteBridgeEndstop(printer, FakeRemoteMcu(), trsync_oid=9)
+    return bridge, es
+
+
+def test_remote_endstop_allocates_provider_id():
+    _, es = _remote_setup()
+    assert es.endstop_id >= PROVIDER_ID_FIRST
+
+
+def test_remote_endstop_arm_and_disarm_delegate_to_bridge():
+    bridge, es = _remote_setup()
+    es.arm(0.001)
+    es.disarm()
+    assert bridge.calls == [
+        ("arm", 42, 9, es.endstop_id),
+        ("disarm", es.endstop_id),
+    ]
+
+
+def test_remote_endstop_default_query_state():
+    _, es = _remote_setup()
+    assert es.is_triggered() is False
+    assert es.query_endstop(0.0) is False
+    assert es.bridge_mcu_handle() == 42
