@@ -50,8 +50,6 @@ class SimRemoteEndstop:
         if not params["can_trigger"]:
             self._last_reason = params["trigger_reason"]
 
-    # --- virtual endstop provider contract -------------------------------
-
     def setup_bridge_endstop(self, pin_params, axis):
         if pin_params["pin"] != "z_virtual_endstop" or axis != 2:
             raise pins.error(
