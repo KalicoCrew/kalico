@@ -329,7 +329,11 @@ fn append_after_committed_dispatch_keeps_history() {
         "replan must have appended fresh pieces to the un-committed tail",
     );
 
-    assert_eq!(state.uncommitted_moves.len(), 2);
+    assert_eq!(
+        state.uncommitted_moves.len(),
+        2,
+        "m1-tail and m2 = 2 total; freeze zone lives in pending_freeze, not uncommitted_moves",
+    );
 }
 
 #[test]
@@ -1281,19 +1285,26 @@ fn replan_boundary_carries_acceleration() {
     append_x_move(&mut state, &ctx, 50.0, 600.0);
     let t_split = emit_partial_window(&mut state);
 
-    let a_old = sampled_path_accel(&state, t_split);
+    let max_h = state.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+    let t_freeze = t_split + max_h;
+
+    let a_old_at_split = sampled_path_accel(&state, t_split);
     assert!(
-        a_old > 0.3 * HARNESS_A_MAX,
+        a_old_at_split > 0.3 * HARNESS_A_MAX,
         "precondition: t_dispatched must land mid-acceleration \
-         (got a={a_old:.0}); resize move A or lower the kernel frequency"
+         (got a={a_old_at_split:.0}); resize move A or lower the kernel frequency"
     );
 
+    let a_old_at_freeze = sampled_path_accel(&state, t_freeze);
+
     append_x_move(&mut state, &ctx, 200.0, 30.0);
-    let a_new = sampled_path_accel(&state, t_split);
+
+    let a_new_at_freeze = sampled_path_accel(&state, t_freeze);
 
     assert!(
-        (a_new - a_old).abs() < 100.0,
-        "replan accel step at t_dispatched: {a_old:.0} -> {a_new:.0} mm/s²"
+        (a_new_at_freeze - a_old_at_freeze).abs() < 100.0,
+        "replan accel step at t_freeze ({t_freeze:.6}): {a_old_at_freeze:.0} -> {a_new_at_freeze:.0} mm/s²; \
+         boundary acceleration must be passed from old plan to new plan",
     );
 }
 
@@ -1624,8 +1635,18 @@ fn emit_covers_window_starting_after_t_dispatched() {
     let t_split = emit_partial_window(&mut state);
     append_x_move(&mut state, &ctx, 30.0, 600.0);
 
+    let max_h = state.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+    let t_freeze = t_split + max_h;
     let window_start = state.planned_fitted[0].t_start;
-    assert!((window_start - t_split).abs() < 1e-9);
+    assert!(
+        window_start <= t_freeze + 1e-9,
+        "planned_fitted must cover from at most t_freeze ({t_freeze:.9}) onward; \
+         first entry starts at {window_start:.9}",
+    );
+    assert!(
+        state.planned_fitted.last().unwrap().t_end > t_split,
+        "planned_fitted must extend past t_split",
+    );
     state.t_dispatched = (t_split - 0.009).max(0.0);
 
     let _ = emit_partial_window(&mut state);

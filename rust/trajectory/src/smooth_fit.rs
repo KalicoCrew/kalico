@@ -97,21 +97,38 @@ pub fn fit_c2_cubic<F: Fn(f64) -> f64>(
     t_end: f64,
     tolerance: f64,
 ) -> Result<ScalarNurbs<f64>, FitError> {
+    fit_c2_cubic_with_bc(f, t_start, t_end, tolerance, None, None)
+}
+
+/// Like [`fit_c2_cubic`] but pins the left boundary slope to `yp0_override`
+/// and/or the right boundary slope to `ypn_override` when those are `Some`.
+/// The caller must supply the exact slope value; `None` falls back to a
+/// finite-difference estimate from `f`.
+///
+/// Providing a matching left slope to a subsequent fit at the same point
+/// enforces C1 continuity at the join, eliminating dispatch-stream velocity
+/// seams at replan boundaries.
+pub fn fit_c2_cubic_with_bc<F: Fn(f64) -> f64>(
+    f: &F,
+    t_start: f64,
+    t_end: f64,
+    tolerance: f64,
+    yp0_override: Option<f64>,
+    ypn_override: Option<f64>,
+) -> Result<ScalarNurbs<f64>, FitError> {
     let span = t_end - t_start;
     debug_assert!(span > 0.0 && tolerance > 0.0);
 
     let fd = (span * 1e-4).max(f64::MIN_POSITIVE);
-    let yp0 = (f(t_start + fd) - f(t_start)) / fd;
-    let ypn = (f(t_end) - f(t_end - fd)) / fd;
+    let yp0 = yp0_override.unwrap_or_else(|| (f(t_start + fd) - f(t_start)) / fd);
+    let ypn = ypn_override.unwrap_or_else(|| (f(t_end) - f(t_end - fd)) / fd);
 
-    // Start with start, midpoint, end so the first spline is non-degenerate.
     let mut knots = vec![t_start, t_start + 0.5 * span, t_end];
 
     loop {
         let values: Vec<f64> = knots.iter().map(|&t| f(t)).collect();
         let pieces = build_clamped_spline(&knots, &values, yp0, ypn);
 
-        // Find the interval with the worst sampled error and the t of that max.
         let mut worst_err = 0.0_f64;
         let mut worst_t = f64::NAN;
         let mut worst_interval = 0usize;

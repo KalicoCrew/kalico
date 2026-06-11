@@ -100,10 +100,8 @@ fn high_speed_limits() -> PlannerLimits {
 const STEPS_PER_MM: f64 = 160.0;
 const SAMPLE_DT_S: f64 = 25.0e-6;
 const STEP_BURST_BUDGET_MM: f64 = 0.19;
-const POS_SEAM_BUDGET_MM: f64 = 0.01;
-// TODO: tighten back to 1.0 once the pre-commit replan splice is C1 — today it
-// leaves a ~1.1 mm/s velocity seam radiating across all axes (incl. idle Z).
-const VEL_SEAM_BUDGET_MM_S: f64 = 2.5;
+const POS_SEAM_BUDGET_MM: f64 = 1.0 / STEPS_PER_MM * 0.99;
+const VEL_SEAM_BUDGET_MM_S: f64 = 1.0;
 const IDLE_VEL_BUDGET_MM_S: f64 = 1.0;
 
 fn motor_pos(seg: &ShapedSegment, t: f64) -> [f64; 5] {
@@ -1545,5 +1543,41 @@ fn three_pure_x_jogs_quiescence_timer_corexy_degree_invariant() {
     );
 
     check_degree_equality_and_enqueue(&segs, "three_pure_x_jogs_quiescence_timer");
+    h.shutdown();
+}
+
+#[test]
+fn three_pure_x_jogs_in_flight_velocity_seam() {
+    use std::time::Duration;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+    h.kalico_stream_open([295.0, 0.0, 0.0, 0.0])
+        .expect("stream_open");
+
+    h.submit_move(classify_and_build([295.0, 0.0, 0.0], -20.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 1");
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.submit_move(classify_and_build([275.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 2");
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.submit_move(classify_and_build([250.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 3");
+
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "three pure-X jogs produced zero dispatched segments"
+    );
+
+    assert_dispatch_stream_continuous(&segs);
+
     h.shutdown();
 }

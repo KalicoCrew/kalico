@@ -46,6 +46,7 @@ impl ShaperState {
             t_dispatched: 0.0,
             planned_fitted: Vec::new(),
             planned_meta: Vec::new(),
+            pending_freeze: Vec::new(),
         }
     }
 
@@ -56,6 +57,7 @@ impl ShaperState {
         self.uncommitted_moves.clear();
         self.planned_fitted.clear();
         self.planned_meta.clear();
+        self.pending_freeze.clear();
         self.t_appended = 0.0;
         self.t_decel_start = 0.0;
         self.t_shaped = 0.0;
@@ -68,12 +70,21 @@ impl ShaperState {
         new_segment: CubicSegment,
         ctx: &ReplanContext,
     ) -> Result<ReplanReport, ShapeError> {
-        let initial_v_raw = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
+        let max_h = self.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+
+        let t_freeze =
+            if self.t_dispatched > 0.0 && max_h > 0.0 && self.t_dispatched < self.t_appended {
+                (self.t_dispatched + max_h).min(self.t_appended)
+            } else {
+                self.t_dispatched
+            };
+
+        let initial_v_raw = self.read_path_speed_at(t_freeze, ctx.fallback_initial_v);
         let a_max_path = ctx.limits.a_max.iter().copied().fold(f64::MAX, f64::min);
         let (initial_a, start_d2_override) = if initial_v_raw > 0.0 {
-            let axis_accels = self.read_axis_accels_at(self.t_dispatched);
+            let axis_accels = self.read_axis_accels_at(t_freeze);
             let path_a = self
-                .read_path_accel_at(self.t_dispatched, 0.0)
+                .read_path_accel_at(t_freeze, 0.0)
                 .clamp(-a_max_path, a_max_path);
             (path_a, axis_accels)
         } else {
@@ -86,11 +97,12 @@ impl ShaperState {
         let prior_planned_fitted = self.planned_fitted.clone();
         let prior_planned_meta = self.planned_meta.clone();
 
-        let split_start = Instant::now();
-        let partial_split = self.split_partially_committed_at_t_dispatched();
+        let freeze_zone_active = t_freeze > self.t_dispatched + TIME_LOOKUP_TOLERANCE;
 
-        self.uncommitted_moves
-            .retain(|m| m.t_end > self.t_dispatched);
+        let split_start = Instant::now();
+        let partial_split = self.split_uncommitted_at_freeze(t_freeze);
+
+        self.uncommitted_moves.retain(|m| m.t_end > t_freeze);
 
         let was_replace_split = matches!(partial_split, Some(PartialCommitSplit::Replace { .. }));
 
@@ -98,7 +110,7 @@ impl ShaperState {
             Some(PartialCommitSplit::Replace { new_segment }) => {
                 if let Some(front) = self.uncommitted_moves.front_mut() {
                     front.segment = *new_segment;
-                    front.t_start = self.t_dispatched;
+                    front.t_start = t_freeze;
                 }
             }
             Some(PartialCommitSplit::DropFromQueue) => {
@@ -107,10 +119,7 @@ impl ShaperState {
             None => {}
         }
 
-        let pre_plan_t_start = self
-            .uncommitted_moves
-            .back()
-            .map_or(self.t_dispatched, |m| m.t_end);
+        let pre_plan_t_start = self.uncommitted_moves.back().map_or(t_freeze, |m| m.t_end);
         self.uncommitted_moves.push_back(UncommittedMove {
             segment: new_segment,
             t_start: pre_plan_t_start,
@@ -170,10 +179,10 @@ impl ShaperState {
         let solve_start = Instant::now();
         let (PlanOutput { fitted, stats }, time_offset, fallback_rung) =
             match plan_velocity(&plan_input) {
-                Ok(out) => (out, self.t_dispatched, 1u8),
+                Ok(out) => (out, t_freeze, 1u8),
                 Err(rung1_err) => {
                     if let Some(rung2_out) =
-                        try_rung2(was_replace_split, &prior_uncommitted, self, ctx)
+                        try_rung2(was_replace_split, &prior_uncommitted, self, ctx, t_freeze)
                     {
                         let (out, offset) = rung2_out;
                         (out, offset, 2u8)
@@ -224,7 +233,7 @@ impl ShaperState {
 
         self.t_decel_start = find_decel_start_time(&fitted) + time_offset;
 
-        self.planned_fitted = fitted
+        let new_fitted: Vec<FittedSegment> = fitted
             .into_iter()
             .map(|f| FittedSegment {
                 axes: [
@@ -236,7 +245,8 @@ impl ShaperState {
                 t_end: f.t_end + time_offset,
             })
             .collect();
-        self.planned_meta = self
+
+        let new_meta: Vec<EmitSegmentMeta> = self
             .uncommitted_moves
             .iter()
             .map(|m| EmitSegmentMeta {
@@ -244,6 +254,14 @@ impl ShaperState {
                 extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
             })
             .collect();
+
+        self.planned_fitted = new_fitted;
+        self.planned_meta = new_meta;
+
+        if !freeze_zone_active {
+            self.pending_freeze.clear();
+        }
+
         let rebuild_us = rebuild_start.elapsed().as_micros() as u64;
 
         Ok(ReplanReport {
@@ -380,6 +398,7 @@ impl ShaperState {
         self.uncommitted_moves.clear();
         self.planned_fitted.clear();
         self.planned_meta.clear();
+        self.pending_freeze.clear();
         self.t_appended = hold_end;
         self.t_decel_start = hold_end;
         self.t_dispatched = hold_end;
@@ -405,13 +424,11 @@ impl ShaperState {
         None
     }
 
-    fn split_partially_committed_at_t_dispatched(&self) -> Option<PartialCommitSplit> {
-        let t_d = self.t_dispatched;
-        let (idx, planned) = self
-            .planned_fitted
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.t_start - TIME_LOOKUP_TOLERANCE <= t_d && t_d < f.t_end)?;
+    fn split_uncommitted_at_freeze(&self, t_freeze: f64) -> Option<PartialCommitSplit> {
+        let (idx, planned) =
+            self.planned_fitted.iter().enumerate().find(|(_, f)| {
+                f.t_start - TIME_LOOKUP_TOLERANCE <= t_freeze && t_freeze < f.t_end
+            })?;
 
         let move_ref = self.uncommitted_moves.get(idx)?;
 
@@ -423,29 +440,28 @@ impl ShaperState {
         }
 
         let p_target = [
-            nurbs::eval::eval(&planned.axes[0], t_d),
-            nurbs::eval::eval(&planned.axes[1], t_d),
-            nurbs::eval::eval(&planned.axes[2], t_d),
+            nurbs::eval::eval(&planned.axes[0], t_freeze),
+            nurbs::eval::eval(&planned.axes[1], t_freeze),
+            nurbs::eval::eval(&planned.axes[2], t_freeze),
         ];
 
         let move_span_t = planned.t_end - planned.t_start;
         let s_seed = if move_span_t > TIME_LOOKUP_TOLERANCE {
-            ((t_d - planned.t_start) / move_span_t)
+            ((t_freeze - planned.t_start) / move_span_t)
                 .clamp(NEWTON_SEED_CLAMP, 1.0 - NEWTON_SEED_CLAMP)
         } else {
             0.5
         };
-        let s_dispatched =
-            invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed)?;
+        let s_freeze = invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed)?;
 
-        if s_dispatched <= SPLIT_BOUNDARY_TOLERANCE {
+        if s_freeze <= SPLIT_BOUNDARY_TOLERANCE {
             return None;
         }
-        if s_dispatched >= 1.0 - SPLIT_BOUNDARY_TOLERANCE {
+        if s_freeze >= 1.0 - SPLIT_BOUNDARY_TOLERANCE {
             return Some(PartialCommitSplit::DropFromQueue);
         }
 
-        let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_dispatched);
+        let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_freeze);
 
         let new_segment = CubicSegment::try_new(
             right,
@@ -523,13 +539,14 @@ fn try_rung2(
     prior_uncommitted: &std::collections::VecDeque<UncommittedMove>,
     state: &mut ShaperState,
     ctx: &ReplanContext,
+    t_freeze: f64,
 ) -> Option<(crate::plan_velocity::PlanOutput, f64)> {
     if !was_replace_split {
         return None;
     }
 
     state.uncommitted_moves.pop_front();
-    let retry_time_offset = prior_uncommitted[0].t_end;
+    let retry_time_offset = prior_uncommitted[0].t_end.max(t_freeze);
 
     let retry_initial_v = state.read_path_speed_at(retry_time_offset, ctx.fallback_initial_v);
 
