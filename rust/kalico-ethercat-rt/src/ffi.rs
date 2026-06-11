@@ -15,10 +15,12 @@ pub struct EcTelemetry {
     pub following_error: i32,
     pub position_demand: i32,
     pub target_position: i32,
+    pub velocity_offset: i32,
+    pub torque_offset: i16,
 }
 
 const _: () = assert!(
-    core::mem::size_of::<EcTelemetry>() == 24,
+    core::mem::size_of::<EcTelemetry>() == 32,
     "EcTelemetry layout must match ec_telemetry_t in bench/libecrt.h"
 );
 

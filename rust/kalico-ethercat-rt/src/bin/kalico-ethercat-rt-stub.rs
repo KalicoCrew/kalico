@@ -418,6 +418,8 @@ fn main() {
                     torque_actual: 100,
                     statusword: 0x0627,
                     error_code: 0,
+                    velocity_offset: 0,
+                    torque_offset: 0,
                 },
             });
         }

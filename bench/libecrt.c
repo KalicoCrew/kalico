@@ -470,6 +470,8 @@ void ec_rt_get_telemetry(ec_telemetry_t *out) {
     out->following_error = g_in->following_error;
     out->position_demand = g_in->position_demand;
     out->target_position = g_out->target_position;
+    out->velocity_offset = g_out->velocity_offset;
+    out->torque_offset   = g_out->torque_offset;
 }
 
 int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,

@@ -133,7 +133,7 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
             }
         )
     torque = np.abs(data["torque_actual"].astype(np.int64))
-    return {
+    metrics = {
         "samples": len(data),
         "moves": moves,
         "torque_saturation_pct": float(
@@ -143,6 +143,15 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
             np.max(np.abs(recomputed - ferr.astype(np.int64)))
         ),
     }
+    if "velocity_offset" in (data.dtype.names or ()):
+        moving = (data["flags"] & FLAG_MOTION_ACTIVE) != 0
+        metrics["ff_velocity_offset_max"] = int(
+            np.max(np.abs(data["velocity_offset"][moving])) if moving.any() else 0
+        )
+        metrics["ff_torque_offset_max"] = int(
+            np.max(np.abs(data["torque_offset"][moving])) if moving.any() else 0
+        )
+    return metrics
 
 
 def welch_psd(x, fs, nperseg=1024):
@@ -194,6 +203,16 @@ def _print_metrics(m, counts_per_mm):
         "drive-vs-recomputed following error: max delta %d counts"
         % (m["ferr_crosscheck_max"],)
     )
+    if "ff_velocity_offset_max" in m:
+        print(
+            "FF offsets during motion: velocity max %d counts/s (%.1f mm/s), "
+            "torque max %d (0.1%% rated)"
+            % (
+                m["ff_velocity_offset_max"],
+                m["ff_velocity_offset_max"] / counts_per_mm,
+                m["ff_torque_offset_max"],
+            )
+        )
     for mv in m["moves"]:
         settle = (
             "%.1f ms" % mv["settle_ms"]

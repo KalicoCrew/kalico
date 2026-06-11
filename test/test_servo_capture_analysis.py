@@ -391,3 +391,52 @@ def test_resolve_newest_capture_picks_latest(tmp_path):
 def test_resolve_newest_capture_missing_fails_loudly(tmp_path):
     with pytest.raises(SystemExit, match="track"):
         sc.resolve_newest_capture(str(tmp_path), "track")
+
+
+def _ext_capture(tmp_path, vel_offsets, tq_offsets, moving_mask):
+    channels = CHANNELS + [
+        {"name": "velocity_offset", "dtype": "i32", "offset": 31},
+        {"name": "torque_offset", "dtype": "i16", "offset": 35},
+    ]
+    header = {
+        "version": 1,
+        "cycle_ns": 1_000_000,
+        "record_size": 37,
+        "started_utc": "2026-06-12T12:00:00Z",
+        "started_mono_ns": 0,
+        "drives": [{"name": "x", "counts_per_mm": 3276.8}],
+        "channels": channels,
+    }
+    path = os.path.join(str(tmp_path), "ext.scap")
+    with open(path, "wb") as f:
+        f.write((json.dumps(header) + "\n").encode())
+        for i, (vo, tq, moving) in enumerate(
+            zip(vel_offsets, tq_offsets, moving_mask)
+        ):
+            flags = FLAG_TORQUE_ENABLED | (FLAG_MOTION_ACTIVE if moving else 0)
+            f.write(
+                struct.pack(
+                    "<QBiiiihHHih", i, flags, i, i, i, 0, 0, 0x0627, 0, vo, tq
+                )
+            )
+    return path
+
+
+def test_ff_offset_metrics_cover_only_motion_samples(tmp_path):
+    path = _ext_capture(
+        tmp_path,
+        vel_offsets=[999999, -327680, 100, 0],
+        tq_offsets=[500, -120, 3, 0],
+        moving_mask=[False, True, True, False],
+    )
+    _, data = sc.load_capture(path)
+    m = sc.compute_metrics(data, 50, 900)
+    assert m["ff_velocity_offset_max"] == 327680
+    assert m["ff_torque_offset_max"] == 120
+
+
+def test_ff_offset_metrics_absent_for_legacy_captures(tmp_path):
+    path, _ = synth_capture(tmp_path)
+    _, data = sc.load_capture(path)
+    m = sc.compute_metrics(data, 50, 900)
+    assert "ff_velocity_offset_max" not in m

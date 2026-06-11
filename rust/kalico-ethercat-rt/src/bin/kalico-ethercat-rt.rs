@@ -702,6 +702,8 @@ fn main() {
                     torque_actual: t.torque_actual,
                     statusword: t.statusword,
                     error_code: t.error_code,
+                    velocity_offset: t.velocity_offset,
+                    torque_offset: t.torque_offset,
                 },
             });
         }

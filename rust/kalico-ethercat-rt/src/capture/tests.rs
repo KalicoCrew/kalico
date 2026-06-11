@@ -12,6 +12,8 @@ fn sample(n: i32) -> DriveSample {
         torque_actual: 42,
         statusword: 0x0627,
         error_code: 0,
+        velocity_offset: n + 3,
+        torque_offset: -7,
     }
 }
 
@@ -55,6 +57,8 @@ fn record_encodes_to_fixed_little_endian_layout() {
             torque_actual: -300,
             statusword: 0x0627,
             error_code: 0x7380,
+            velocity_offset: -654321,
+            torque_offset: 250,
         },
     };
     let b = encode_record(&r);
@@ -68,6 +72,8 @@ fn record_encodes_to_fixed_little_endian_layout() {
     assert_eq!(&b[25..27], &(-300i16).to_le_bytes());
     assert_eq!(&b[27..29], &0x0627u16.to_le_bytes());
     assert_eq!(&b[29..31], &0x7380u16.to_le_bytes());
+    assert_eq!(&b[31..35], &(-654321i32).to_le_bytes());
+    assert_eq!(&b[35..37], &250i16.to_le_bytes());
 }
 
 #[test]
@@ -79,7 +85,7 @@ fn header_is_one_json_line_describing_the_record() {
     for needle in [
         "\"version\":1",
         "\"cycle_ns\":1000000",
-        "\"record_size\":31",
+        "\"record_size\":37",
         "\"started_utc\":\"2026-06-10T12:00:00Z\"",
         "\"started_mono_ns\":7",
         "\"name\":\"x\"",
@@ -93,6 +99,8 @@ fn header_is_one_json_line_describing_the_record() {
         "{\"name\":\"torque_actual\",\"dtype\":\"i16\",\"offset\":25}",
         "{\"name\":\"statusword\",\"dtype\":\"u16\",\"offset\":27}",
         "{\"name\":\"error_code\",\"dtype\":\"u16\",\"offset\":29}",
+        "{\"name\":\"velocity_offset\",\"dtype\":\"i32\",\"offset\":31}",
+        "{\"name\":\"torque_offset\",\"dtype\":\"i16\",\"offset\":35}",
     ] {
         assert!(h.contains(needle), "header missing {needle}: {h}");
     }
