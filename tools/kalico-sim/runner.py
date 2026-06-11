@@ -1198,7 +1198,9 @@ PROBE_TEST_BOOT_ERRORS = {
 }
 
 
-def _generate_probe_config(h7_pty: str, gcode_dir: str, variant: str) -> str:
+def _generate_probe_config(
+    h7_pty: str, gcode_dir: str, variant: str, f4_pty: Optional[str] = None
+) -> str:
     """Auto-endstop walls (libsim_intercept.c): X steps→gpio200,
     Y steps→gpio201, Z steps→gpio202 and gpio203."""
     if variant == "gpio-z":
@@ -1241,9 +1243,18 @@ z_hop_speed: 15
 
     remote_section = ""
     if variant == "remote":
+        if f4_pty is None:
+            raise ValueError(
+                "probe-test remote: a second (F446) sim MCU is required so"
+                " the trsync lives on a different MCU than the steppers"
+            )
         probe_section = ""
-        remote_section = """
+        remote_section = f"""
+[mcu bottom]
+serial: {f4_pty}
+
 [sim_remote_endstop]
+mcu: bottom
 trigger_delay: 1.0
 measured_z: 3.25
 trigger_height: 0
@@ -1402,7 +1413,32 @@ def run_probe_test(
                 )
                 log.info("H7 MCU spawned (pid=%d)", mcus[0].process.pid)
 
-            cfg_text = _generate_probe_config(h7_pty, str(gcode_dir), variant)
+            f4_pty = None
+            if expect_boot_error is None and variant == "remote":
+                f4_pty = str(tmp / "klipper_sim_f4")
+                f4_sock_dir = tmp / "sim" / "f4"
+                f4_sock_dir.mkdir(parents=True)
+                f4_elf = repo_root / "out" / "klipper-f4-sim.elf"
+                if not f4_elf.exists():
+                    print("ERROR: missing out/klipper-f4-sim.elf")
+                    return 1
+                mcus.append(
+                    spawn_mcu(
+                        "f4",
+                        f4_elf,
+                        f4_pty,
+                        str(log_dir / "f4.log"),
+                        str(f4_sock_dir),
+                        shim_so,
+                        vtime_so,
+                        verbose,
+                    )
+                )
+                log.info("F4 MCU spawned (pid=%d)", mcus[-1].process.pid)
+
+            cfg_text = _generate_probe_config(
+                h7_pty, str(gcode_dir), variant, f4_pty
+            )
             cfg_path = tmp / "printer.cfg"
             cfg_path.write_text(cfg_text)
             if variant == "safe-z":
@@ -1486,6 +1522,14 @@ def run_probe_test(
                         "remote-measured-override",
                         "set Z=3.2500" in out,
                         "homing log should show measured override 3.25",
+                    )
+                    m = re.search(r"trip_to_stop_travel=(-?\d+\.\d+)", out)
+                    check(
+                        "remote-trip-vs-stop",
+                        m is not None and 0.0 <= float(m.group(1)) < 0.5,
+                        m.group(0)
+                        if m
+                        else "no trip_to_stop_travel in homing log",
                     )
                     z = _query_toolhead_z(api_socket)
                     check(

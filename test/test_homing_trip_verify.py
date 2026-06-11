@@ -5,6 +5,7 @@ from klippy.extras.homing import (
     _no_trigger_error_message,
     _verify_latched_trip,
 )
+from klippy.extras.sim_remote_endstop import trip_to_stop_travel
 
 
 class FakeGcmd:
@@ -100,3 +101,23 @@ def test_homed_position_provider_declining_falls_back():
         FakeProviderDeclines(), 2, [0, 0, 1.0], [0, 0, 0.9], 0.5
     )
     assert pos == pytest.approx(0.4)
+
+
+def test_trip_to_stop_travel_homing_down():
+    travel = trip_to_stop_travel(2, [0, 0, 10.0], [0, 0, 3.3], [0, 0, 3.2])
+    assert travel == pytest.approx(0.1)
+
+
+def test_trip_to_stop_travel_homing_up():
+    travel = trip_to_stop_travel(2, [0, 0, 0.0], [0, 0, 4.9], [0, 0, 5.0])
+    assert travel == pytest.approx(0.1)
+
+
+def test_trip_to_stop_travel_negative_when_trip_lands_past_stop():
+    travel = trip_to_stop_travel(2, [0, 0, 10.0], [0, 0, 3.1], [0, 0, 3.2])
+    assert travel == pytest.approx(-0.1)
+
+
+def test_trip_to_stop_travel_zero_when_trip_equals_stop():
+    travel = trip_to_stop_travel(2, [0, 0, 10.0], [0, 0, 3.2], [0, 0, 3.2])
+    assert travel == 0.0

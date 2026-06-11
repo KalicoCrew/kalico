@@ -10,6 +10,13 @@ from klippy.bridge_endstop import RemoteBridgeEndstop
 REASON_ENDSTOP_HIT = 1
 REASON_COMMS_TIMEOUT = 4
 
+MAX_TRIP_TO_STOP_TRAVEL = 0.5
+
+
+def trip_to_stop_travel(axis, start_pos, trip_pos, final_pos):
+    direction = 1.0 if final_pos[axis] >= start_pos[axis] else -1.0
+    return (final_pos[axis] - trip_pos[axis]) * direction
+
 
 class SimRemoteEndstop:
     def __init__(self, config):
@@ -26,6 +33,7 @@ class SimRemoteEndstop:
         self._trsync_trigger_cmd = None
         self._last_reason = None
         self._trigger_timer = None
+        self._trip_start_pos = None
         self.mcu.register_config_callback(self._build_config)
         self.mcu.register_response(
             self._handle_trsync_state, "trsync_state", self.oid
@@ -66,6 +74,8 @@ class SimRemoteEndstop:
 
     def trip_move_begin(self, entry):
         self._last_reason = None
+        toolhead = self.printer.lookup_object("toolhead")
+        self._trip_start_pos = list(toolhead.get_position())
         self._trsync_start_cmd.send([self.oid, 0, 0, REASON_COMMS_TIMEOUT])
         reactor = self.printer.get_reactor()
         self._trigger_timer = reactor.register_timer(
@@ -96,6 +106,22 @@ class SimRemoteEndstop:
             )
 
     def measured_trip_position(self, axis, trip_pos, final_pos):
+        travel = trip_to_stop_travel(
+            axis, self._trip_start_pos, trip_pos, final_pos
+        )
+        logging.info(
+            "sim_remote_endstop: trip=%.4f final=%.4f trip_to_stop_travel=%.4f",
+            trip_pos[axis],
+            final_pos[axis],
+            travel,
+        )
+        if not 0.0 <= travel < MAX_TRIP_TO_STOP_TRAVEL:
+            raise self.printer.command_error(
+                "sim_remote_endstop: reconstructed trip position %.4f is not"
+                " within %.2fmm before the stop position %.4f — cross-mcu"
+                " trip clock translation is inconsistent"
+                % (trip_pos[axis], MAX_TRIP_TO_STOP_TRAVEL, final_pos[axis])
+            )
         return self.measured_z
 
 
