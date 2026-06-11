@@ -511,7 +511,12 @@ fn run_loop(
                             &commit_fire_count,
                         );
                     }
-                    state.advance_idle(esc);
+                    // Resume with the same dispatch cushion a fresh stream
+                    // gets: anchoring at bare `esc` leaves the upcoming
+                    // append_and_replan solve (observed 100-200 ms) to consume
+                    // the entire lead before seg0 is even emitted, landing
+                    // pieces in the MCU past.
+                    state.advance_idle(esc + LEAD);
                 }
 
                 let replan_start = Instant::now();
