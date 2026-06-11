@@ -1,4 +1,4 @@
-use super::{relay_decision, relay_trip_clock, RelayAction};
+use super::{RelayAction, relay_decision, relay_trip_clock};
 
 #[test]
 fn non_terminal_report_is_ignored() {

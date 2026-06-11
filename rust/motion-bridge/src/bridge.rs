@@ -484,6 +484,7 @@ pub struct PyMotionBridge {
     homing_result:
         Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3], u64), String>>>>,
     latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
+    remote_triggers: Mutex<HashMap<u8, (u32, kalico_host_rt::host_io::InterceptorId)>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
     // this and no-op, so double-teardown is provably safe and observable.
@@ -768,6 +769,7 @@ impl PyMotionBridge {
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
             latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
+            remote_triggers: Mutex::new(HashMap::new()),
             shut_down: AtomicBool::new(false),
         }
     }
@@ -3333,6 +3335,108 @@ impl PyMotionBridge {
                 *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = final_pos;
                 Ok(Some((trip_pos, final_pos, trip_clock)))
             }
+        }
+    }
+
+    fn arm_remote_trigger(&self, mcu_handle: u32, trsync_oid: u32, endstop_id: u8) -> PyResult<()> {
+        {
+            let armed = self
+                .remote_triggers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if armed.contains_key(&endstop_id) {
+                return Err(PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: endstop_id {endstop_id} is already armed"
+                )));
+            }
+        }
+        let host_io = self
+            .mcus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&mcu_handle)
+            .and_then(|c| c.host_io.as_ref().map(Arc::clone))
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: mcu {mcu_handle} has no serial transport"
+                ))
+            })?;
+        let deps = self.trip_deps();
+        let router = Arc::clone(&self.router);
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = host_io
+            .register_frame_interceptor(
+                "trsync_state",
+                Some(trsync_oid),
+                Box::new(move |params| {
+                    let decision = crate::remote_trigger::relay_decision(
+                        params.try_get_u32("can_trigger"),
+                        fired.load(Ordering::SeqCst),
+                    );
+                    if decision != crate::remote_trigger::RelayAction::Fire {
+                        return;
+                    }
+                    fired.store(true, Ordering::SeqCst);
+                    let clock32 = params.try_get_u32("clock").unwrap_or(0);
+                    let reference = router
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .compute_ack_clock(kalico_host_rt::passthrough_queue::McuHandle::from_raw(
+                            mcu_handle,
+                        ))
+                        .unwrap_or(0);
+                    let clock64 = crate::remote_trigger::relay_trip_clock(clock32, reference);
+                    tracing::info!(
+                        subsystem = "trip-relay",
+                        event = "remote_trigger_fired",
+                        mcu = mcu_handle,
+                        endstop_id,
+                        trsync_oid,
+                        clock32,
+                        clock64,
+                        reason = params.try_get_u32("trigger_reason"),
+                        "remote trsync terminal report — dispatching endstop trip"
+                    );
+                    dispatch_endstop_trip(&deps, mcu_handle, endstop_id, clock64);
+                }),
+            )
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "arm_remote_trigger: interceptor registration failed: {e:?}"
+                ))
+            })?;
+        self.remote_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(endstop_id, (mcu_handle, id));
+        Ok(())
+    }
+
+    fn disarm_remote_trigger(&self, endstop_id: u8) -> PyResult<()> {
+        let entry = self
+            .remote_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&endstop_id);
+        let Some((mcu_handle, id)) = entry else {
+            return Err(PyRuntimeError::new_err(format!(
+                "disarm_remote_trigger: endstop_id {endstop_id} is not armed"
+            )));
+        };
+        let host_io = self
+            .mcus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&mcu_handle)
+            .and_then(|c| c.host_io.as_ref().map(Arc::clone));
+        match host_io {
+            Some(io) => io.unregister_frame_interceptor(id).map_err(|e| {
+                PyRuntimeError::new_err(format!("disarm_remote_trigger: unregister failed: {e:?}"))
+            }),
+            // MCU detached: its reactor (and the interceptor with it) is
+            // already gone. Disarm runs on cleanup paths — don't mask the
+            // original error.
+            None => Ok(()),
         }
     }
 
