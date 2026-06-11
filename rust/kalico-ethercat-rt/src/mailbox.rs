@@ -60,6 +60,31 @@ pub struct MailboxWorker {
     handle: Option<JoinHandle<()>>,
 }
 
+/// New threads inherit the creator's SCHED_FIFO policy, priority, and CPU
+/// pin (go_realtime runs on the spawning thread). Equal-priority FIFO
+/// threads never preempt each other, so an inherited-RT mailbox worker on
+/// the DC core starves the cycle exactly like inline SDO did — observed as
+/// ErC1.1 on the bench even after moving mailbox work off-loop. SCHED_OTHER
+/// is always preempted by the FIFO DC thread, on any core.
+#[cfg(target_os = "linux")]
+fn demote_to_normal_scheduling() {
+    unsafe {
+        let param = libc::sched_param { sched_priority: 0 };
+        let rc = libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_OTHER, &param);
+        if rc != 0 {
+            panic!("ec-rt-mailbox: SCHED_OTHER demotion failed (errno {rc})");
+        }
+        let mut cpus: libc::cpu_set_t = std::mem::zeroed();
+        for cpu in 0..(8 * std::mem::size_of::<libc::cpu_set_t>()) {
+            libc::CPU_SET(cpu, &mut cpus);
+        }
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpus);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn demote_to_normal_scheduling() {}
+
 impl MailboxWorker {
     pub fn spawn<B, L>(mut bus: B, mut write_limits: L) -> Self
     where
@@ -71,6 +96,7 @@ impl MailboxWorker {
         let handle = std::thread::Builder::new()
             .name("ec-rt-mailbox".into())
             .spawn(move || {
+                demote_to_normal_scheduling();
                 while let Ok(req) = req_rx.recv() {
                     let reply = match req {
                         MailboxRequest::SdoRead {
