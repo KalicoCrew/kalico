@@ -395,9 +395,7 @@ class TMC5160:
             config, Registers, self.fields, TMC_FREQUENCY
         )
         # Allow virtual pins to be created
-        self._virtual_pin_helper = tmc.TMCVirtualPinHelper(
-            config, self.mcu_tmc
-        )
+        self._virtual_pin_helper = tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
         stepper_name = " ".join(config.get_name().split()[1:])
         if config.has_section(stepper_name):
             stepper_section = config.getsection(stepper_name)
@@ -516,9 +514,7 @@ class TMC5160:
         return self._phase_group or [self]
 
     def phase_stepping_active(self):
-        return any(
-            t._phase_mode_active for t in self._phase_group_members()
-        )
+        return any(t._phase_mode_active for t in self._phase_group_members())
 
     def _phase_mcu(self):
         return self.mcu_tmc.tmc_spi.spi.get_mcu()

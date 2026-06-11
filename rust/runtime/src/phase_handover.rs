@@ -5,6 +5,7 @@ use crate::stepping_state::{AxisState, StepMode, StepperRef};
 
 pub const PHASE_PERIOD: i32 = 1024;
 pub const PHASE_MASK: i32 = PHASE_PERIOD - 1;
+const PHASE_HALF_PERIOD: i32 = PHASE_PERIOD >> 1;
 
 pub struct PhaseQuery {
     pub axis_idx: u8,
@@ -15,7 +16,7 @@ pub struct PhaseQuery {
 
 pub fn shortest_phase_delta(current_phase: u16, target_phase: u16) -> i32 {
     let raw = (i32::from(target_phase) - i32::from(current_phase)).rem_euclid(PHASE_PERIOD);
-    if raw > PHASE_PERIOD / 2 {
+    if raw > PHASE_HALF_PERIOD {
         raw - PHASE_PERIOD
     } else {
         raw
