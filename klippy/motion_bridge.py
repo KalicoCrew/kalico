@@ -323,17 +323,17 @@ class MotionBridgeWrapper:
         )
 
     def register_phase_motor(
-        self, mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s=5.0
+        self, mcu_handle, motor_idx, bus_id, cs_pin_id, slot_idx, timeout_s=5.0
     ):
-        """Call once per phase-stepped motor, AFTER register_phase_bus and
-        BEFORE configure_axes. motor_idx matches the order of entries in the
-        configure_axes blob's phase section.
-        """
+        """Call once per phase-stepped motor, AFTER register_phase_bus.
+        slot_idx is the kinematic slot whose commanded position drives this
+        motor's XDIRECT output."""
         return self._bridge.register_phase_motor(
             mcu_handle,
             motor_idx,
             bus_id,
             cs_pin_id,
+            slot_idx,
             timeout_s,
         )
 

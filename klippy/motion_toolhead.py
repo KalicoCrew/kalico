@@ -777,23 +777,26 @@ class MotionToolhead(ToolHead):
                         bus_id,
                         rate=2_000_000,
                     )
-                for motor_idx, (bus_id, cs_pin_id, _slot_idx) in enumerate(
+                for motor_idx, (bus_id, cs_pin_id, slot_idx) in enumerate(
                     phase_configs,
                 ):
                     if bus_id == 0xFF:
                         continue
                     logging.info(
-                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d",
+                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d "
+                        "slot=%d",
                         name,
                         motor_idx,
                         bus_id,
                         cs_pin_id,
+                        slot_idx,
                     )
                     self.bridge.register_phase_motor(
                         mcu_handle,
                         motor_idx,
                         bus_id,
                         cs_pin_id,
+                        slot_idx,
                     )
             # One kalico_configure_axis per axis carries a 4-byte-per-stepper
             # blob { stepper_oid: u8, dir_invert: u8, tmc_cs_oid: u8, flags: u8 }.

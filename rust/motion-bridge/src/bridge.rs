@@ -1978,7 +1978,7 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    #[pyo3(signature = (mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s = 5.0))]
+    #[pyo3(signature = (mcu_handle, motor_idx, bus_id, cs_pin_id, slot_idx, timeout_s = 5.0))]
     fn register_phase_motor(
         &self,
         py: Python<'_>,
@@ -1986,6 +1986,7 @@ impl PyMotionBridge {
         motor_idx: u8,
         bus_id: u8,
         cs_pin_id: u8,
+        slot_idx: u8,
         timeout_s: f64,
     ) -> PyResult<()> {
         let io = {
@@ -2010,7 +2011,7 @@ impl PyMotionBridge {
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
         let msg = format!(
             "runtime_register_phase_motor motor_idx={motor_idx} \
-             bus_id={bus_id} cs_pin_id={cs_pin_id}"
+             bus_id={bus_id} cs_pin_id={cs_pin_id} slot_idx={slot_idx}"
         );
         let params = py.allow_threads(|| -> PyResult<_> {
             use kalico_host_rt::transport::Transport;
