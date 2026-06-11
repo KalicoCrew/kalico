@@ -170,6 +170,14 @@ class MotionBridgeWrapper:
     def set_torque(self, mcu_handle, value, print_time):
         self._bridge.set_torque(mcu_handle, bool(value), print_time)
 
+    def start_servo_capture(self, mcu_handle, path, started_utc, drive_name):
+        return self._bridge.start_servo_capture(
+            mcu_handle, path, started_utc, drive_name
+        )
+
+    def stop_servo_capture(self, mcu_handle):
+        return self._bridge.stop_servo_capture(mcu_handle)
+
     def sdo_read(self, mcu_handle, index, subindex):
         return self._bridge.sdo_read(mcu_handle, index, subindex)
 
@@ -233,6 +241,9 @@ class MotionBridgeWrapper:
         return self._bridge.set_clock_est(
             handle, freq, offset, last_clock, host_now_raw
         )
+
+    def set_nominal_clock_freq(self, mcu_handle, freq_hz):
+        return self._bridge.set_nominal_clock_freq(mcu_handle, int(freq_hz))
 
     def bridge_get_clock_async(self, handle):
         return self._bridge.bridge_get_clock_async(handle)
@@ -403,7 +414,7 @@ class MotionBridgeWrapper:
         return self._bridge.submit_dwell(duration_s)
 
     def set_position(self, x, y, z):
-        return self._bridge.set_position(x, y, z)
+        return self._bridge.set_position(x, y, z, self._reactor.monotonic())
 
     def home_axis_start(
         self,
@@ -438,3 +449,14 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
+
+    def motion_state_at(self, mcu, clock=None, print_time=None):
+        if (clock is None) == (print_time is None):
+            raise ValueError(
+                "motion_state_at: specify exactly one of clock= or print_time="
+            )
+        if print_time is not None:
+            clock = mcu.print_time_to_clock(print_time)
+        return self._bridge.motion_state_at_clock(
+            mcu._bridge_handle, int(clock), self._reactor.monotonic()
+        )

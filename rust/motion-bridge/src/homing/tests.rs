@@ -1,24 +1,15 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use runtime::piece_ring::PieceEntry;
 
 use kalico_host_rt::passthrough_queue::PassthroughRouter;
 
-use crate::dispatch::{AXIS_X, AXIS_Z, McuAxisConfig, McuCaps};
-use crate::homing::{eval_bernstein_cubic, reconstruct_axis_position, trajectory_final_position};
+use crate::dispatch::{AXIS_X, AXIS_Z};
+use crate::homing::{reconstruct_axis_position, trajectory_final_position};
+use crate::motion_history::{HistoryStore, eval_bernstein_cubic};
 use crate::pump::AxisKey;
 
-fn stub_configs(mcu_id: u32, axes: Vec<usize>) -> Vec<McuAxisConfig> {
-    vec![McuAxisConfig {
-        mcu_id,
-        axes,
-        kinematics: 1,
-        caps: McuCaps {
-            total_piece_memory: 4 * 1024,
-        },
-    }]
-}
+const FREQ: u32 = 180_000_000;
 
 fn make_linear_piece(
     start_time: u64,
@@ -50,6 +41,10 @@ fn router_with_clock(mcu_id: u32, freq: f64) -> Arc<Mutex<PassthroughRouter>> {
     let _ =
         router.set_clock_est_from_sample(handle, freq, std::time::Instant::now(), 1_000_000_000);
     Arc::new(Mutex::new(router))
+}
+
+fn shared(store: HistoryStore) -> Arc<Mutex<HistoryStore>> {
+    Arc::new(Mutex::new(store))
 }
 
 #[test]
@@ -92,15 +87,14 @@ fn eval_bernstein_cubic_constant_piece() {
 #[test]
 fn same_mcu_trip_clock_exact_reconstruction() {
     const MCU_ID: u32 = 1;
-    const FREQ: f64 = 180_000_000.0;
+    const FREQ_F64: f64 = 180_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_X]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let piece_start: u64 = 1_000_000;
     let duration_secs: f32 = 0.025;
     #[allow(clippy::cast_possible_truncation)]
-    let duration_ticks = (duration_secs as f64 * FREQ) as u64;
+    let duration_ticks = (duration_secs as f64 * FREQ_F64) as u64;
 
     let piece = make_linear_piece(piece_start, duration_secs, 0.0, 50.0);
 
@@ -108,14 +102,12 @@ fn same_mcu_trip_clock_exact_reconstruction() {
         mcu_id: MCU_ID,
         axis: AXIS_X as u8,
     };
-    let mut traj_map: HashMap<AxisKey, Vec<PieceEntry>> = HashMap::new();
-    traj_map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(traj_map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
     let trip_clock = piece_start + duration_ticks / 2;
 
-    let result =
-        reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &homing_traj, &configs);
+    let result = reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &shared(store), 0);
     let pos = result.expect("same-MCU reconstruction must succeed");
 
     assert!(
@@ -127,10 +119,9 @@ fn same_mcu_trip_clock_exact_reconstruction() {
 #[test]
 fn trip_at_piece_start_returns_start_position() {
     const MCU_ID: u32 = 2;
-    const FREQ: f64 = 520_000_000.0;
+    const FREQ_F64: f64 = 520_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_Z]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let piece_start: u64 = 5_000_000_000;
     let piece = make_linear_piece(piece_start, 0.025, 10.0, 30.0);
@@ -139,12 +130,10 @@ fn trip_at_piece_start_returns_start_position() {
         mcu_id: MCU_ID,
         axis: AXIS_Z as u8,
     };
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, 520_000_000_u32);
 
-    let result =
-        reconstruct_axis_position(MCU_ID, piece_start, key, &router, &homing_traj, &configs);
+    let result = reconstruct_axis_position(MCU_ID, piece_start, key, &router, &shared(store), 0);
     let pos = result.expect("trip at piece start must succeed");
     assert!(
         (pos - 10.0).abs() < 0.5,
@@ -153,12 +142,11 @@ fn trip_at_piece_start_returns_start_position() {
 }
 
 #[test]
-fn trip_outside_trajectory_window_errors() {
+fn trip_outside_trajectory_window_holds_last_position() {
     const MCU_ID: u32 = 3;
-    const FREQ: f64 = 180_000_000.0;
+    const FREQ_F64: f64 = 180_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_X]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let piece_start: u64 = 1_000_000;
     let duration_secs: f32 = 0.025;
@@ -168,31 +156,25 @@ fn trip_outside_trajectory_window_errors() {
         mcu_id: MCU_ID,
         axis: AXIS_X as u8,
     };
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
     #[allow(clippy::cast_possible_truncation)]
-    let way_after = piece_start + (duration_secs as f64 * FREQ) as u64 + 9_999_999;
-    let result = reconstruct_axis_position(MCU_ID, way_after, key, &router, &homing_traj, &configs);
+    let way_after = piece_start + (duration_secs as f64 * FREQ_F64) as u64 + 9_999_999;
+    let result = reconstruct_axis_position(MCU_ID, way_after, key, &router, &shared(store), 0);
+    let pos = result.expect("trip after last piece holds endpoint position");
     assert!(
-        result.is_err(),
-        "trip after trajectory window must error, got: {result:?}"
-    );
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("EndstopTripOutsideTrajectory") || msg.contains("outside"),
-        "error must mention outside-trajectory, got: {msg}"
+        (pos - 10.0).abs() < 0.5,
+        "expected endpoint 10mm, got {pos:.4}"
     );
 }
 
 #[test]
 fn trip_before_trajectory_window_errors() {
     const MCU_ID: u32 = 4;
-    const FREQ: f64 = 180_000_000.0;
+    const FREQ_F64: f64 = 180_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_X]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let piece_start: u64 = 1_000_000_000;
     let piece = make_linear_piece(piece_start, 0.025, 0.0, 10.0);
@@ -201,57 +183,49 @@ fn trip_before_trajectory_window_errors() {
         mcu_id: MCU_ID,
         axis: AXIS_X as u8,
     };
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
     let before = piece_start - 1;
-    let result = reconstruct_axis_position(MCU_ID, before, key, &router, &homing_traj, &configs);
+    let err =
+        reconstruct_axis_position(MCU_ID, before, key, &router, &shared(store), 0).unwrap_err();
     assert!(
-        result.is_err(),
-        "trip before trajectory window must error, got: {result:?}"
+        err.contains("precedes retained"),
+        "expected 'precedes retained' in error, got: {err}"
     );
 }
 
 #[test]
-fn no_trajectory_pieces_errors() {
+fn no_history_for_axis_errors() {
     const MCU_ID: u32 = 5;
-    const FREQ: f64 = 180_000_000.0;
+    const FREQ_F64: f64 = 180_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_X]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let key = AxisKey {
         mcu_id: MCU_ID,
         axis: AXIS_X as u8,
     };
-    let homing_traj: Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let store = HistoryStore::default();
 
-    let result =
-        reconstruct_axis_position(MCU_ID, 12_345_678, key, &router, &homing_traj, &configs);
+    let err =
+        reconstruct_axis_position(MCU_ID, 12_345_678, key, &router, &shared(store), 0).unwrap_err();
     assert!(
-        result.is_err(),
-        "missing trajectory must error, got: {result:?}"
-    );
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("NoTrajectoryPieces") || msg.contains("no trajectory"),
-        "error must mention missing pieces, got: {msg}"
+        err.contains("no motion history"),
+        "expected 'no motion history' in error, got: {err}"
     );
 }
 
 #[test]
 fn multiple_pieces_trip_in_second_piece() {
     const MCU_ID: u32 = 6;
-    const FREQ: f64 = 180_000_000.0;
+    const FREQ_F64: f64 = 180_000_000.0;
 
-    let router = router_with_clock(MCU_ID, FREQ);
-    let configs = stub_configs(MCU_ID, vec![AXIS_X]);
+    let router = router_with_clock(MCU_ID, FREQ_F64);
 
     let duration_secs: f32 = 0.025;
     #[allow(clippy::cast_possible_truncation)]
-    let duration_ticks = (duration_secs as f64 * FREQ) as u64;
+    let duration_ticks = (duration_secs as f64 * FREQ_F64) as u64;
 
     let piece1_start: u64 = 1_000_000;
     let piece2_start = piece1_start + duration_ticks;
@@ -263,17 +237,46 @@ fn multiple_pieces_trip_in_second_piece() {
         mcu_id: MCU_ID,
         axis: AXIS_X as u8,
     };
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece1, piece2]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece1, FREQ);
+    store.record(key, &piece2, FREQ);
 
     let trip_clock = piece2_start + duration_ticks / 2;
-    let result =
-        reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &homing_traj, &configs);
+    let result = reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &shared(store), 0);
     let pos = result.expect("trip in second piece must succeed");
     assert!(
         (pos - 75.0).abs() < 1.0,
         "midpoint of 50..100mm second piece should be ~75mm, got {pos:.4}"
+    );
+}
+
+#[test]
+fn trip_before_homing_window_is_rejected() {
+    const MCU_ID: u32 = 7;
+    const FREQ_F64: f64 = 180_000_000.0;
+
+    let router = router_with_clock(MCU_ID, FREQ_F64);
+
+    let key = AxisKey {
+        mcu_id: MCU_ID,
+        axis: AXIS_X as u8,
+    };
+    let mut store = HistoryStore::default();
+    store.record(key, &make_linear_piece(1_000_000, 0.01, 0.0, 5.0), FREQ);
+
+    let window_start = 2_000_000_u64;
+    let err = reconstruct_axis_position(
+        MCU_ID,
+        1_500_000,
+        key,
+        &router,
+        &shared(store),
+        window_start,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("stale"),
+        "error must mention stale, got: {err}"
     );
 }
 
@@ -284,12 +287,11 @@ fn trajectory_final_position_single_piece() {
         axis: AXIS_X as u8,
     };
     let piece = make_linear_piece(1_000_000, 0.025, 5.0, 45.0);
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
     let pos =
-        trajectory_final_position(key, &homing_traj).expect("single-piece store must succeed");
+        trajectory_final_position(key, &shared(store)).expect("single-piece store must succeed");
     assert!(
         (pos - 45.0).abs() < 1e-4,
         "final position must equal last coeffs[3]=45.0, got {pos:.6}"
@@ -304,11 +306,12 @@ fn trajectory_final_position_multi_piece_takes_last() {
     };
     let piece1 = make_linear_piece(1_000_000, 0.025, 0.0, 50.0);
     let piece2 = make_linear_piece(5_500_000, 0.025, 50.0, 82.5);
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece1, piece2]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece1, FREQ);
+    store.record(key, &piece2, FREQ);
 
-    let pos = trajectory_final_position(key, &homing_traj).expect("multi-piece store must succeed");
+    let pos =
+        trajectory_final_position(key, &shared(store)).expect("multi-piece store must succeed");
     assert!(
         (pos - 82.5).abs() < 1e-4,
         "final position must equal last piece's coeffs[3]=82.5, got {pos:.6}"
@@ -321,17 +324,16 @@ fn trajectory_final_position_missing_key_errors() {
         mcu_id: 12,
         axis: AXIS_X as u8,
     };
-    let homing_traj: Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let store = HistoryStore::default();
 
-    let result = trajectory_final_position(key, &homing_traj);
+    let result = trajectory_final_position(key, &shared(store));
     assert!(
         result.is_err(),
         "missing key must return Err, got: {result:?}"
     );
     let msg = result.unwrap_err();
     assert!(
-        msg.contains("NoTrajectoryPieces") || msg.contains("no trajectory"),
+        msg.contains("no recorded motion") || msg.contains("no trajectory"),
         "error must mention missing pieces, got: {msg}"
     );
 }
@@ -342,18 +344,17 @@ fn trajectory_final_position_constant_piece() {
         mcu_id: 13,
         axis: AXIS_Z as u8,
     };
-    let piece = PieceEntry {
+    let piece = runtime::piece_ring::PieceEntry {
         start_time: 0,
         coeffs: [99.0_f32; 4],
         duration: 0.01,
         _reserved: 0,
     };
-    let mut map = HashMap::new();
-    map.insert(key, vec![piece]);
-    let homing_traj = Arc::new(Mutex::new(map));
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
     let pos =
-        trajectory_final_position(key, &homing_traj).expect("constant-piece store must succeed");
+        trajectory_final_position(key, &shared(store)).expect("constant-piece store must succeed");
     assert!(
         (pos - 99.0).abs() < 1e-4,
         "constant piece endpoint must be 99.0, got {pos:.6}"

@@ -1,6 +1,6 @@
 use crate::codec::{
-    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u8, get_u16, get_u32, get_u64,
-    put_f32, put_i32, put_u8, put_u16, put_u32, put_u64,
+    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_str, get_u8, get_u16, get_u32,
+    get_u64, put_f32, put_i32, put_str, put_u8, put_u16, put_u32, put_u64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +16,10 @@ pub enum MessageKind {
     ClaimHandshakeReply = 0x0043,
     PushPieces = 0x0060,
     PushPiecesResponse = 0x0061,
+    StartCapture = 0x0068,
+    StartCaptureResponse = 0x0069,
+    StopCapture = 0x006A,
+    StopCaptureResponse = 0x006B,
     SetTorque = 0x0070,
     SetTorqueResponse = 0x0071,
     Stop = 0x0072,
@@ -49,6 +53,10 @@ impl MessageKind {
             0x0043 => Self::ClaimHandshakeReply,
             0x0060 => Self::PushPieces,
             0x0061 => Self::PushPiecesResponse,
+            0x0068 => Self::StartCapture,
+            0x0069 => Self::StartCaptureResponse,
+            0x006A => Self::StopCapture,
+            0x006B => Self::StopCaptureResponse,
             0x0070 => Self::SetTorque,
             0x0071 => Self::SetTorqueResponse,
             0x0072 => Self::Stop,
@@ -417,6 +425,92 @@ impl Decode for StopResponse {
         Ok(Self {
             result: get_i32(c)?,
             discard_clock: get_u64(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartCapture {
+    pub path: String,
+    pub started_utc: String,
+    pub drive_name: String,
+}
+
+impl Encode for StartCapture {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_str(out, &self.path);
+        put_str(out, &self.started_utc);
+        put_str(out, &self.drive_name);
+    }
+}
+
+impl Decode for StartCapture {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            path: get_str(c)?,
+            started_utc: get_str(c)?,
+            drive_name: get_str(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartCaptureResponse {
+    pub result: i32,
+}
+
+impl Encode for StartCaptureResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for StartCaptureResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopCapture;
+
+impl Encode for StopCapture {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for StopCapture {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopCaptureResponse {
+    pub result: i32,
+    pub samples: u64,
+    pub overflow_cycle: u64,
+}
+
+impl StopCaptureResponse {
+    pub const NO_OVERFLOW: u64 = u64::MAX;
+}
+
+impl Encode for StopCaptureResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u64(out, self.samples);
+        put_u64(out, self.overflow_cycle);
+    }
+}
+
+impl Decode for StopCaptureResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            samples: get_u64(c)?,
+            overflow_cycle: get_u64(c)?,
         })
     }
 }

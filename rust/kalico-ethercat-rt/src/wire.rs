@@ -8,7 +8,7 @@ use kalico_protocol::messages::{
     ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
     ResumeStreamResponse, RuntimeCapsResponse, SdoRead, SdoReadResponse, SdoWrite,
     SdoWriteResponse, SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse,
-    StatusHeartbeat, StopResponse,
+    StartCapture, StartCaptureResponse, StatusHeartbeat, StopCaptureResponse, StopResponse,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -31,6 +31,13 @@ pub enum Command {
     SetTorque {
         correlation_id: u32,
         msg: SetTorque,
+    },
+    StartCapture {
+        correlation_id: u32,
+        msg: StartCapture,
+    },
+    StopCapture {
+        correlation_id: u32,
     },
     Stop {
         correlation_id: u32,
@@ -98,6 +105,16 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
                 msg,
             })
         }
+        Some(MessageKind::StartCapture) => {
+            let msg = StartCapture::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
+            Ok(Command::StartCapture {
+                correlation_id: cid,
+                msg,
+            })
+        }
+        Some(MessageKind::StopCapture) => Ok(Command::StopCapture {
+            correlation_id: cid,
+        }),
         Some(MessageKind::Stop) => Ok(Command::Stop {
             correlation_id: cid,
         }),
@@ -167,6 +184,26 @@ pub fn resume_stream_response_frame(cid: u32, result: i32) -> Vec<u8> {
 pub fn set_torque_response_frame(cid: u32, result: i32) -> Vec<u8> {
     let body = SetTorqueResponse { result }.encoded_to_vec();
     control_frame(MessageKind::SetTorqueResponse, cid, &body)
+}
+
+pub fn start_capture_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = StartCaptureResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::StartCaptureResponse, cid, &body)
+}
+
+pub fn stop_capture_response_frame(
+    cid: u32,
+    result: i32,
+    samples: u64,
+    overflow_cycle: u64,
+) -> Vec<u8> {
+    let body = StopCaptureResponse {
+        result,
+        samples,
+        overflow_cycle,
+    }
+    .encoded_to_vec();
+    control_frame(MessageKind::StopCaptureResponse, cid, &body)
 }
 
 pub fn sdo_read_response_frame(cid: u32, resp: &SdoReadResponse) -> Vec<u8> {

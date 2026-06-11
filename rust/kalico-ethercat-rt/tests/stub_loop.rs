@@ -163,6 +163,8 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     }
                     Command::ClaimHandshake { .. } => {}
                     Command::SetTorque { .. } => {}
+                    Command::StartCapture { .. } => {}
+                    Command::StopCapture { .. } => {}
                     Command::Stop { .. } => {}
                     Command::ResumeStream { .. } => {}
                     Command::SetDriveLimits { .. } | Command::RestoreDriveLimits { .. } => {}
@@ -187,6 +189,8 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     | Command::QueryRuntimeCaps { .. }
                     | Command::ClaimHandshake { .. }
                     | Command::SetTorque { .. }
+                    | Command::StartCapture { .. }
+                    | Command::StopCapture { .. }
                     | Command::Stop { .. }
                     | Command::ResumeStream { .. }
                     | Command::SetDriveLimits { .. }

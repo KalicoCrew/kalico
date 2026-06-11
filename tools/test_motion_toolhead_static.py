@@ -35,6 +35,7 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "cmd_KALICO_SIM_AXIS_STEPS",
         "cmd_KALICO_SIM_AXIS_ACCUM",
         "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
+        "cmd_KALICO_SIM_MOTION_STATE",
         "cmd_M400",
         "cmd_KALICO_DIAG_DUMP",
         "_handle_disconnect",

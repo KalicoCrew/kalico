@@ -16,6 +16,7 @@ pub mod homing;
 pub mod kinematics;
 pub mod logging;
 pub mod mcu_log;
+pub mod motion_history;
 #[doc(hidden)]
 pub mod motion_node;
 #[doc(hidden)]
@@ -23,6 +24,8 @@ pub mod planner;
 #[doc(hidden)]
 pub mod pump;
 mod router_transport;
+#[doc(hidden)]
+pub mod servo_capture;
 #[doc(hidden)]
 pub mod servo_sdo;
 #[doc(hidden)]

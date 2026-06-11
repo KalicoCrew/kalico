@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
+use kalico_ethercat_rt::capture::{
+    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+};
 use kalico_ethercat_rt::claim::{parse_fail_bringup, single_slave_reply, wait_for_claim};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
@@ -16,11 +19,15 @@ use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
     restore_drive_limits_response_frame, resume_stream_response_frame, runtime_caps_response_frame,
     sdo_read_response_frame, sdo_write_response_frame, set_drive_limits_response_frame,
-    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
+    set_torque_response_frame, start_capture_response_frame, status_heartbeat_frame,
+    stop_capture_response_frame, stop_response_frame, Command,
 };
-use kalico_protocol::messages::{SdoReadResponse, SlaveState};
+use kalico_protocol::messages::{SdoReadResponse, SlaveState, StopCaptureResponse};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+const STUB_CYCLE_NS: i64 = 1_000_000;
+const STUB_COUNTS_PER_MM: f64 = 3_276.8;
 
 extern "C" fn on_sigterm(_: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::Release);
@@ -94,6 +101,8 @@ fn main() {
 
     let mut ring = AxisRing::new();
     let mut gate = TorqueGate::new();
+    let mut capture = Capture::new();
+    let mut cycle_index: u64 = 0;
     let mut sdo_bus = stub_object_dictionary();
     let mut last_sent_retired: u32 = 0;
     let mut heartbeat_sent = false;
@@ -301,6 +310,35 @@ fn main() {
                     );
                     server.respond(&sdo_write_response_frame(correlation_id, &resp));
                 }
+                Command::StartCapture {
+                    correlation_id,
+                    msg,
+                } => {
+                    let rc = capture.start(CaptureConfig {
+                        path: msg.path.clone(),
+                        started_utc: msg.started_utc.clone(),
+                        drive_name: msg.drive_name.clone(),
+                        cycle_ns: STUB_CYCLE_NS,
+                        counts_per_mm: STUB_COUNTS_PER_MM,
+                        started_mono_ns: monotonic_ns(),
+                    });
+                    eprintln!("ec-rt-stub: StartCapture path={} rc={rc}", msg.path);
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                Command::StopCapture { correlation_id } => {
+                    let out = capture.stop();
+                    eprintln!(
+                        "ec-rt-stub: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }
@@ -325,7 +363,15 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        if gate.state() == TorqueState::Enabled && ring.sample(now).is_some() {
+
+        let sampled_pos = if gate.state() == TorqueState::Enabled {
+            ring.sample(now)
+        } else {
+            None
+        };
+        let motion_active = gate.state() == TorqueState::Enabled && sampled_pos.is_some();
+
+        if gate.state() == TorqueState::Enabled && sampled_pos.is_some() {
             sampled_pieces += 1;
             if !drive_fault_fired {
                 if let Some(threshold) = drive_fault_after {
@@ -342,6 +388,32 @@ fn main() {
                     }
                 }
             }
+        }
+
+        cycle_index += 1;
+        if capture.is_active() {
+            #[allow(clippy::cast_possible_truncation)]
+            let pos = ((cycle_index % 100_000) * 10) as i32;
+            let mut flags = 0u8;
+            if gate.state() == TorqueState::Enabled {
+                flags |= FLAG_TORQUE_ENABLED;
+            }
+            if motion_active {
+                flags |= FLAG_MOTION_ACTIVE;
+            }
+            capture.push(CaptureRecord {
+                cycle_index,
+                flags,
+                drive: DriveSample {
+                    target_counts: pos,
+                    position_demand: pos,
+                    position_actual: pos - 3,
+                    following_error: 3,
+                    torque_actual: 100,
+                    statusword: 0x0627,
+                    error_code: 0,
+                },
+            });
         }
 
         if let Some(fault_val) = ring.take_fault() {
