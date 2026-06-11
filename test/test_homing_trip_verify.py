@@ -1,6 +1,7 @@
 import pytest
 
 from klippy.extras.homing import (
+    _homed_axis_position,
     _no_trigger_error_message,
     _verify_latched_trip,
 )
@@ -59,3 +60,43 @@ def test_no_trigger_message_reports_lost_doorbell():
 def test_no_trigger_message_remote_endstop():
     msg = _no_trigger_error_message(2, FakeRemoteEndstop(), 40.0)
     assert "did not trigger within 40.0mm" in msg
+
+
+class FakeProviderNoHook:
+    pass
+
+
+class FakeProviderMeasures:
+    def measured_trip_position(self, axis, trip_pos, final_pos):
+        return 3.25
+
+
+class FakeProviderDeclines:
+    def measured_trip_position(self, axis, trip_pos, final_pos):
+        return None
+
+
+def test_homed_position_default_is_trigger_height_plus_overshoot():
+    pos = _homed_axis_position(
+        FakeProviderNoHook(), 2, [0, 0, 1.0], [0, 0, 0.9], 0.5
+    )
+    assert pos == pytest.approx(0.5 + (0.9 - 1.0))
+
+
+def test_homed_position_none_provider_uses_default():
+    pos = _homed_axis_position(None, 2, [0, 0, 1.0], [0, 0, 0.9], 0.5)
+    assert pos == pytest.approx(0.4)
+
+
+def test_homed_position_uses_provider_measurement():
+    pos = _homed_axis_position(
+        FakeProviderMeasures(), 2, [0, 0, 1.0], [0, 0, 0.9], 0.5
+    )
+    assert pos == 3.25
+
+
+def test_homed_position_provider_declining_falls_back():
+    pos = _homed_axis_position(
+        FakeProviderDeclines(), 2, [0, 0, 1.0], [0, 0, 0.9], 0.5
+    )
+    assert pos == pytest.approx(0.4)

@@ -71,6 +71,14 @@ def _check_servo_drive_fault(gcmd, bridge, axis, servo_handle):
         )
 
 
+def _homed_axis_position(provider, axis, trip_pos, final_pos, trigger_height):
+    if provider is not None and hasattr(provider, "measured_trip_position"):
+        measured = provider.measured_trip_position(axis, trip_pos, final_pos)
+        if measured is not None:
+            return measured
+    return trigger_height + (final_pos[axis] - trip_pos[axis])
+
+
 def _verify_latched_trip(gcmd, axis, endstop, doorbell_clock):
     query = getattr(endstop, "query_trip_state", None)
     if query is None:
@@ -289,15 +297,16 @@ class Homing:
                 ),
             )
 
-            overshoot = final_pos[axis] - trip_pos[axis]
             newpos = list(toolhead.get_position())
-            newpos[axis] = trigger_height + overshoot
+            newpos[axis] = _homed_axis_position(
+                entry["provider"], axis, trip_pos, final_pos, trigger_height
+            )
             toolhead.set_position(newpos, homing_axes=[axis])
             logging.info(
                 "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
                 "XYZ"[axis],
                 trigger_height,
-                overshoot,
+                final_pos[axis] - trip_pos[axis],
                 "XYZ"[axis],
                 newpos[axis],
             )
