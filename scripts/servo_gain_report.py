@@ -245,14 +245,23 @@ def recommend(steps):
     clean = [(g, m) for g, m in steps if not m["resonant"]]
     if not clean:
         return None, "every step shows a resonance signature — reduce gains"
-    best = max(clean, key=lambda gm: gm[0][1])
-    gains = best[0]
-    note = "highest gain step with a clean spectrum"
-    if best is not steps[-1][0:2] and steps[-1][1]["resonant"]:
-        note += "; ceiling found at %.0f Hz (resonance at %.0f Hz)" % (
-            steps[-1][0][1] / 10.0,
-            steps[-1][1]["res_peak_hz"],
+    best_err = min(m["ferr_std_um"] for _, m in clean)
+    good = [(g, m) for g, m in clean if m["ferr_std_um"] <= best_err * 1.3]
+    gains, _ = max(good, key=lambda gm: gm[0][1])
+    note = "highest gain whose cruise error stays within 30%% of the best (%.0f um)" % best_err
+    rejected = [
+        (g, m)
+        for g, m in steps
+        if g[1] > gains[1] and (m["resonant"] or m["ferr_std_um"] > best_err * 1.3)
+    ]
+    if rejected:
+        worst = rejected[0]
+        why = (
+            "resonance at %.0f Hz" % worst[1]["res_peak_hz"]
+            if worst[1]["resonant"]
+            else "cruise error degraded to %.0f um" % worst[1]["ferr_std_um"]
         )
+        note += "; ceiling: %.0f Hz step rejected (%s)" % (worst[0][1] / 10.0, why)
     return gains, note
 
 
