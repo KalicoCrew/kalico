@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from servo_capture import load_capture  # noqa: E402
 
 STEP_RE = re.compile(r"_p(\d+)_s(\d+)_i(\d+)_\d{8}_\d{6}\.scap$")
-RESONANCE_BAND_HZ = (20.0, 200.0)
+RESONANCE_BAND_HZ = (20.0, 450.0)
 LOW_BAND_HZ = (1.0, 4.0)
 RESONANCE_RATIO_LIMIT = 8.0
 
