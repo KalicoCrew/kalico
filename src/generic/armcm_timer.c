@@ -241,12 +241,6 @@ void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {
     irq_disable();
-    // SysTick and TIM5 share the same NVIC priority (KALICO_MOTION_NVIC_PRIO).
-    // Same-priority interrupts cannot nest, so a TIM5 tick that comes due
-    // during this handler stays pending until SysTick returns — even across
-    // the irq_enable() windows in timer_dispatch_many (PRIMASK cleared there
-    // lets only higher-priority sources in, not equal-priority TIM5). The
-    // whole entry→exit window is therefore the true TIM5 fence duration.
 #if CONFIG_MACH_STM32
     extern void diag_systick_account(uint32_t enter, uint32_t exit);
     uint32_t diag_systick_enter = DWT->CYCCNT;

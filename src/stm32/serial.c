@@ -151,7 +151,7 @@ serial_rx_dma_init(void)
         | DMA_SxCR_MINC | DMA_SxCR_CIRC | DMA_SxCR_HTIE | DMA_SxCR_TCIE;
     SERIAL_RX_DMA_STREAM->CR |= DMA_SxCR_EN;
     USARTx->CR3 |= USART_CR3_DMAR;
-    armcm_enable_irq(serial_rx_dma_irq, SERIAL_RX_DMA_IRQn, KALICO_MOTION_NVIC_PRIO);
+    armcm_enable_irq(serial_rx_dma_irq, SERIAL_RX_DMA_IRQn, 2);
 }
 
 #endif
@@ -200,7 +200,7 @@ serial_init(void)
     USARTx->BRR = (((div / 16) << USART_BRR_DIV_Mantissa_Pos)
                    | ((div % 16) << USART_BRR_DIV_Fraction_Pos));
     USARTx->CR1 = CR1_FLAGS;
-    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, KALICO_MOTION_NVIC_PRIO);
+    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, 2);
 
 #if SERIAL_RX_DMA
     serial_rx_dma_init();

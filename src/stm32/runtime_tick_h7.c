@@ -173,8 +173,8 @@ TIM5_IRQHandler_body(uint32_t *frame)
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
 // Step-output timer uses TIM3; TIM2 is PWM and TIM5 is the motion tick, so
-// neither may be reused here. TIM3 runs at KALICO_MOTION_NVIC_PRIO (same as
-// TIM5): equal-priority IRQs don't nest, which is what makes the SPSC safe.
+// neither may be reused here. TIM3 runs at KALICO_MOTION_NVIC_PRIO (equal to
+// TIM5): equal-priority IRQs don't nest, keeping the SPSC non-racing.
 #define STEP_OUT_MAX_DELTA 0xF000u
 
 // cycle_abs is in DWT ticks; TIM3 ticks slower, so step_out_clkdiv scales
