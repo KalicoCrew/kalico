@@ -600,6 +600,8 @@ class TMCVirtualPinHelper:
             self.diag_pin = config.get("diag_pin", None)
             self.diag_pin_field = None
         self.mcu_endstop = None
+        self.phase_mode_helper = None
+        self._phase_exited = False
         self.en_pwm = False
         self.pwmthrs = self.coolthrs = self.thigh = 0
         name_parts = config.get_name().split()
@@ -638,6 +640,15 @@ class TMCVirtualPinHelper:
         self.disarm()
 
     def arm(self):
+        pmh = self.phase_mode_helper
+        if pmh is not None and pmh.phase_stepping_active():
+            pmh.exit_phase_mode()
+            self._phase_exited = True
+            if pmh.phase_stepping_active():
+                raise self.printer.command_error(
+                    "phase stepping still active after exit_phase_mode; "
+                    "refusing to start a StallGuard homing move"
+                )
         if self.fields.lookup_register("sgthrs", None) is not None:
             sg_val = self.fields.set_field(
                 "sgthrs", self.fields.get_field("sgthrs")
@@ -689,6 +700,9 @@ class TMCVirtualPinHelper:
         if reg is not None:
             th_val = self.fields.set_field("thigh", self.thigh)
             self.mcu_tmc.set_register(reg, th_val)
+        if self._phase_exited:
+            self._phase_exited = False
+            self.phase_mode_helper.enter_phase_mode()
 
 
 ######################################################################
