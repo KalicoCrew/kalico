@@ -137,8 +137,8 @@ fn message_for_claim_error(label: &str, interface: &str, e: &EndpointClaimError)
                 "ethercat {label}: EtherCAT bus on {interface}: no slaves responding \
                  (bringup rc=-{fault_code}) — check cable and drive power, then FIRMWARE_RESTART"
             ),
-            // 10/11/12 are host-side RT-acquisition failures, not the drive.
-            10 | 11 | 12 => format!(
+            // 10..=12 are host-side RT-acquisition failures, not the drive.
+            10..=12 => format!(
                 "ethercat {label}: realtime endpoint could not acquire RT scheduling \
                  (bringup rc=-{fault_code}) — grant CAP_SYS_NICE + CAP_IPC_LOCK to \
                  klipper.service and isolate a CPU core, then FIRMWARE_RESTART"
