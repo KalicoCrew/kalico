@@ -28,6 +28,10 @@ typedef struct StepperBindingRust {
   uint8_t _pad[2];
 } StepperBindingRust;
 
+int32_t kalico_runtime_bind_phase_motor(struct KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint8_t slot_idx);
+
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
                                           uint32_t host_send_time_lo,
@@ -92,8 +96,6 @@ uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
 uint64_t kalico_runtime_now_ticks(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
-
-uint16_t kalico_runtime_query_phase_config(struct KalicoRuntime *rt, uint8_t motor_idx);
 
 int32_t kalico_runtime_reset(struct KalicoRuntime *rt);
 

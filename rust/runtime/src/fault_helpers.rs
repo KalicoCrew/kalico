@@ -177,5 +177,17 @@ pub fn raise_unknown_step_mode(shared: &SharedState, axis_idx: usize, mode: u8) 
     emit_fault_log(FaultCode::UnknownStepMode, detail);
 }
 
+/// Latch a `PhaseMotorUnmapped` fault. Detail:
+/// `((axis_idx & 0xFF) << 16) | stepper_oid`.
+#[inline]
+pub fn raise_phase_motor_unmapped(shared: &SharedState, axis_idx: usize, stepper_oid: u8) {
+    let detail = ((axis_idx as u32 & 0xFF) << 16) | u32::from(stepper_oid);
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::PhaseMotorUnmapped.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::PhaseMotorUnmapped, detail);
+}
+
 #[cfg(test)]
 mod tests;

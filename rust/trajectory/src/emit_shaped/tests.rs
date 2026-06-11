@@ -269,13 +269,16 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
         .find(|p| 0.8 >= p.u_start - 1e-12 && 0.8 <= p.u_end + 1e-12)
         .expect("padded curve should cover t = 0.8")
         .evaluate(0.8);
+    // With no history the left pad continues at the segment's entry velocity (slope 20 through
+    // position 10 at the t=1.0 seam) rather than holding the start position: at t=0.8 that is
+    // 10 + 20*(0.8 - 1.0) = 6.0.
     assert!(
-        (val_08_no_history - 10.0).abs() < 1e-9,
-        "no-history path should read constant start_val (10.0) at t=0.8, got {val_08_no_history}",
+        (val_08_no_history - 6.0).abs() < 1e-9,
+        "no-history path should extrapolate at entry velocity to 6.0 at t=0.8, got {val_08_no_history}",
     );
     assert!(
         (val_08 - val_08_no_history).abs() > 1.0,
-        "history vs no-history must disagree at t=0.8 (history 8.0 vs constant 10.0)",
+        "history vs no-history must disagree at t=0.8 (history 8.0 vs vel-extrapolated 6.0)",
     );
 }
 

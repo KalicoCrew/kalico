@@ -102,6 +102,10 @@ pub const KALICO_ERR_TICK_INTERVAL_EXCEEDED: i32 = -311;
 /// `dispatch_axis` encountered a `StepMode` byte that is not `Pulse` (0) or
 /// `Phase` (1). Detail: `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
 pub const KALICO_ERR_UNKNOWN_STEP_MODE: i32 = -312;
+/// `dispatch_phase` found a Phase-mode stepper with a TMC CS binding but no
+/// entry in `phase_slot_idx[0..phase_motor_count]` maps it to a registered
+/// SPI motor. Detail: `((axis_idx & 0xFF) << 16) | stepper_oid`.
+pub const KALICO_ERR_PHASE_MOTOR_UNMAPPED: i32 = -313;
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +186,7 @@ pub enum FaultCode {
     StepsPerSampleExceeded = -310,
     TickIntervalExceeded = -311,
     UnknownStepMode = -312,
+    PhaseMotorUnmapped = -313,
 }
 
 impl FaultCode {
@@ -210,6 +215,10 @@ impl FaultCode {
     /// assert_eq!(FaultCode::from_u16(0xFECC), Some(FaultCode::PieceStartInPast));
     /// // TickIntervalExceeded = -311; -311i16 as u16 = 0xFEC9
     /// assert_eq!(FaultCode::from_u16(0xFEC9), Some(FaultCode::TickIntervalExceeded));
+    /// // UnknownStepMode = -312; -312i16 as u16 = 0xFEC8
+    /// assert_eq!(FaultCode::from_u16(0xFEC8), Some(FaultCode::UnknownStepMode));
+    /// // PhaseMotorUnmapped = -313; -313i16 as u16 = 0xFEC7
+    /// assert_eq!(FaultCode::from_u16(0xFEC7), Some(FaultCode::PhaseMotorUnmapped));
     /// assert_eq!(FaultCode::from_u16(0x1234), None);
     /// ```
     #[allow(clippy::cast_possible_wrap)] // intentional: sign-extend u16 → i16 → i32
@@ -277,6 +286,8 @@ impl FaultCode {
             -309 => Self::RingFull,
             -310 => Self::StepsPerSampleExceeded,
             -311 => Self::TickIntervalExceeded,
+            -312 => Self::UnknownStepMode,
+            -313 => Self::PhaseMotorUnmapped,
             _ => return None,
         })
     }
@@ -355,6 +366,7 @@ impl FaultCode {
             Self::StepsPerSampleExceeded => "StepsPerSampleExceeded",
             Self::TickIntervalExceeded => "TickIntervalExceeded",
             Self::UnknownStepMode => "UnknownStepMode",
+            Self::PhaseMotorUnmapped => "PhaseMotorUnmapped",
         }
     }
 }
