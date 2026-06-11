@@ -81,8 +81,15 @@ class ExtruderStepper:
         }
 
     def find_past_position(self, print_time):
-        mcu_pos = self.stepper.get_past_mcu_position(print_time)
-        return self.stepper.mcu_to_commanded_position(mcu_pos)
+        bridge = self.printer.lookup_object("motion_bridge")
+        state = bridge.motion_state_at(
+            self.stepper.get_mcu(), print_time=print_time
+        )
+        if "e" not in state:
+            raise self.printer.command_error(
+                "find_past_position: extruder axis is not bridge-dispatched"
+            )
+        return state["e"][0]
 
     def sync_to_extruder(self, extruder_name):
         toolhead = self.printer.lookup_object("toolhead")

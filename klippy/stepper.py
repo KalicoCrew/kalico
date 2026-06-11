@@ -135,6 +135,13 @@ class MCU_stepper:
             "motion runs on the bridge runtime engine"
         )
 
+    def get_past_mcu_position(self, print_time):
+        raise error(
+            "MCU_stepper.get_past_mcu_position is host step history; the bridge"
+            " keeps no motor-space step history. Use motion_bridge"
+            ".motion_state_at for toolhead-space history."
+        )
+
     def set_position(self, coord):
         return
 

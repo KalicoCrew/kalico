@@ -2,6 +2,7 @@
 #include "libecrt.h"
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <time.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -73,18 +74,25 @@ static void dc_sync(int64_t reftime, int64_t cycletime, int64_t *offset) {
     *offset = -(delta / 100) - (g_integral / 20);
 }
 
-/*
- * Best-effort RT hardening. Failures are non-fatal (the caller may lack
- * CAP_IPC_LOCK / CAP_SYS_NICE) but they ARE reported on stderr: without RT
- * scheduling the DC loop jitters and the drive throws Er74.1 / misses SYNC0,
- * which looks like a drive bug rather than a missing-capability problem.
- */
-static void go_realtime(int cpu, int prio) {
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) perror("ec_rt: mlockall (continuing)");
+static int go_realtime(int cpu, int prio) {
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        fprintf(stderr, "ec_rt: mlockall failed: %s — grant CAP_IPC_LOCK\n",
+                strerror(errno));
+        return EC_RT_ERR_RT_MLOCK;
+    }
     cpu_set_t set; CPU_ZERO(&set); CPU_SET(cpu, &set);
-    if (sched_setaffinity(0, sizeof(set), &set) != 0) perror("ec_rt: setaffinity (continuing)");
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        fprintf(stderr, "ec_rt: pin to CPU %d failed: %s — isolate the core "
+                "and grant the endpoint access to it\n", cpu, strerror(errno));
+        return EC_RT_ERR_RT_AFFINITY;
+    }
     struct sched_param sp; sp.sched_priority = prio;
-    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) perror("ec_rt: SCHED_FIFO (continuing)");
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+        fprintf(stderr, "ec_rt: SCHED_FIFO(prio %d) failed: %s — grant "
+                "CAP_SYS_NICE\n", prio, strerror(errno));
+        return EC_RT_ERR_RT_SCHED;
+    }
+    return 0;
 }
 
 #define COE_ENTRY(index, sub, bits) \
@@ -241,7 +249,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
     g_enabled  = 0;
-    go_realtime(rt_cpu, rt_prio);
+    int rt_rc = go_realtime(rt_cpu, rt_prio);
+    if (rt_rc != 0) return rt_rc;
 
     if (!ec_init(ifname)) return EC_RT_ERR_EC_INIT;
     if (ec_config_init(FALSE) <= 0) { ec_close(); return EC_RT_ERR_NO_SLAVES; }

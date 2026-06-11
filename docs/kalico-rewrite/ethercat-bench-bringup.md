@@ -225,7 +225,10 @@ endpoint: rust/target/release/kalico-ethercat-rt-stub
   capture.
 - Do a small supervised jog. Watch for:
   - `engine_state == Fault (3)` in the `StatusHeartbeat` → the host pump fell behind >2 ms (`PieceStartInPast`). The endpoint latches the fault and propagates it so the host can shut down; the hw binary also disables the drive. This is expected on a gross stall, not on a healthy stream.
-  - `wkc != 3` → EtherCAT bus working-counter fault (drive comms), the endpoint halts.
+  - `wkc != 3` → EtherCAT bus working-counter fault (drive comms), the endpoint
+    halts and dumps `al=0x…`. `al=0x001a` is a DC sync loss (ErC1.1) — see the
+    real-time scheduling section; the usual cause is the loop not running
+    `SCHED_FIFO` on the isolated core.
 
 ### 5. Recovery
 - Any fault or claim failure is recovered the same way: fix the cause, then
@@ -234,6 +237,89 @@ endpoint: rust/target/release/kalico-ethercat-rt-stub
   cleanup, or endpoint restart to do by hand.
 - The old `bench-hw-up.sh` choreography is **obsolete** — klippy owns the endpoint
   lifecycle now. Delete that script from the bench host if it's still there.
+- **A latched `0x8700` / ErC1.1 is the exception:** `FIRMWARE_RESTART` re-spawns
+  the endpoint but does **not** clear the drive's stored sync-loss fault (the
+  EtherCAT INIT bounce resets the network state machine, not the CiA402 fault).
+  With the drive on its own supply it stays faulted across host restarts —
+  **power-cycle the drive** to clear it, then fix the root cause (almost always
+  RT scheduling; see that section) so it does not re-latch on the next boot.
+
+## Real-time scheduling — mandatory (the ErC1.1 / "ErC11" trap)
+
+The endpoint's 1 kHz DC loop **must** run `SCHED_FIFO` on an isolated CPU. This
+is not best-effort. If it runs `SCHED_OTHER`, the loop keeps cadence on a warm,
+idle Pi but misses SYNC0 under boot load — and the drive latches **ErC1.1
+"synchronization loss"** (panel reads `ErC11`; CoE error register `0x8700`;
+EtherCAT AL status `0x001a`, visible in the endpoint's `ec_rt: slave1 …
+al=0x001a` dump on a working-counter halt). Because the drive is usually on its
+own always-on supply, that latch **survives every host reboot**, so klippy's
+auto-restart keeps re-claiming an already-faulted drive — only a **drive
+power-cycle** clears `0x8700`. Classic signature: fails on cold boot / right
+after a flash, "works once it's connected."
+
+All three of the following are required, or `go_realtime()` aborts the claim
+loudly — `rc=-10` (mlockall / `CAP_IPC_LOCK`), `rc=-11` (CPU pin), `rc=-12`
+(`SCHED_FIFO` / `CAP_SYS_NICE`), each naming the missing capability. There is no
+silent `SCHED_OTHER` fallback any more; that fallback was the original ErC11
+heisenbug.
+
+1. **`cap_sys_nice`** (for `SCHED_FIFO`) and **`cap_ipc_lock`** (for `mlockall`)
+   on the endpoint binary: `make -f Makefile.kalico setcap-ethercat`. **A
+   `cargo build` writes a fresh inode and drops file-caps**, so re-run setcap
+   after *every* endpoint rebuild — the flash script re-applies it, a bare
+   rebuild does not. Skipping it is the direct cause of "ErC11 after flashing".
+2. **An isolated core to pin to.** The bench reserves CPUs 2-3 on the kernel
+   cmdline (`isolcpus=domain,managed_irq,2-3 nohz_full=2-3 rcu_nocbs=2-3`); the
+   endpoint pins to CPU `--rt-cpu` (default 3). An isolated core stays
+   contention-free even while the rest of the Pi is saturated booting — that is
+   what holds cadence through the cold-boot window that used to fault.
+3. **`SCHED_FIFO`** at priority `--rt-prio` (default 80).
+
+**Robust alternative to per-rebuild setcap** (ambient caps survive rebuilds; the
+file-cap does not): grant the caps on the systemd service via a drop-in
+`/etc/systemd/system/klipper.service.d/10-ethercat-rt.conf`, then
+`systemctl daemon-reload`:
+
+    [Service]
+    AmbientCapabilities=CAP_SYS_NICE CAP_IPC_LOCK
+    LimitRTPRIO=infinity
+    LimitMEMLOCK=infinity
+
+The spawned endpoint inherits the ambient caps from klippy. (If the binary also
+carries file-caps, those take precedence and the ambient set reads back empty —
+harmless, since file-caps already include `cap_sys_nice`.)
+
+**Verify it is actually in force** — a green *warm* restart only proves the cap
+took; only a **cold reboot** proves the loop holds cadence under boot load:
+
+    pid=$(pgrep -f release/kalico-ethercat-rt)
+    chrt -p $pid                                     # want: SCHED_FIFO priority 80
+    grep Cpus_allowed_list /proc/$pid/status         # want: 3 (the isolated core)
+    /usr/sbin/getcap rust/target/release/kalico-ethercat-rt   # want: ...cap_sys_nice=ep
+    sudo journalctl -b | grep -c 'al=0x001a'         # want: 0
+
+`SCHED_OTHER` + `cpus 0-1` on the live endpoint is the bug, not health — the cap
+is not reaching it. (Endpoints sampled in their first ~200 ms read `SCHED_OTHER`
+because `go_realtime()` runs just after `main()` startup; sample the
+steady-state pid.)
+
+## Variable RxPDO 0x1600 remap (rc=-6 / rc=-7)
+
+`out_t` is the 18-byte variable RxPDO **`0x1600`** (`6040` controlword, `607A`
+target position, `60B8` touch-probe function, `60FE:01` forced-DO, plus the two
+feedforward offsets `60B1` velocity and `60B2` torque). The fixed `0x1701` the
+bench used before carried only the first four — it physically can't hold the FF
+offsets — so feedforward requires the variable map.
+
+The drive can power up with a *different* RxPDO assigned to `0x1C12`, whose byte
+count disagrees with `out_t` and aborts bringup at `EC_RT_ERR_PDO_SIZE` (`rc=-7`,
+`ec_rt: PDO size mismatch — mapped out=… …`). Bringup now **forces** `0x1C12 →
+0x1600` and rewrites the whole `0x1600` entry table before mapping (mirroring the
+existing `0x1C13 → 0x1A00` TxPDO remap), so a clean 18-byte map no longer depends
+on the drive's retained state. A failure to write that remap is `rc=-6`
+(`EC_RT_ERR_PDO_REMAP`), the same code as the `0x1A00` TxPDO remap. See
+[`servo-feedforward.md`](servo-feedforward.md) for the FF routing (C01 group →
+60B1h/60B2h) that the FF entries feed.
 
 ## Fault-response reference
 - **`PieceStartInPast`** (a piece adopted >2 ms late = 2× the 1 ms DC period): the walker faults, the endpoint latches it (allocation-free atomic) and reports `engine_state=Fault` to the host. Primary response is host-coordinated shutdown (mirrors the MCU model); the hw binary additionally disables the drive as a local backstop. It does **not** silently hold the last position.

@@ -16,6 +16,7 @@ pub mod homing;
 pub mod kinematics;
 pub mod logging;
 pub mod mcu_log;
+pub mod motion_history;
 #[doc(hidden)]
 pub mod motion_node;
 #[doc(hidden)]

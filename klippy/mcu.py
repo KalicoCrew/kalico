@@ -1252,6 +1252,14 @@ class MCU:
                 )
             bridge = self._motion_bridge
             handle = self._bridge_handle
+            if not self._mcu_freq:
+                raise error(
+                    "MCU '%s': CLOCK_FREQ unknown at bridge claim time"
+                    % (self._name,)
+                )
+            self._motion_bridge.set_nominal_clock_freq(
+                handle, int(self._mcu_freq)
+            )
 
             reactor = self._reactor
 

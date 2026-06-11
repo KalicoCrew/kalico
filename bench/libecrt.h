@@ -11,7 +11,10 @@
 #define EC_RT_ERR_PDO_SIZE        (-7)
 #define EC_RT_ERR_PREOP_TIMEOUT   (-8)
 #define EC_RT_ERR_INIT_TIMEOUT    (-9)
-#define EC_RT_ERR_FF_ROUTING      (-10)
+#define EC_RT_ERR_RT_MLOCK        (-10)
+#define EC_RT_ERR_RT_AFFINITY     (-11)
+#define EC_RT_ERR_RT_SCHED        (-12)
+#define EC_RT_ERR_FF_ROUTING      (-13)
 
 /* Brings slave 1 to OPERATIONAL and parks it at CiA402 Ready-to-Switch-On
  * (no torque); ec_rt_enable() applies torque. 0 or an EC_RT_ERR_* above. */
