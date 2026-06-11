@@ -345,7 +345,7 @@ class Homing:
         finally:
             if provider is not None and hasattr(provider, "trip_move_end"):
                 provider.trip_move_end(entry)
-        trip_pos, final_pos = result
+        trip_pos, final_pos, trip_clock = result
         if abs(trip_pos[axis] - start_axis_pos) < NO_MOVEMENT_EPSILON:
             raise gcmd.error(
                 "%s endstop triggered prior to movement — trigger is stuck"

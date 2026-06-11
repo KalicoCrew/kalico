@@ -30,7 +30,7 @@ struct HomingRun {
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
     window_start_clock: u64,
-    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
+    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3], u64), String>>,
 }
 
 fn abort_after_tracing_appender_drains() {
@@ -481,7 +481,8 @@ pub struct PyMotionBridge {
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
     motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
-    homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
+    homing_result:
+        Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3], u64), String>>>>,
     latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
@@ -3254,7 +3255,7 @@ impl PyMotionBridge {
             .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
 
         let (result_tx, result_rx) =
-            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3]), String>>(1);
+            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3], u64), String>>(1);
 
         {
             let mut run = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
@@ -3306,7 +3307,7 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3])>> {
+    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3], u64)>> {
         let rx = {
             let guard = self.homing_result.lock().unwrap_or_else(|p| p.into_inner());
             match guard.as_ref() {
@@ -3328,9 +3329,10 @@ impl PyMotionBridge {
             }
             Ok(result) => {
                 self.finish_homing();
-                let (trip_pos, final_pos) = result.map_err(PyRuntimeError::new_err)?;
+                let (trip_pos, final_pos, trip_clock) =
+                    result.map_err(PyRuntimeError::new_err)?;
                 *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = final_pos;
-                Ok(Some((trip_pos, final_pos)))
+                Ok(Some((trip_pos, final_pos, trip_clock)))
             }
         }
     }
@@ -3682,7 +3684,7 @@ impl PyMotionBridge {
 
                 let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
                     reconstruct_cartesian(axis_key.mcu_id, discard_clock)
-                        .map(|final_pos| (trip, final_pos))
+                        .map(|final_pos| (trip, final_pos, trip_clock))
                 });
 
                 let outcome = outcome.and_then(|positions| {
