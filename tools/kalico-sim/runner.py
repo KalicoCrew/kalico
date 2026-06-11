@@ -323,6 +323,7 @@ def run_simulation(
     phase_stepping: bool = False,
     homing_test: bool = False,
     motion_state_test: bool = False,
+    sensorless_phase_test: bool = False,
     serve: bool = False,
     serve_data_dir=None,
 ) -> SimResult:
@@ -434,6 +435,7 @@ def run_simulation(
                 has_motion_bridge=has_motion_bridge,
                 phase_stepping=phase_stepping,
                 homing_test=homing_test,
+                sensorless_phase_test=sensorless_phase_test,
             )
 
             if serve:
@@ -607,6 +609,105 @@ def run_simulation(
                     wall_time_s=wall_time_s,
                     speedup=0,
                     error=error,
+                    klippy_log=klippy_content,
+                    mcu_logs={
+                        mcu.name: open(mcu.log_path).read()
+                        for mcu in mcus
+                        if pathlib.Path(mcu.log_path).exists()
+                    },
+                )
+
+            if sensorless_phase_test:
+                log.info(
+                    "Sensorless phase test: G28 Z with TMC5160 virtual "
+                    "endstop on a phase-stepped axis"
+                )
+
+                diag_trigger = EndstopTrigger(
+                    str(h7_sock_dir / "sim_control"), [(0, 203)]
+                )
+                diag_trigger.start()
+                try:
+                    resp = send_gcode(api_socket, "G28 Z", timeout=120)
+                finally:
+                    diag_trigger.stop()
+                    diag_trigger.clear()
+                log.info("G28 Z: %s", resp)
+
+                klippy_content = (
+                    klippy_log.read_text(errors="replace")
+                    if klippy_log.exists()
+                    else ""
+                )
+                sp_error = None
+                if isinstance(resp, dict) and resp.get("error"):
+                    sp_error = f"G28 Z failed: {resp['error']}"
+                elif "shutdown:" in klippy_content.lower():
+                    for line in klippy_content.split("\n"):
+                        if "shutdown:" in line.lower():
+                            sp_error = (
+                                "Printer shutdown during sensorless "
+                                f"homing: {line.strip()}"
+                            )
+                            break
+                elif not resp:
+                    sp_error = "G28 X timed out or returned no response"
+
+                if sp_error is None:
+                    enter_marker = "phase mode entered"
+                    exit_marker = "phase mode exited (pulse stepping)"
+                    first_enter = klippy_content.find(enter_marker)
+                    exit_idx = klippy_content.find(exit_marker)
+                    re_enter = klippy_content.find(
+                        enter_marker,
+                        exit_idx + len(exit_marker) if exit_idx >= 0 else 0,
+                    )
+                    if first_enter < 0:
+                        sp_error = (
+                            "phase mode never entered (post-enable "
+                            "callback did not run)"
+                        )
+                    elif exit_idx < 0:
+                        sp_error = (
+                            "phase mode never exited around the "
+                            "StallGuard trip move"
+                        )
+                    elif not (first_enter < exit_idx < re_enter):
+                        sp_error = (
+                            "phase mode enter/exit/re-enter sequence out "
+                            f"of order (enter={first_enter} exit={exit_idx}"
+                            f" re-enter={re_enter})"
+                        )
+
+                if sp_error is None:
+                    status = query_status(api_socket)
+                    toolhead = (
+                        status.get("result", {})
+                        .get("status", {})
+                        .get("toolhead", {})
+                    )
+                    homed = toolhead.get("homed_axes", "")
+                    pos = toolhead.get("position", [None])
+                    pos_z = pos[2] if len(pos) > 2 else None
+                    if "z" not in homed:
+                        sp_error = (
+                            f"Z not reported homed (homed_axes={homed!r})"
+                        )
+                    elif pos_z is None or abs(pos_z) > 6.0:
+                        sp_error = (
+                            "homed Z position %r too far from "
+                            "position_endstop=0 (wall=50 steps + retract "
+                            "tolerance)" % (pos_z,)
+                        )
+
+                success = sp_error is None
+                wall_end = time.monotonic()
+                return SimResult(
+                    success=success,
+                    print_time_s=0,
+                    wall_time_s=wall_end - wall_start,
+                    speedup=0,
+                    error=sp_error,
                     klippy_log=klippy_content,
                     mcu_logs={
                         mcu.name: open(mcu.log_path).read()
@@ -926,6 +1027,7 @@ def _prepare_config(
     has_motion_bridge: bool = False,
     phase_stepping: bool = False,
     homing_test: bool = False,
+    sensorless_phase_test: bool = False,
 ) -> pathlib.Path:
     if config_dir is None:
         if homing_test:
@@ -935,6 +1037,10 @@ def _prepare_config(
                 beacon_pty,
                 gcode_dir=str(tmp_dir / "gcodes"),
             )
+        elif sensorless_phase_test:
+            cfg = _generate_sensorless_phase_config(
+                h7_pty, gcode_dir=str(tmp_dir / "gcodes")
+            )
         elif phase_stepping:
             cfg = _generate_phase_stepping_config(
                 h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes")
@@ -943,7 +1049,12 @@ def _prepare_config(
             cfg = _generate_minimal_config(
                 h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes")
             )
-        if has_motion_bridge and not phase_stepping and not homing_test:
+        if (
+            has_motion_bridge
+            and not phase_stepping
+            and not homing_test
+            and not sensorless_phase_test
+        ):
             cfg += """
 [input_shaper]
 shaper_freq_x: 50
@@ -1824,6 +1935,87 @@ enable_force_move: True
 """
 
 
+def _generate_sensorless_phase_config(
+    h7_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes"
+) -> str:
+    """Phase-stepping Z with a TMC5160 virtual (StallGuard) endstop.
+
+    The DIAG pin is gpiochip0/gpio203 — the libsim_intercept auto-endstop
+    wall asserts it after 50 steps on the runtime Z step-queue line
+    (gpio15), standing in for a StallGuard trip during the homing move.
+    Z is used because Z homing at 5 mm/s is the sim's validated homing
+    path (X full-mode homing times out under the vtime clock race).
+    """
+    return f"""\
+[mcu]
+serial: {h7_pty}
+
+[printer]
+kinematics: cartesian
+max_velocity: 100
+max_accel: 1000
+max_z_velocity: 10
+max_z_accel: 30
+
+[stepper_x]
+step_pin: gpiochip0/gpio0
+dir_pin: gpiochip0/gpio1
+enable_pin: !gpiochip0/gpio2
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio10
+position_min: 0
+position_endstop: 0
+position_max: 250
+homing_speed: 10
+
+[stepper_y]
+step_pin: gpiochip0/gpio3
+dir_pin: gpiochip0/gpio4
+enable_pin: !gpiochip0/gpio20
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio11
+position_min: 0
+position_endstop: 0
+position_max: 250
+homing_speed: 10
+
+[stepper_z]
+step_pin: gpiochip0/gpio6
+dir_pin: gpiochip0/gpio7
+enable_pin: !gpiochip0/gpio21
+microsteps: 256
+rotation_distance: 40
+endstop_pin: tmc5160_stepper_z:virtual_endstop
+position_min: -5
+position_endstop: 0
+position_max: 250
+homing_speed: 5
+homing_retract_dist: 0
+phase_stepping: True
+
+[tmc5160 stepper_z]
+spi_bus: spidev0.0
+cs_pin: gpiochip0/gpio5
+run_current: 1.0
+sense_resistor: 0.075
+diag0_pin: gpiochip0/gpio203
+driver_SGT: 1
+
+[input_shaper]
+shaper_freq_x: 50
+shaper_freq_y: 50
+shaper_type: smooth_mzv
+
+[virtual_sdcard]
+path: {gcode_dir}
+
+[force_move]
+enable_force_move: True
+"""
+
+
 def run_batch_simulation(
     repo_root: pathlib.Path,
     gcode_path: pathlib.Path,
@@ -2078,6 +2270,11 @@ def main():
         help="Enable phase stepping config (TMC5160 on X)",
     )
     parser.add_argument(
+        "--sensorless-phase-test",
+        action="store_true",
+        help="G28 X via TMC5160 virtual endstop on a phase-stepped axis",
+    )
+    parser.add_argument(
         "--homing-test",
         action="store_true",
         help="Run beacon Z homing test (dual-MCU CoreXY + beacon proximity)",
@@ -2149,6 +2346,7 @@ def main():
             phase_stepping=args.phase_test,
             homing_test=args.homing_test,
             motion_state_test=args.test_motion_state,
+            sensorless_phase_test=args.sensorless_phase_test,
             serve=args.serve,
             serve_data_dir=args.data_dir,
         )
@@ -2250,6 +2448,43 @@ def main():
             ):
                 print(f"  {line.strip()}")
         print("---")
+
+    if args.sensorless_phase_test and result.klippy_log:
+        print("\n--- Sensorless phase test log excerpts ---")
+        for line in result.klippy_log.split("\n"):
+            llow = line.lower()
+            if any(
+                k in llow
+                for k in [
+                    "phase",
+                    "homing",
+                    "home_axis",
+                    "trip",
+                    "fault",
+                    "shutdown",
+                    "g28",
+                    "xdirect",
+                    "endstop",
+                    "stall",
+                    "diag",
+                ]
+            ):
+                print(f"  {line.strip()}")
+        print("---")
+        for mcu_name, mcu_log in (result.mcu_logs or {}).items():
+            relevant = [
+                ln
+                for ln in mcu_log.split("\n")
+                if any(
+                    k in ln.lower()
+                    for k in ["fault", "phase", "jog", "align", "shutdown"]
+                )
+            ]
+            if relevant:
+                print(f"--- {mcu_name} MCU excerpts ---")
+                for ln in relevant[-40:]:
+                    print(f"  {ln.strip()}")
+                print("---")
 
     if args.phase_test and result.klippy_log:
         print("\n--- Phase stepping log excerpts ---")
