@@ -690,7 +690,8 @@ class TMC5160:
             gconf_val &= ~(1 << 16)  # clear direct_mode
             t.mcu_tmc.set_register("GCONF", gconf_val)
             t.fields.registers["GCONF"] = gconf_val
-        set_axis_mode.send([active[0]._phase_axis_idx, 0])
+        for axis_idx in sorted({t._phase_axis_idx for t in active}):
+            set_axis_mode.send([axis_idx, 0])
         for t in active:
             t._echeck_helper.start_checks()
             t._phase_mode_active = False
