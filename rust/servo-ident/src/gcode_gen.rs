@@ -46,9 +46,10 @@ pub fn generate(e: &Excitation) -> Result<String, GenError> {
             let _ = writeln!(g, "SET_VELOCITY_LIMIT ACCEL={a} ACCEL_TO_DECEL={a}");
             for _ in 0..e.reps {
                 let _ = writeln!(g, "G1 {}{} F{f}", e.axis, e.max_mm);
+                let _ = writeln!(g, "M400");
                 let _ = writeln!(g, "G1 {}{} F{f}", e.axis, e.min_mm);
+                let _ = writeln!(g, "M400");
             }
-            let _ = writeln!(g, "M400");
         }
     }
     Ok(g)

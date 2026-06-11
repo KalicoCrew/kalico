@@ -30,8 +30,16 @@ fn strokes_stay_in_bounds_and_reach_peak_speed() {
     }
     // 2 accels × 2 speeds × 3 reps × 2 directions = 24 G1 lines
     assert_eq!(g.lines().filter(|l| l.starts_with("G1 ")).count(), 24);
-    // 2 accels × 2 speeds = 4 M400 lines
-    assert_eq!(g.lines().filter(|l| *l == "M400").count(), 4);
+    let g1_then_m400 = g
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|w| w[0].starts_with("G1 ") && w[1] == "M400")
+        .count();
+    assert_eq!(
+        g1_then_m400, 24,
+        "every stroke must drain the queue before the next plans"
+    );
 }
 
 #[test]
