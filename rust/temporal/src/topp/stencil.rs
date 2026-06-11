@@ -1,38 +1,36 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SDddotStencil {
-    StartBoundary,
-    Interior,
-    EndBoundary,
+pub fn b_d_weights(hl: f64, hr: f64) -> [f64; 3] {
+    debug_assert!(hl > 0.0 && hr > 0.0);
+    let d = hl * hr * (hl + hr);
+    [-hr * hr / d, (hr * hr - hl * hl) / d, hl * hl / d]
 }
 
-pub fn stencil_for(n: usize, i: usize) -> SDddotStencil {
-    debug_assert!(n >= 3);
-    debug_assert!(i < n);
+pub fn b_dd_weights(hl: f64, hr: f64) -> [f64; 3] {
+    debug_assert!(hl > 0.0 && hr > 0.0);
+    let d = hl * hr * (hl + hr);
+    [2.0 * hr / d, -2.0 * (hl + hr) / d, 2.0 * hl / d]
+}
+
+pub fn stencil_at(i: usize, n: usize, h_intervals: &[f64]) -> ([usize; 3], f64, f64) {
+    debug_assert!(n >= 3 && i < n && h_intervals.len() == n - 1);
     if i == 0 {
-        SDddotStencil::StartBoundary
+        ([0, 1, 2], h_intervals[0], h_intervals[1])
     } else if i == n - 1 {
-        SDddotStencil::EndBoundary
+        (
+            [n - 3, n - 2, n - 1],
+            h_intervals[n - 3],
+            h_intervals[n - 2],
+        )
     } else {
-        SDddotStencil::Interior
+        ([i - 1, i, i + 1], h_intervals[i - 1], h_intervals[i])
     }
 }
 
-/// `b[i].max(0.0)` guards numerically-borderline iterates where Clarabel may
-/// produce slightly-negative `b[i]` due to solver-residual rounding.
-pub fn s_dddot_at(b: &[f64], i: usize, h: f64) -> f64 {
-    debug_assert!(b.len() >= 3, "stencil requires n >= 3");
-    debug_assert!(h > 0.0, "h must be positive");
-    debug_assert!(i < b.len());
+pub fn s_dddot_at_weights(b: &[f64], i: usize, h_intervals: &[f64]) -> f64 {
     let n = b.len();
-    let s_dot = b[i].max(0.0).sqrt();
-    let b_dd = if i == 0 {
-        (b[0] - 2.0 * b[1] + b[2]) / (h * h)
-    } else if i == n - 1 {
-        (b[n - 3] - 2.0 * b[n - 2] + b[n - 1]) / (h * h)
-    } else {
-        (b[i - 1] - 2.0 * b[i] + b[i + 1]) / (h * h)
-    };
-    s_dot * b_dd / 2.0
+    let (idx, hl, hr) = stencil_at(i, n, h_intervals);
+    let w = b_dd_weights(hl, hr);
+    let b_dd = w[0] * b[idx[0]] + w[1] * b[idx[1]] + w[2] * b[idx[2]];
+    b[i].max(0.0).sqrt() * b_dd / 2.0
 }
 
 #[cfg(test)]

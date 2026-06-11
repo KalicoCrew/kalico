@@ -10,120 +10,15 @@
 use geometry::segment::CubicSegment;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
-use nurbs::ScalarNurbs;
 
 use super::{EmitContext, ReplanContext, ShaperState};
 use crate::fit::FittedSegment;
-use crate::kernel::build_smooth_zv_kernel;
-use crate::pad::{pad_segment_axis, EHalo};
+use crate::pad::EHalo;
 use crate::plan_velocity::{PlanShaper, SafetyMode};
-use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
-use crate::shaper::shape_axis;
 use crate::{AxisShaper, ELimits};
 
-fn linear_segment() -> FittedSegment {
-    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0, 10.0],
-    }]);
-    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0],
-    }]);
-    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0],
-    }]);
-    FittedSegment {
-        axes: [x_nurbs, y_nurbs, z_nurbs],
-        t_start: 0.0,
-        t_end: 1.0,
-    }
-}
-
-fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
-    assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-    assert_eq!(
-        a.knots().len(),
-        b.knots().len(),
-        "{label}: knot count differs"
-    );
-    let max_knot_diff = a
-        .knots()
-        .iter()
-        .zip(b.knots().iter())
-        .map(|(ka, kb)| (ka - kb).abs())
-        .fold(0.0_f64, f64::max);
-    assert!(
-        max_knot_diff < 1e-12,
-        "{label}: knots differ by {max_knot_diff:.2e}",
-    );
-    assert_eq!(
-        a.control_points().len(),
-        b.control_points().len(),
-        "{label}: control point count differs",
-    );
-    let max_cp_diff = a
-        .control_points()
-        .iter()
-        .zip(b.control_points().iter())
-        .map(|(ca, cb)| (ca - cb).abs())
-        .fold(0.0_f64, f64::max);
-    assert!(
-        max_cp_diff < 1e-12,
-        "{label}: control points differ by {max_cp_diff:.2e} mm",
-    );
-}
-
 #[test]
-#[allow(clippy::float_cmp)] // Time bounds and cursor zeros are exact-by-construction.
-fn shim_matches_direct_pipeline_for_single_linear_move() {
-    let fitted = linear_segment();
-    let freq = 60.0;
-    let h = 0.8025 / freq / 2.0;
-    let kernel = build_smooth_zv_kernel(0.8025 / freq);
-
-    let shapers: [Option<AxisShaper>; 4] = [
-        Some(AxisShaper::SmoothZv { frequency_hz: freq }),
-        Some(AxisShaper::SmoothZv { frequency_hz: freq }),
-        Some(AxisShaper::Passthrough),
-        Some(AxisShaper::Passthrough),
-    ];
-    let mut state = ShaperState::new([0.0, 0.0, 0.0, 0.0], &shapers);
-    state.append_batch(&fitted).expect("shim should succeed");
-    let shim_out = state.drain_committed();
-    assert_eq!(shim_out.len(), 1, "shim should emit exactly one segment");
-    let shim_seg = &shim_out[0];
-
-    assert!(state.pending_dispatch.is_empty());
-    assert!(state.drain_committed().is_empty());
-
-    let fitted_slice = std::slice::from_ref(&fitted);
-
-    let x_padded = pad_segment_axis(0, 0, fitted_slice, &[], h, 0.0, 1.0);
-    let x_shaped = shape_axis(&x_padded, &kernel, 0.0, 1.0);
-    let x_refit = refit_to_cubic(&x_shaped, REFIT_TOLERANCE_MM).unwrap();
-
-    let y_padded = pad_segment_axis(0, 1, fitted_slice, &[], h, 0.0, 1.0);
-    let y_shaped = shape_axis(&y_padded, &kernel, 0.0, 1.0);
-    let y_refit = refit_to_cubic(&y_shaped, REFIT_TOLERANCE_MM).unwrap();
-
-    let z_passthrough = fitted.axes[2].clone();
-    let z_refit = refit_to_cubic(&z_passthrough, REFIT_TOLERANCE_MM).unwrap();
-
-    assert_nurbs_near_equal(&shim_seg.axes[0], &x_refit, "X");
-    assert_nurbs_near_equal(&shim_seg.axes[1], &y_refit, "Y");
-    assert_nurbs_near_equal(&shim_seg.axes[2], &z_refit, "Z");
-
-    assert_eq!(shim_seg.t_start, 0.0);
-    assert_eq!(shim_seg.t_end, 1.0);
-}
-
-#[test]
-#[allow(clippy::float_cmp)] // Cursor zeros and h=0 for passthrough are exact-by-construction.
+#[allow(clippy::float_cmp)]
 fn new_seeds_axis_queues_with_rest_extension() {
     let shapers: [Option<AxisShaper>; 4] = [
         Some(AxisShaper::SmoothZv {
@@ -162,7 +57,6 @@ fn new_seeds_axis_queues_with_rest_extension() {
     assert_eq!(state.t_decel_start, 0.0);
     assert_eq!(state.t_shaped, 0.0);
     assert_eq!(state.t_dispatched, 0.0);
-    assert!(state.pending_dispatch.is_empty());
 }
 
 #[test]
@@ -254,6 +148,37 @@ fn linear_x_segment(start_x: f64, end_x: f64, feedrate: f64) -> CubicSegment {
 
     let p0 = [start_x, 0.0, 0.0];
     let p3 = [end_x, 0.0, 0.0];
+    let lerp = |t: f64| -> [f64; 3] {
+        [
+            p0[0] + (p3[0] - p0[0]) * t,
+            p0[1] + (p3[1] - p0[1]) * t,
+            p0[2] + (p3[2] - p0[2]) * t,
+        ]
+    };
+    let cps = vec![p0, lerp(1.0 / 3.0), lerp(2.0 / 3.0), p3];
+    let xyz = VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps)
+        .unwrap();
+    CubicSegment::try_new(
+        xyz,
+        EMode::Travel,
+        0.0,
+        None,
+        feedrate,
+        SourceRange {
+            start_line: 0,
+            end_line: 0,
+        },
+        None,
+    )
+    .unwrap()
+}
+
+fn linear_y_segment(start_y: f64, end_y: f64, feedrate: f64) -> CubicSegment {
+    use geometry::segment::{EMode, SourceRange};
+    use nurbs::VectorNurbs;
+
+    let p0 = [0.0, start_y, 0.0];
+    let p3 = [0.0, end_y, 0.0];
     let lerp = |t: f64| -> [f64; 3] {
         [
             p0[0] + (p3[0] - p0[0]) * t,
@@ -404,7 +329,11 @@ fn append_after_committed_dispatch_keeps_history() {
         "replan must have appended fresh pieces to the un-committed tail",
     );
 
-    assert_eq!(state.uncommitted_moves.len(), 2);
+    assert_eq!(
+        state.uncommitted_moves.len(),
+        2,
+        "m1-tail and m2 = 2 total; freeze zone lives in pending_freeze, not uncommitted_moves",
+    );
 }
 
 #[test]
@@ -745,7 +674,7 @@ fn read_axis_value_at(state: &ShaperState, axis_idx: usize, t: f64) -> Option<f6
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Byte-equivalence rollback check requires exact comparison.
+#[allow(clippy::float_cmp)]
 fn append_and_replan_rolls_back_planned_caches_on_plan_velocity_error() {
     let mut state = ShaperState::new([0.0; 4], &replan_shapers());
     let ctx_good = replan_context();
@@ -941,7 +870,6 @@ fn reset_after_motion_clears_state_and_reseeds_at_home() {
     assert_eq!(state.t_shaped, fresh.t_shaped);
     assert_eq!(state.t_dispatched, fresh.t_dispatched);
     assert!(state.uncommitted_moves.is_empty());
-    assert!(state.pending_dispatch.is_empty());
     assert!(state.planned_fitted.is_empty());
     assert!(state.planned_meta.is_empty());
 
@@ -1204,4 +1132,522 @@ fn advance_idle_then_append_places_new_move_at_target() {
         (m2_start - target).abs() < 1e-9,
         "new move must start at target (now), got {m2_start} vs target {target}"
     );
+}
+
+#[test]
+fn read_path_accel_at_matches_analytic() {
+    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0, 0.0, 5.0],
+    }]);
+    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let mut state = ShaperState::new([0.0; 4], &[None; 4]);
+    state.planned_fitted = vec![FittedSegment {
+        axes: [x_nurbs, y_nurbs, z_nurbs],
+        t_start: 0.0,
+        t_end: 1.0,
+    }];
+    let a = state.read_path_accel_at(0.5, f64::NAN);
+    assert!(
+        (a - 10.0).abs() < 1e-9,
+        "expected tangential accel = 10 at t=0.5, got {a}"
+    );
+}
+
+#[test]
+fn read_path_accel_at_zero_speed_returns_fallback() {
+    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0, 0.0, 5.0],
+    }]);
+    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let mut state = ShaperState::new([0.0; 4], &[None; 4]);
+    state.planned_fitted = vec![FittedSegment {
+        axes: [x_nurbs, y_nurbs, z_nurbs],
+        t_start: 0.0,
+        t_end: 1.0,
+    }];
+
+    let a = state.read_path_accel_at(0.0, 0.0);
+    assert_eq!(a, 0.0);
+}
+
+const LOW_FREQ_HZ: f64 = 13.0;
+const HARNESS_A_MAX: f64 = 5_000.0;
+
+fn single_axis_harness(v_max: f64, a_max: f64) -> (ShaperState, ReplanContext) {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+    let state = ShaperState::new([0.0; 4], &shapers);
+
+    let limits = temporal::Limits::new(
+        [v_max, v_max, v_max],
+        [a_max, a_max, a_max],
+        [100_000.0; 3],
+        f64::MAX,
+    );
+    let ctx = ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Fixed(40),
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    (state, ctx)
+}
+
+fn append_x_move(state: &mut ShaperState, ctx: &ReplanContext, dist_mm: f64, feedrate: f64) {
+    let current_x = state.current_position()[0];
+    let seg = linear_x_segment(current_x, current_x + dist_mm, feedrate);
+    state.append_and_replan(seg, ctx).expect("append_x_move");
+}
+
+fn emit_partial_window(state: &mut ShaperState) -> f64 {
+    let kernel_xy = crate::AxisShaper::SmoothZv {
+        frequency_hz: LOW_FREQ_HZ,
+    }
+    .to_kernel();
+    let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] =
+        [kernel_xy.clone(), kernel_xy, None, None];
+    let halos: Vec<EHalo> = Vec::new();
+    let emit_ctx = EmitContext {
+        kernels: &kernels,
+        e_halos: &halos,
+    };
+    let _ = state
+        .emit_committed(&emit_ctx)
+        .expect("emit_partial_window");
+    state.t_dispatched
+}
+
+fn sampled_path_accel(state: &ShaperState, t: f64) -> f64 {
+    let seg = state
+        .planned_fitted
+        .iter()
+        .find(|f| f.t_start - 1e-9 <= t && t < f.t_end + 1e-9)
+        .expect("t must be covered by planned_fitted");
+
+    let vel_nurbs = nurbs::eval::derivative(&seg.axes[0]);
+    let accel_nurbs = nurbs::eval::derivative(&vel_nurbs);
+    nurbs::eval::eval(&accel_nurbs, t)
+}
+
+#[test]
+fn replan_boundary_carries_acceleration() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+    append_x_move(&mut state, &ctx, 50.0, 600.0);
+    let t_split = emit_partial_window(&mut state);
+
+    let max_h = state.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+    let t_freeze = t_split + max_h;
+
+    let a_old_at_split = sampled_path_accel(&state, t_split);
+    assert!(
+        a_old_at_split > 0.3 * HARNESS_A_MAX,
+        "precondition: t_dispatched must land mid-acceleration \
+         (got a={a_old_at_split:.0}); resize move A or lower the kernel frequency"
+    );
+
+    let a_old_at_freeze = sampled_path_accel(&state, t_freeze);
+
+    append_x_move(&mut state, &ctx, 200.0, 30.0);
+
+    let a_new_at_freeze = sampled_path_accel(&state, t_freeze);
+
+    assert!(
+        (a_new_at_freeze - a_old_at_freeze).abs() < 100.0,
+        "replan accel step at t_freeze ({t_freeze:.6}): {a_old_at_freeze:.0} -> {a_new_at_freeze:.0} mm/s²; \
+         boundary acceleration must be passed from old plan to new plan",
+    );
+}
+
+#[test]
+fn replan_with_positive_boundary_accel_and_short_first_segment_succeeds() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let limits = temporal::Limits::new([300.0; 3], [5_000.0; 3], [10_000.0; 3], f64::MAX);
+    let ctx = ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+
+        grid_strategy: temporal::multi::GridStrategy::Fixed(10),
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let m1 = linear_x_segment(0.0, 3.0, 300.0);
+    state.append_and_replan(m1, &ctx).expect("move 1");
+
+    let t_boundary = state.t_appended * 0.10;
+    assert!(t_boundary > 0.0, "t_boundary must be positive");
+    state.t_dispatched = t_boundary;
+
+    let initial_a_at_boundary = state.read_path_accel_at(t_boundary, 0.0);
+    assert!(
+        initial_a_at_boundary > 0.0,
+        "precondition: boundary must land mid-acceleration (got {:.1} mm/s²); \
+         t_boundary is at {:.4} s of total {:.4} s",
+        initial_a_at_boundary,
+        t_boundary,
+        state.t_appended,
+    );
+
+    let initial_v_at_boundary = state.read_path_speed_at(t_boundary, 0.0);
+    assert!(
+        initial_v_at_boundary > 0.1,
+        "precondition: boundary velocity must exceed rest threshold (got {:.4} mm/s)",
+        initial_v_at_boundary,
+    );
+
+    let m2 = linear_x_segment(3.0, 6.0, 300.0);
+    state
+        .append_and_replan(m2, &ctx)
+        .expect("replan from positive-accel boundary with short first segment must succeed");
+
+    assert!(
+        state.t_appended > t_boundary,
+        "replanned window must extend past the boundary",
+    );
+}
+
+fn corner_context_passthrough() -> ReplanContext {
+    let limits = temporal::Limits::new(
+        [300.0, 300.0, 5.0],
+        [5_000.0, 5_000.0, 350.0],
+        [10_000.0; 3],
+        5_000.0,
+    );
+    ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    }
+}
+
+#[test]
+fn split_remnant_corner_infeasibility_recovered() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let ctx = corner_context_passthrough();
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let seg_a = linear_x_segment(0.0, 5.0, 300.0);
+    state.append_and_replan(seg_a, &ctx).expect("seg_A plans");
+
+    let seg_b = linear_y_segment(0.0, 5.0, 300.0);
+    state
+        .append_and_replan(seg_b, &ctx)
+        .expect("seg_B plans (90 degree corner from A)");
+
+    let t_end_a = state.uncommitted_moves[0].t_end;
+    state.t_dispatched = t_end_a - 0.100;
+
+    let v_at_split = state.read_path_speed_at(state.t_dispatched, 0.0);
+    assert!(
+        v_at_split > 5.1,
+        "precondition: velocity {v_at_split:.1} mm/s at t_dispatched must exceed the \
+         junction velocity (~5.0 mm/s for this 90-degree corner) so the split remnant \
+         is physically unable to brake to the junction speed; got {v_at_split:.1} mm/s",
+    );
+
+    let seg_c = linear_x_segment(5.0, 10.0, 300.0);
+    state
+        .append_and_replan(seg_c, &ctx)
+        .expect("planning must recover when split remnant cannot satisfy corner exit velocity");
+
+    assert!(
+        state.t_appended > state.t_dispatched,
+        "replanned window must extend past t_dispatched",
+    );
+}
+
+#[test]
+fn witness_fallback_rung3_fires_when_rung1_and_rung2_both_infeasible() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let tight_limits = temporal::Limits::new(
+        [300.0, 300.0, 5.0],
+        [5_000.0, 5_000.0, 350.0],
+        [10_000.0; 3],
+        5_000.0,
+    );
+    let ctx = ReplanContext {
+        limits: tight_limits,
+        kernels: [
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        fallback_initial_v: 270.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let seg_a = linear_x_segment(0.0, 300.0, 300.0);
+    let report_a = state
+        .append_and_replan(seg_a, &ctx)
+        .expect("long-cruise seg_A must plan");
+    assert_eq!(
+        report_a.fallback_rung, 1,
+        "seg_A should plan on rung 1 (no fallback)",
+    );
+
+    state.t_dispatched = state.t_appended + 1.0;
+
+    let seg_b = linear_x_segment(300.0, 300.5, 300.0);
+    let report_b = state.append_and_replan(seg_b, &ctx).expect(
+        "rung-3 must recover: t_dispatched is past the planned domain so split=None, \
+             fallback_initial_v=270 makes the 0.5 mm window infeasible from non-zero v \
+             (braking distance 270²/(2×5000)=7.29 mm >> 0.5 mm), but rest-to-rest is feasible",
+    );
+
+    assert_eq!(
+        report_b.fallback_rung, 3,
+        "seg_B must use rung-3 fallback: split=None and high initial_v makes rung-1 infeasible, \
+         rung-2 is skipped (not a Replace split), rung-3 plans the new segment alone from rest",
+    );
+
+    assert_eq!(
+        state.uncommitted_moves.len(),
+        1,
+        "rung-3 keeps only the new segment in the window",
+    );
+
+    let new_move_t_start = state.uncommitted_moves[0].t_start;
+    let t_appended_before_set = state.t_dispatched - 1.0;
+    assert!(
+        (new_move_t_start - t_appended_before_set).abs() < 1e-9,
+        "rung-3 must anchor the new segment at the prior witness end ({:.6}); \
+         got t_start = {:.6}",
+        t_appended_before_set,
+        new_move_t_start,
+    );
+
+    assert!(
+        state.planned_fitted.len() == 1,
+        "rung-3 produces exactly one fitted segment (the new move)",
+    );
+
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = EmitContext {
+        kernels: &kernels,
+        e_halos: &halos,
+    };
+    state
+        .commit_decel_to_zero(&ctx_emit)
+        .expect("commit_decel_to_zero after rung-3 must not error");
+}
+
+#[test]
+fn rung1_success_does_not_activate_fallback() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx = replan_context();
+
+    let seg = linear_x_segment(0.0, 50.0, 100.0);
+    let report = state
+        .append_and_replan(seg, &ctx)
+        .expect("normal feasible append must succeed");
+
+    assert_eq!(
+        report.fallback_rung, 1,
+        "a straightforward feasible window must plan on rung 1 without fallback",
+    );
+}
+
+#[test]
+fn dust_move_between_normal_moves_emits_without_panic() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+    append_x_move(&mut state, &ctx, 10.0, 600.0);
+    append_x_move(&mut state, &ctx, 0.0001, 600.0);
+    append_x_move(&mut state, &ctx, 10.0, 600.0);
+    let _ = emit_partial_window(&mut state);
+}
+
+#[test]
+fn rung3_with_gap_at_cutoff_boundary_does_not_panic_on_emit() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+
+    append_x_move(&mut state, &ctx, 20.0, 600.0);
+
+    let t_prior_end = state.t_appended;
+    assert!(t_prior_end > 0.0);
+
+    let gap_width = 0.007_f64;
+
+    for axis in state.axes.iter_mut() {
+        if axis.h > 0.0 {
+            let tail_pos = axis.pieces.back().map_or(0.0, |p| p.evaluate(p.u_end));
+            if let Some(back) = axis.pieces.back_mut() {
+                back.u_end = t_prior_end - gap_width;
+            }
+            axis.pieces.push_back(BezierPiece {
+                u_start: t_prior_end - 5e-13,
+                u_end: t_prior_end,
+                coeffs: vec![tail_pos, 0.0],
+            });
+        }
+    }
+
+    let mut rung3_ctx = ctx;
+    rung3_ctx.fallback_initial_v = 600.0;
+    state.t_dispatched = t_prior_end + 0.001;
+
+    let current_x = state.current_position()[0];
+    let seg = linear_x_segment(current_x, current_x + 20.0, 600.0);
+    let report = state
+        .append_and_replan(seg, &rung3_ctx)
+        .expect("rung3 fallback must succeed for a feasible 20mm rest-to-rest move");
+    assert_eq!(
+        report.fallback_rung, 3,
+        "rung3 must fire: t_dispatched past t_appended makes rung1 use fallback_initial_v=600 which is infeasible for the short window",
+    );
+
+    let _ = emit_partial_window(&mut state);
+}
+
+#[test]
+fn emit_covers_window_starting_after_t_dispatched() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+    append_x_move(&mut state, &ctx, 30.0, 600.0);
+    let t_split = emit_partial_window(&mut state);
+    append_x_move(&mut state, &ctx, 30.0, 600.0);
+
+    let max_h = state.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+    let t_freeze = t_split + max_h;
+    let window_start = state.planned_fitted[0].t_start;
+    assert!(
+        window_start <= t_freeze + 1e-9,
+        "planned_fitted must cover from at most t_freeze ({t_freeze:.9}) onward; \
+         first entry starts at {window_start:.9}",
+    );
+    assert!(
+        state.planned_fitted.last().unwrap().t_end > t_split,
+        "planned_fitted must extend past t_split",
+    );
+    state.t_dispatched = (t_split - 0.009).max(0.0);
+
+    let _ = emit_partial_window(&mut state);
 }

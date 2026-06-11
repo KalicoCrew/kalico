@@ -1,8 +1,8 @@
 use crate::fit::FittedSegment;
 use crate::kernel::build_smooth_mzv_kernel;
 use crate::pad::pad_segment_axis;
-use crate::shaper::shape_axis;
-use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces, BezierPiece};
+use crate::shaper::ShapedSignal;
+use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
 
 fn constant_segment_69s(x_val: f64) -> FittedSegment {
     FittedSegment {
@@ -28,15 +28,6 @@ fn constant_segment_69s(x_val: f64) -> FittedSegment {
     }
 }
 
-fn eval_at(pieces: &[BezierPiece<f64>], t: f64) -> f64 {
-    for p in pieces {
-        if t >= p.u_start - 1e-15 && t <= p.u_end + 1e-15 {
-            return p.evaluate(t);
-        }
-    }
-    panic!("t={t} not in any piece");
-}
-
 #[test]
 fn constant_69s_near_zero_deviation() {
     let freq = 186.0;
@@ -48,13 +39,12 @@ fn constant_69s_near_zero_deviation() {
     let fitted = vec![constant_segment_69s(x_val)];
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
-    let pieces = extract_bezier_pieces(&shaped);
+    let sig = ShapedSignal::new(&padded, &kernel, 0.0, 69.0);
 
     let mut max_dev = 0.0_f64;
     for i in 0..=20 {
         let t = 69.0 * (i as f64) / 20.0;
-        let val = eval_at(&pieces, t.clamp(0.0, 69.0));
+        let val = sig.eval(t.clamp(0.0, 69.0));
         max_dev = max_dev.max((val - x_val).abs());
     }
 
@@ -75,13 +65,12 @@ fn stable_where_nurbs_convolve_fails() {
     let fitted = vec![constant_segment_69s(x_val)];
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
-    let pieces = extract_bezier_pieces(&shaped);
+    let sig = ShapedSignal::new(&padded, &kernel, 0.0, 69.0);
 
     let mut max_dev = 0.0_f64;
     for i in 0..=50 {
         let t = 69.0 * (i as f64) / 50.0;
-        let val = eval_at(&pieces, t.clamp(0.0, 69.0));
+        let val = sig.eval(t.clamp(0.0, 69.0));
         max_dev = max_dev.max((val - x_val).abs());
     }
 

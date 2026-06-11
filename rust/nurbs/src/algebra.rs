@@ -283,6 +283,500 @@ pub fn fit_hermite_c1<const D: usize>(
     Ok(result)
 }
 
+/// Hermite C1 fit with optional 2nd-derivative pins at the global start and end.
+///
+/// Identical to [`fit_hermite_c1`] when both `d2_start` and `d2_end` are `None`.
+/// When a pin is `Some([a0, a1, …])`, the first (or last) output piece is constructed
+/// as degree-5 so that its 2nd derivative at the outer endpoint equals the pin exactly.
+/// Interior piece joints remain C1 only.
+///
+/// The minimum `target_degree` is 3 when no pins are supplied, or 5 when at least one
+/// pin is supplied (the extra two DOF are needed to accommodate the f'' constraint while
+/// keeping the two-endpoint C1 conditions).
+#[cfg(feature = "host")]
+pub fn fit_hermite_c1_clamped<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    tolerance_mm: f64,
+    target_degree: u8,
+    d2_start: Option<[f64; D]>,
+    d2_end: Option<[f64; D]>,
+) -> Result<[Vec<crate::bezier::BezierPiece<f64>>; D], FitError> {
+    if d2_start.is_none() && d2_end.is_none() {
+        return fit_hermite_c1(pieces, tolerance_mm, target_degree);
+    }
+
+    if pieces.is_empty() {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1_clamped: empty input",
+        });
+    }
+    if !tolerance_mm.is_finite() || tolerance_mm <= 0.0 {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1_clamped: tolerance must be finite and positive",
+        });
+    }
+    if target_degree < 4 {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1_clamped: target_degree must be >= 4 when d2 pins are supplied",
+        });
+    }
+
+    for w in pieces.windows(2) {
+        for axis in 0..D {
+            if (w[0][axis].u_end - w[1][axis].u_start).abs() > 1e-12 {
+                return Err(FitError::DegenerateInput {
+                    reason: "fit_hermite_c1_clamped: non-contiguous input pieces",
+                });
+            }
+        }
+    }
+
+    let n = pieces.len();
+    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] = std::array::from_fn(|_| Vec::new());
+
+    hermite_fit_recursive_clamped::<D>(
+        pieces,
+        0,
+        n,
+        tolerance_mm,
+        target_degree,
+        d2_start.as_ref(),
+        d2_end.as_ref(),
+        &mut result,
+    )?;
+
+    Ok(result)
+}
+
+#[cfg(feature = "host")]
+#[allow(clippy::too_many_arguments)]
+fn hermite_fit_recursive_clamped<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    tolerance_mm: f64,
+    target_degree: u8,
+    d2_start: Option<&[f64; D]>,
+    d2_end: Option<&[f64; D]>,
+    result: &mut [Vec<crate::bezier::BezierPiece<f64>>; D],
+) -> Result<(), FitError> {
+    debug_assert!(lo < hi);
+
+    let global_lo = pieces[0][0].u_start;
+    let global_hi = pieces[pieces.len() - 1][0].u_end;
+    let this_lo = pieces[lo][0].u_start;
+    let this_hi = pieces[hi - 1][0].u_end;
+
+    let pin_start = if (this_lo - global_lo).abs() < 1e-12 {
+        d2_start
+    } else {
+        None
+    };
+    let pin_end = if (this_hi - global_hi).abs() < 1e-12 {
+        d2_end
+    } else {
+        None
+    };
+
+    let mut candidate =
+        hermite_fit_one_piece_clamped::<D>(pieces, lo, hi, target_degree, pin_start, pin_end);
+    let max_residual = hermite_check_residual::<D>(pieces, lo, hi, &candidate, target_degree);
+
+    if max_residual <= tolerance_mm {
+        for axis in 0..D {
+            candidate[axis].u_start = pieces[lo][axis].u_start;
+            candidate[axis].u_end = pieces[hi - 1][axis].u_end;
+            result[axis].push(candidate[axis].clone());
+        }
+        return Ok(());
+    }
+
+    if hi - lo == 1 {
+        return Err(FitError::ToleranceNotReached {
+            achieved_mm: max_residual,
+            at_degree: target_degree,
+        });
+    }
+
+    let mid = lo + (hi - lo) / 2;
+
+    hermite_fit_recursive_clamped::<D>(
+        pieces,
+        lo,
+        mid,
+        tolerance_mm,
+        target_degree,
+        d2_start,
+        None,
+        result,
+    )?;
+    hermite_fit_recursive_clamped::<D>(
+        pieces,
+        mid,
+        hi,
+        tolerance_mm,
+        target_degree,
+        None,
+        d2_end,
+        result,
+    )?;
+
+    Ok(())
+}
+
+#[cfg(feature = "host")]
+#[allow(clippy::too_many_arguments)]
+fn hermite_fit_one_piece_clamped<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    target_degree: u8,
+    pin_start: Option<&[f64; D]>,
+    pin_end: Option<&[f64; D]>,
+) -> [crate::bezier::BezierPiece<f64>; D] {
+    let u_lo = pieces[lo][0].u_start;
+    let u_hi = pieces[hi - 1][0].u_end;
+    let h = u_hi - u_lo;
+    let d = target_degree as usize;
+
+    let constraints: Vec<(f64, f64, f64, f64)> = (0..D)
+        .map(|axis| {
+            let f_lo = pieces[lo][axis].evaluate(u_lo);
+            let df_lo = pieces[lo][axis].differentiate().evaluate(u_lo);
+            let f_hi = pieces[hi - 1][axis].evaluate(u_hi);
+            let df_hi = pieces[hi - 1][axis].differentiate().evaluate(u_hi);
+            (f_lo, df_lo, f_hi, df_hi)
+        })
+        .collect();
+
+    if h.abs() < 1e-300 {
+        return std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, 0.0)
+        });
+    }
+
+    match (pin_start, pin_end) {
+        (Some(d2s), Some(d2e)) => std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly_both_clamped(
+                f_lo, df_lo, f_hi, df_hi, u_lo, h, d2s[axis], d2e[axis],
+            )
+        }),
+        (Some(d2s), None) => std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2s[axis] * 0.5)
+        }),
+        (None, Some(d2e)) => {
+            if d <= 3 {
+                return std::array::from_fn(|axis| {
+                    let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+                    hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, 0.0)
+                });
+            }
+            let n_check = 4 * (d + 1);
+            let sample_u: Vec<f64> = (0..=n_check)
+                .map(|i| u_lo + (u_hi - u_lo) * (i as f64 / n_check as f64))
+                .collect();
+            let sample_piece_idx: Vec<usize> = sample_u
+                .iter()
+                .map(|&u| hermite_find_piece_at(pieces, lo, hi, u))
+                .collect();
+
+            let cand_0: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
+                .map(|axis| {
+                    let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+                    hermite_construct_poly_end_clamped(
+                        f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2e[axis], 0.0,
+                    )
+                })
+                .collect();
+            let cand_1: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
+                .map(|axis| {
+                    let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+                    hermite_construct_poly_end_clamped(
+                        f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2e[axis], 1.0,
+                    )
+                })
+                .collect();
+
+            let mut a_vals: Vec<f64> = Vec::new();
+            let mut b_vals: Vec<f64> = Vec::new();
+            for (si, &u) in sample_u.iter().enumerate() {
+                let pidx = sample_piece_idx[si];
+                for axis in 0..D {
+                    let ref_val = pieces[pidx][axis].evaluate(u);
+                    let p0 = cand_0[axis].evaluate(u);
+                    let p1 = cand_1[axis].evaluate(u);
+                    a_vals.push(ref_val - p0);
+                    b_vals.push(p1 - p0);
+                }
+            }
+            let optimal_c2 = minimax_1d(&a_vals, &b_vals);
+
+            std::array::from_fn(|axis| {
+                let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+                hermite_construct_poly_end_clamped(
+                    f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2e[axis], optimal_c2,
+                )
+            })
+        }
+        (None, None) => hermite_fit_one_piece::<D>(pieces, lo, hi, target_degree),
+    }
+}
+
+/// Degree-5 Hermite piece with both endpoint 2nd derivatives pinned.
+/// 6 constraints (f_lo, f'_lo, f''_lo, f_hi, f'_hi, f''_hi) exactly determine
+/// the 6 coefficients of a degree-5 polynomial.
+#[cfg(feature = "host")]
+#[allow(clippy::cast_possible_wrap)]
+fn hermite_construct_poly_both_clamped(
+    f_lo: f64,
+    df_lo: f64,
+    f_hi: f64,
+    df_hi: f64,
+    u_lo: f64,
+    h: f64,
+    d2_lo: f64,
+    d2_hi: f64,
+) -> crate::bezier::BezierPiece<f64> {
+    // p(u) = c0 + c1*h + c2*h² + c3*h³ + c4*h⁴ + c5*h⁵,  h = u - u_lo
+    // p''(u_lo) = 2*c2  →  c2 = d2_lo/2
+    let c0 = f_lo;
+    let c1 = df_lo;
+    let c2 = d2_lo * 0.5;
+
+    if h.abs() < 1e-300 {
+        return crate::bezier::BezierPiece {
+            u_start: u_lo,
+            u_end: u_lo + h,
+            coeffs: vec![c0, c1, c2, 0.0, 0.0, 0.0],
+        };
+    }
+
+    // Residuals after subtracting fixed coefficients:
+    let h2 = h * h;
+    let h3 = h2 * h;
+    let h4 = h3 * h;
+    let h5 = h4 * h;
+
+    let p_res = f_hi - c0 - c1 * h - c2 * h2;
+    let v_res = df_hi - c1 - 2.0 * c2 * h;
+    let a_res = d2_hi - 2.0 * c2;
+
+    // 3×3 system for (q = c3*h³, r = c4*h⁴, s = c5*h⁵):
+    //   q    +  r   +  s   = P
+    //   3q   + 4r   + 5s   = V*H
+    //   6q   + 12r  + 20s  = A*H²
+    // det = 2 (computed below)
+    let rhs0 = p_res;
+    let rhs1 = v_res * h;
+    let rhs2 = a_res * h2;
+
+    // Verified Cramer solution (det=2):
+    //   q = (20*P - 8*V*H + A*H²) / 2
+    //   r = (-30*P + 14*V*H - 2*A*H²) / 2
+    //   s = (12*P - 6*V*H + A*H²) / 2
+    let det = 2.0;
+    let q = (20.0 * rhs0 - 8.0 * rhs1 + rhs2) / det;
+    let r = (-30.0 * rhs0 + 14.0 * rhs1 - 2.0 * rhs2) / det;
+    let s = (12.0 * rhs0 - 6.0 * rhs1 + rhs2) / det;
+
+    let c3 = q / h3;
+    let c4 = r / h4;
+    let c5 = s / h5;
+
+    crate::bezier::BezierPiece {
+        u_start: u_lo,
+        u_end: u_lo + h,
+        coeffs: vec![c0, c1, c2, c3, c4, c5],
+    }
+}
+
+/// Degree-`d` (>=5) Hermite piece with start 2nd-derivative pinned.
+/// c0, c1 fixed; c2 = d2_lo/2; c3 = free minimax DOF (= `c3_val`);
+/// c_{d-1} and c_d solved from C1 at the end.
+#[cfg(feature = "host")]
+#[allow(clippy::too_many_arguments, clippy::cast_possible_wrap)]
+fn hermite_construct_poly_start_clamped(
+    f_lo: f64,
+    df_lo: f64,
+    f_hi: f64,
+    df_hi: f64,
+    u_lo: f64,
+    h: f64,
+    d: usize,
+    d2_lo: f64,
+    c3_val: f64,
+) -> crate::bezier::BezierPiece<f64> {
+    let mut coeffs = vec![0.0f64; d + 1];
+    coeffs[0] = f_lo;
+    coeffs[1] = df_lo;
+    coeffs[2] = d2_lo * 0.5;
+    if d >= 5 {
+        coeffs[3] = c3_val;
+    }
+
+    let mut pos_residual = f_hi - coeffs[0] - coeffs[1] * h;
+    let mut vel_residual = df_hi - coeffs[1];
+
+    let mut h_pow = h * h;
+    let mut h_pow_deriv = h;
+    for k in 2..d.saturating_sub(1) {
+        pos_residual -= coeffs[k] * h_pow;
+        vel_residual -= (k as f64) * coeffs[k] * h_pow_deriv;
+        h_pow *= h;
+        h_pow_deriv *= h;
+    }
+
+    let h_dm2 = h.powi(d as i32 - 2);
+    let h_dm1 = h_dm2 * h;
+    let h_d = h_dm1 * h;
+    let det = h.powi(2 * d as i32 - 2);
+
+    if det.abs() < 1e-300 {
+        return crate::bezier::BezierPiece {
+            u_start: u_lo,
+            u_end: u_lo + h,
+            coeffs,
+        };
+    }
+
+    let d_f = d as f64;
+    let dm1_f = (d - 1) as f64;
+    coeffs[d - 1] = (pos_residual * d_f * h_dm1 - h_d * vel_residual) / det;
+    coeffs[d] = (h_dm1 * vel_residual - dm1_f * h_dm2 * pos_residual) / det;
+
+    crate::bezier::BezierPiece {
+        u_start: u_lo,
+        u_end: u_lo + h,
+        coeffs,
+    }
+}
+
+/// Degree-`d` (>=4) Hermite piece with end 2nd-derivative pinned.
+/// c0, c1 fixed from start; c2 is the free minimax DOF (= `c2_val`);
+/// c_{d-2}, c_{d-1}, c_d solved from f_hi, f'_hi, f''_hi.
+/// For d=4 the 3×3 system covers coefficients 2..4, and c2_val shifts the
+/// solution family (no separate free DOF for the minimax caller).
+#[cfg(feature = "host")]
+#[allow(clippy::too_many_arguments, clippy::cast_possible_wrap)]
+fn hermite_construct_poly_end_clamped(
+    f_lo: f64,
+    df_lo: f64,
+    f_hi: f64,
+    df_hi: f64,
+    u_lo: f64,
+    h: f64,
+    d: usize,
+    d2_hi: f64,
+    c2_val: f64,
+) -> crate::bezier::BezierPiece<f64> {
+    if d < 4 || h.abs() < 1e-300 {
+        let mut coeffs = vec![0.0f64; d + 1];
+        coeffs[0] = f_lo;
+        if d >= 1 {
+            coeffs[1] = df_lo;
+        }
+        return crate::bezier::BezierPiece {
+            u_start: u_lo,
+            u_end: u_lo + h,
+            coeffs,
+        };
+    }
+
+    // c0 = f_lo, c1 = df_lo, c2 = c2_val (minimax free DOF)
+    // coeffs[3..d-3] = 0 (no higher free DOFs)
+    // Last three: c_{d-2}, c_{d-1}, c_d from 3 constraints at h:
+    //   f(h)   = f_hi
+    //   f'(h)  = df_hi
+    //   f''(h) = d2_hi
+    let mut coeffs = vec![0.0f64; d + 1];
+    coeffs[0] = f_lo;
+    coeffs[1] = df_lo;
+    coeffs[2] = c2_val;
+    // coeffs[3..d-2] already 0
+
+    // Subtract known-coefficient contributions from each residual
+    let mut pos_residual = f_hi - f_lo - df_lo * h - c2_val * h * h;
+    let mut vel_residual = df_hi - df_lo - 2.0 * c2_val * h;
+    let mut acc_residual = d2_hi - 2.0 * c2_val;
+
+    let mut h_pow = h * h * h; // h^3
+    let mut h_pow_d = h * h; // h^2
+    let mut h_pow_dd = h; // h^1
+    for k in 3..d.saturating_sub(2) {
+        pos_residual -= coeffs[k] * h_pow;
+        vel_residual -= (k as f64) * coeffs[k] * h_pow_d;
+        acc_residual -= (k as f64) * ((k - 1) as f64) * coeffs[k] * h_pow_dd;
+        h_pow *= h;
+        h_pow_d *= h;
+        h_pow_dd *= h;
+    }
+
+    // Solve 3×3 for (c_{d-2}, c_{d-1}, c_d) using d=5 pattern generalized:
+    // Let a = d-2, b = d-1, e = d.
+    // p(h)   = c_a*h^a + c_b*h^b + c_e*h^e = P
+    // p'(h)  = a*c_a*h^{a-1} + b*c_b*h^{b-1} + e*c_e*h^{e-1} = V
+    // p''(h) = a*(a-1)*c_a*h^{a-2} + b*(b-1)*c_b*h^{b-2} + e*(e-1)*c_e*h^{e-2} = A
+    // Substituting q=c_a*h^a, r=c_b*h^b, s=c_e*h^e:
+    // q + r + s = P
+    // a*q/h + b*r/h + e*s/h = V  →  a*q + b*r + e*s = V*h
+    // a*(a-1)*q/h² + ... = A    →  a*(a-1)*q + b*(b-1)*r + e*(e-1)*s = A*h²
+    let a = (d - 2) as f64;
+    let b = (d - 1) as f64;
+    let e = d as f64;
+
+    let rhs0 = pos_residual;
+    let rhs1 = vel_residual * h;
+    let rhs2 = acc_residual * h * h;
+
+    let m00 = 1.0_f64;
+    let m01 = 1.0_f64;
+    let m02 = 1.0_f64;
+    let m10 = a;
+    let m11 = b;
+    let m12 = e;
+    let m20 = a * (a - 1.0);
+    let m21 = b * (b - 1.0);
+    let m22 = e * (e - 1.0);
+
+    let det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20)
+        + m02 * (m10 * m21 - m11 * m20);
+
+    let h_a = h.powi((d - 2) as i32);
+    let h_b = h_a * h;
+    let h_e = h_b * h;
+
+    if det.abs() < 1e-300 {
+        return crate::bezier::BezierPiece {
+            u_start: u_lo,
+            u_end: u_lo + h,
+            coeffs,
+        };
+    }
+
+    let q = (rhs0 * (m11 * m22 - m12 * m21) - rhs1 * (m01 * m22 - m02 * m21)
+        + rhs2 * (m01 * m12 - m02 * m11))
+        / det;
+    let r = (m00 * (rhs1 * m22 - rhs2 * m12) - rhs0 * (m10 * m22 - m12 * m20)
+        + m02 * (m10 * rhs2 - rhs1 * m20))
+        / det;
+    let s = (m00 * (m11 * rhs2 - rhs1 * m21) - m01 * (m10 * rhs2 - rhs1 * m20)
+        + rhs0 * (m10 * m21 - m11 * m20))
+        / det;
+
+    coeffs[d - 2] = q / h_a;
+    coeffs[d - 1] = r / h_b;
+    coeffs[d] = s / h_e;
+
+    crate::bezier::BezierPiece {
+        u_start: u_lo,
+        u_end: u_lo + h,
+        coeffs,
+    }
+}
+
 #[cfg(feature = "host")]
 fn hermite_fit_recursive<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],

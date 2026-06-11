@@ -22,7 +22,7 @@ fn live_limits() -> temporal::Limits {
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
         [140000.0, 140000.0, 200.0],
-        5.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     )
 }
 
@@ -67,7 +67,9 @@ fn jog_50mm_at_100mms_with_live_limits() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");
@@ -95,7 +97,7 @@ fn jog_50mm_with_higher_scv() {
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
         [140000.0, 140000.0, 200.0],
-        70.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     );
 
     let segments = [ShapeSegmentInput {
@@ -135,7 +137,9 @@ fn jog_50mm_with_higher_scv() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");
@@ -197,7 +201,9 @@ fn probe_with_feedrate(feedrate: f64, dist_mm: f64) -> f64 {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");
     let seg = &result.segments[0];
@@ -224,7 +230,7 @@ fn jog_50mm_with_z_jmax_uncapped() {
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 1000.0],
         [140000.0, 140000.0, 2000.0],
-        5.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     );
 
     let segments = [ShapeSegmentInput {
@@ -264,7 +270,9 @@ fn jog_50mm_with_z_jmax_uncapped() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");
@@ -297,7 +305,7 @@ fn jog_50mm_low_accel_baseline() {
         [300.0, 300.0, 15.0],
         [3000.0, 3000.0, 100.0],
         [6000.0, 6000.0, 200.0],
-        5.0_f64.powi(2) / (3000.0 * 0.5),
+        3000.0,
     );
 
     let segments = [ShapeSegmentInput {
@@ -333,7 +341,9 @@ fn jog_50mm_low_accel_baseline() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");

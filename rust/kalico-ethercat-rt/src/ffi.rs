@@ -38,6 +38,10 @@ extern "C" {
 
     pub fn ec_rt_cycle(toff_ns: *mut i64) -> c_int;
 
+    pub fn ec_rt_park_cycle(toff_ns: *mut i64) -> c_int;
+
+    pub fn ec_rt_al_status(state: *mut u16, alstatuscode: *mut u16);
+
     pub fn ec_rt_set_target_position(counts: i32);
 
     pub fn ec_rt_get_position_actual() -> i32;

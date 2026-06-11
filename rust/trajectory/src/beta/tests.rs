@@ -65,7 +65,9 @@ fn single_straight_line_converges() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");
@@ -137,7 +139,9 @@ fn two_segments_with_e_gap() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");
@@ -210,7 +214,9 @@ fn all_e_gaps_output() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");

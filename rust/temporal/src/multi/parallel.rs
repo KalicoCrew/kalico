@@ -1,28 +1,22 @@
-use crate::multi::joining::SegmentState;
-use crate::multi::{BatchError, SegmentInput};
-use crate::topp::{ToleranceMode, schedule_segment_with_tolerance};
-use crate::{GridConfig, SolveStatus, TopProfile};
+use crate::multi::BatchError;
+use crate::multi::joining::ChainState;
+use crate::topp::chain::ChainGrid;
+use crate::topp::constraints::{
+    COMP_FLOOR, boundary_reachable_b_lower, boundary_reachable_b_upper,
+};
+use crate::topp::{EndpointConditions, ToleranceMode, schedule_chain_with_tolerance};
+use crate::{BoundarySide, InfeasibleReason, SolveStatus, TopProfile};
 use std::sync::Mutex;
 use std::thread;
 
 const BISECT_VEL_RESOLUTION_MM_S: f64 = 0.1;
 
-/// Re-solve all `dirty` segments in parallel across `n_threads` workers.
-///
-/// Only clears `dirty` on verifier-feasible success statuses: `Solved`,
-/// `SolvedInexact`, and `SolvedSlp`. `SolvedSlp` must be included — it is
-/// the actual termination path on curved geometry. Treating it as failure
-/// would leave every SLP-required-cuts segment dirty forever.
-///
-/// Segment 0's `v_start` and the last segment's `v_end` are batch boundary
-/// conditions: pinned, never scaled by the fallback.
 pub(crate) fn fan_out_solves(
-    inputs: &[SegmentInput<'_>],
-    states: &mut [SegmentState],
-    grids: &[GridConfig],
+    chain_grids: &[ChainGrid],
+    states: &mut [ChainState],
     n_threads: usize,
 ) -> Result<(), BatchError> {
-    let n_segs = states.len();
+    let n_chains = states.len();
     let dirty_indices: Vec<usize> = states
         .iter()
         .enumerate()
@@ -33,11 +27,12 @@ pub(crate) fn fan_out_solves(
     }
 
     let queue = Mutex::new(dirty_indices);
-    let results: Mutex<Vec<(usize, Result<crate::TopProfile, crate::ScheduleError>)>> =
+    let results: Mutex<Vec<(usize, Result<TopProfile, crate::ScheduleError>)>> =
         Mutex::new(Vec::new());
 
     let v_starts: Vec<f64> = states.iter().map(|s| s.v_start).collect();
     let v_ends: Vec<f64> = states.iter().map(|s| s.v_end).collect();
+    let a_starts: Vec<Option<f64>> = states.iter().map(|s| s.a_start).collect();
 
     thread::scope(|s| {
         for _ in 0..n_threads {
@@ -47,13 +42,12 @@ pub(crate) fn fan_out_solves(
                         break;
                     };
                     let pin_start = idx == 0;
-                    let pin_end = idx + 1 == n_segs;
+                    let pin_end = idx + 1 == n_chains;
                     let r = solve_with_boundary_fallback(
-                        inputs[idx].curve,
-                        &inputs[idx].limits,
-                        grids[idx],
+                        &chain_grids[idx],
                         v_starts[idx],
                         v_ends[idx],
+                        a_starts[idx],
                         pin_start,
                         pin_end,
                     );
@@ -67,14 +61,31 @@ pub(crate) fn fan_out_solves(
         match r {
             Ok(profile) => {
                 let success = is_success(profile.status);
-                // Always sync v_start/v_end to the actual profile endpoints so
-                // the forward/reverse sweeps propagate the achieved velocity
-                // even on infeasible solves.
-                if let Some(first) = profile.samples.first() {
-                    states[idx].v_start = first.v;
+
+                let start_is_pinned_boundary = idx == 0;
+                let end_is_pinned_boundary = idx + 1 == n_chains;
+                let kinematic_boundary_end = matches!(
+                    profile.status,
+                    SolveStatus::Infeasible {
+                        reason: InfeasibleReason::BoundaryBelowMinReachable {
+                            side: BoundarySide::End,
+                            ..
+                        } | InfeasibleReason::BoundaryAboveMaxReachable {
+                            side: BoundarySide::End,
+                            ..
+                        },
+                        ..
+                    }
+                );
+                if !start_is_pinned_boundary && success {
+                    if let Some(first) = profile.samples.first() {
+                        states[idx].v_start = first.v.min(v_starts[idx]);
+                    }
                 }
-                if let Some(last) = profile.samples.last() {
-                    states[idx].v_end = last.v;
+                if !end_is_pinned_boundary && (success || kinematic_boundary_end) {
+                    if let Some(last) = profile.samples.last() {
+                        states[idx].v_end = last.v.min(v_ends[idx]);
+                    }
                 }
                 states[idx].profile = Some(profile);
                 if success {
@@ -87,24 +98,126 @@ pub(crate) fn fan_out_solves(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn solve_with_boundary_fallback(
-    curve: &nurbs::VectorNurbs<f64, 3>,
-    limits: &crate::Limits,
-    grid: GridConfig,
+pub(crate) fn solve_with_boundary_fallback(
+    chain: &ChainGrid,
     v_start: f64,
     v_end: f64,
+    a_start: Option<f64>,
     pin_start: bool,
     pin_end: bool,
 ) -> Result<TopProfile, crate::ScheduleError> {
-    let initial =
-        schedule_segment_with_tolerance(curve, limits, &grid, v_start, v_end, ToleranceMode::Auto)?;
+    debug_assert!(
+        a_start.is_none() || pin_start,
+        "a_start pin without a pinned v_start — the bisection would silently re-plan a different boundary state"
+    );
+
+    let initial = schedule_chain_with_tolerance(
+        chain,
+        EndpointConditions {
+            v_start,
+            v_end,
+            a_start,
+        },
+        ToleranceMode::Auto,
+    )?;
     if is_success(initial.status) {
         return Ok(initial);
     }
 
     if pin_start && pin_end {
         return Ok(initial);
+    }
+
+    match initial.status {
+        SolveStatus::Infeasible {
+            reason:
+                InfeasibleReason::BoundaryAboveMaxReachable {
+                    side: BoundarySide::End,
+                    max_b,
+                },
+            ..
+        } if pin_start && !pin_end => {
+            let max_v = max_b.max(0.0).sqrt();
+            let s_total = chain.s.last().copied().unwrap_or(0.0);
+            let (a_env, j_env) = chain_envelope_aj(chain);
+            let a0_clamped = a_start.unwrap_or(0.0).clamp(-a_env, a_env);
+            let min_b = crate::topp::constraints::boundary_reachable_b_lower(
+                s_total, v_start, a0_clamped, a_env, j_env,
+            );
+            let min_v = min_b.max(0.0).sqrt();
+            let mut lo_v = min_v;
+            let mut hi_v = max_v;
+            let mut best: Option<TopProfile> = None;
+            for _ in 0..24 {
+                if hi_v - lo_v < BISECT_VEL_RESOLUTION_MM_S {
+                    break;
+                }
+                let mid_v = (lo_v + hi_v) * 0.5;
+                let candidate = schedule_chain_with_tolerance(
+                    chain,
+                    EndpointConditions {
+                        v_start,
+                        v_end: mid_v,
+                        a_start,
+                    },
+                    ToleranceMode::Auto,
+                )?;
+                if is_success(candidate.status) {
+                    lo_v = mid_v;
+                    best = Some(candidate);
+                } else {
+                    hi_v = mid_v;
+                }
+            }
+            if let Some(profile) = best {
+                return Ok(profile);
+            }
+            return Ok(initial);
+        }
+        SolveStatus::Infeasible {
+            reason:
+                InfeasibleReason::BoundaryBelowMinReachable {
+                    side: BoundarySide::End,
+                    min_b,
+                },
+            ..
+        } if pin_start && !pin_end => {
+            let min_v = min_b.max(0.0).sqrt();
+            let v_max_end = chain
+                .limits
+                .last()
+                .map(|l| l.v_max.iter().copied().fold(f64::INFINITY, f64::min))
+                .unwrap_or(f64::INFINITY);
+            let mut lo_v = min_v;
+            let mut hi_v = v_max_end.min(v_start.max(v_end) * 2.0 + min_v + 1.0);
+            let mut best: Option<TopProfile> = None;
+            for _ in 0..24 {
+                if hi_v - lo_v < BISECT_VEL_RESOLUTION_MM_S {
+                    break;
+                }
+                let mid_v = (lo_v + hi_v) * 0.5;
+                let candidate = schedule_chain_with_tolerance(
+                    chain,
+                    EndpointConditions {
+                        v_start,
+                        v_end: mid_v,
+                        a_start,
+                    },
+                    ToleranceMode::Auto,
+                )?;
+                if is_success(candidate.status) {
+                    hi_v = mid_v;
+                    best = Some(candidate);
+                } else {
+                    lo_v = mid_v;
+                }
+            }
+            if let Some(profile) = best {
+                return Ok(profile);
+            }
+            return Ok(initial);
+        }
+        _ => {}
     }
 
     let scaled_mag = match (pin_start, pin_end) {
@@ -125,8 +238,15 @@ fn solve_with_boundary_fallback(
         let mid = (lo + hi) * 0.5;
         let vs = if pin_start { v_start } else { v_start * mid };
         let ve = if pin_end { v_end } else { v_end * mid };
-        let candidate =
-            schedule_segment_with_tolerance(curve, limits, &grid, vs, ve, ToleranceMode::Auto)?;
+        let candidate = schedule_chain_with_tolerance(
+            chain,
+            EndpointConditions {
+                v_start: vs,
+                v_end: ve,
+                a_start,
+            },
+            ToleranceMode::Auto,
+        )?;
         if is_success(candidate.status) {
             lo = mid;
             best = Some(candidate);
@@ -139,23 +259,23 @@ fn solve_with_boundary_fallback(
         return Ok(profile);
     }
 
-    // The zero-zero retry and v_max ladder below would alter pinned velocities.
     if pin_start || pin_end {
         return Ok(initial);
     }
 
     const VEL_NEAR_ZERO: f64 = 1e-6;
     if v_start.abs() > VEL_NEAR_ZERO || v_end.abs() > VEL_NEAR_ZERO {
-        return schedule_segment_with_tolerance(
-            curve,
-            limits,
-            &grid,
-            0.0,
-            0.0,
+        return schedule_chain_with_tolerance(
+            chain,
+            EndpointConditions {
+                v_start: 0.0,
+                v_end: 0.0,
+                a_start: None,
+            },
             ToleranceMode::Auto,
         );
     }
-    let base_v_max = limits.v_max;
+    let base_v_max = chain.limits[0].v_max;
     let mut vlo = 0.0_f64;
     let mut vhi = 1.0_f64;
     let mut vbest: Option<TopProfile> = None;
@@ -164,23 +284,14 @@ fn solve_with_boundary_fallback(
             break;
         }
         let mid = (vlo + vhi) * 0.5;
-        let scaled_v_max = [
-            base_v_max[0] * mid,
-            base_v_max[1] * mid,
-            base_v_max[2] * mid,
-        ];
-        let scaled_limits = crate::Limits::new(
-            scaled_v_max,
-            limits.a_max,
-            limits.j_max,
-            limits.a_centripetal_max,
-        );
-        let candidate = schedule_segment_with_tolerance(
-            curve,
-            &scaled_limits,
-            &grid,
-            0.0,
-            0.0,
+        let scaled = scale_chain_v_max(chain, mid);
+        let candidate = schedule_chain_with_tolerance(
+            &scaled,
+            EndpointConditions {
+                v_start: 0.0,
+                v_end: 0.0,
+                a_start: None,
+            },
             ToleranceMode::Auto,
         )?;
         if is_success(candidate.status) {
@@ -194,18 +305,58 @@ fn solve_with_boundary_fallback(
     if let Some(profile) = vbest {
         Ok(profile)
     } else {
-        let zero_v_max = [0.0, 0.0, 0.0];
-        let scaled_limits = crate::Limits::new(
-            zero_v_max,
-            limits.a_max,
-            limits.j_max,
-            limits.a_centripetal_max,
-        );
-        schedule_segment_with_tolerance(curve, &scaled_limits, &grid, 0.0, 0.0, ToleranceMode::Auto)
+        let scaled = scale_chain_v_max(chain, 0.0);
+        schedule_chain_with_tolerance(
+            &scaled,
+            EndpointConditions {
+                v_start: 0.0,
+                v_end: 0.0,
+                a_start: None,
+            },
+            ToleranceMode::Auto,
+        )
     }
 }
 
-fn is_success(status: SolveStatus) -> bool {
+fn chain_envelope_aj(chain: &crate::topp::chain::ChainGrid) -> (f64, f64) {
+    let mut a_env = 0.0_f64;
+    let mut j_env = 0.0_f64;
+    for (node_idx, geom) in chain.geom.iter().enumerate() {
+        let lim = chain.limits_at(node_idx);
+        let g = &geom.c_prime;
+        let mut a_tan = f64::INFINITY;
+        let mut j_tan = f64::INFINITY;
+        let mut active = false;
+        for ax in 0..3 {
+            let gabs = g[ax].abs();
+            if gabs > COMP_FLOOR {
+                a_tan = a_tan.min(lim.a_max[ax] / gabs);
+                j_tan = j_tan.min(lim.j_max[ax] / gabs);
+                active = true;
+            }
+        }
+        if active {
+            a_env = a_env.max(a_tan);
+            j_env = j_env.max(j_tan);
+        }
+    }
+    (a_env.max(1e-9), j_env.max(1e-9))
+}
+
+fn scale_chain_v_max(chain: &ChainGrid, factor: f64) -> ChainGrid {
+    let mut scaled = chain.clone();
+    for l in &mut scaled.limits {
+        *l = crate::Limits::new(
+            l.v_max.map(|v| v * factor),
+            l.a_max,
+            l.j_max,
+            l.a_centripetal_max,
+        );
+    }
+    scaled
+}
+
+pub(crate) fn is_success(status: SolveStatus) -> bool {
     matches!(
         status,
         SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }

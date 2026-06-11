@@ -104,15 +104,16 @@ where
     for bp in bps.iter() {
         let bern = bp.to_bernstein();
 
-        debug_assert_eq!(
-            bern.len(),
-            4,
-            "expected cubic (degree-3) Bernstein coeffs; the pipeline is uniform-cubic per CLAUDE.md, got {}",
+        assert!(
+            !bern.is_empty() && bern.len() <= 4,
+            "{} Bernstein coeffs — truncating above-cubic pieces silently \
+             corrupts the dispatched polynomial (Neptune fault -310, 299 steps/sample); \
+             the pipeline is uniform-cubic per CLAUDE.md",
             bern.len()
         );
 
-        let n = bern.len().min(4);
-        let last_f64 = if n > 0 { bern[n - 1] } else { 0.0 };
+        let n = bern.len();
+        let last_f64 = bern[n - 1];
         let mut coeffs_f64 = [last_f64; 4];
         for k in 0..n {
             coeffs_f64[k] = bern[k];

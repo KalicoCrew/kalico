@@ -1,4 +1,56 @@
 use super::*;
+use crate::Limits;
+use constraints::EndpointConditions;
+
+/// Straight 600 mm collinear cubic at machine-limit speed: v_max = 1000 mm/s,
+/// a_max = 50 km/s². Limits mirror the bridge's `to_temporal_limits` output for
+/// `max_velocity=1000, max_accel=50000, scv=5` — a_centripetal_max equals
+/// max_accel (50_000 mm/s²). κ = 0 on a straight line so the centripetal cap
+/// is never active; the solver must produce a usable profile, not MaxIter.
+#[test]
+fn schedule_segment_straight_line_at_1000mms_solves() {
+    let cps = vec![
+        [0.0, 0.0, 0.0],
+        [200.0, 0.0, 0.0],
+        [400.0, 0.0, 0.0],
+        [600.0, 0.0, 0.0],
+    ];
+    let curve =
+        VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps)
+            .unwrap();
+    let limits = Limits {
+        v_max: [1000.0, 1000.0, 15.0],
+        a_max: [50_000.0, 50_000.0, 100.0],
+        j_max: [100_000.0, 100_000.0, 100_000.0],
+        a_centripetal_max: 50_000.0,
+    };
+    let cfg = GridConfig {
+        scheme: crate::GridScheme::UniformArclength,
+        n: 200,
+    };
+    let profile =
+        schedule_segment_with_tolerance(&curve, &limits, &cfg, 0.0, 0.0, ToleranceMode::Auto)
+            .expect("schedule should not hit a setup error");
+    assert!(
+        matches!(
+            profile.status,
+            crate::SolveStatus::Solved
+                | crate::SolveStatus::SolvedInexact { .. }
+                | crate::SolveStatus::SolvedSlp { .. }
+        ),
+        "limit-speed straight line must solve, got {:?}",
+        profile.status,
+    );
+    let peak_v = profile
+        .samples
+        .iter()
+        .map(|s| s.v)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        (peak_v - 1000.0).abs() < 15.0,
+        "peak velocity {peak_v:.1} mm/s, expected cruise ≈ 1000",
+    );
+}
 
 #[test]
 fn schedule_segment_straight_line_returns_profile() {
@@ -29,4 +81,78 @@ fn schedule_segment_straight_line_returns_profile() {
     assert!(profile.samples[49].v < 1e-3);
     assert!(profile.samples[25].v > 100.0);
     assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
+}
+
+#[test]
+fn pinned_nonzero_a_start_converges() {
+    // Reproduction case: v_start=575, a_start=2000, 100mm straight, N=100
+    // previously produced DivergedSlp{ratio≈2.0} with the hard-pin approach.
+    // The tube must make this converge.
+    let curve = VectorNurbs::<f64, 3>::try_new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+    )
+    .unwrap();
+    let limits = Limits {
+        v_max: [600.0, 600.0, 600.0],
+        a_max: [50_000.0, 50_000.0, 50_000.0],
+        j_max: [100_000.0, 100_000.0, 100_000.0],
+        a_centripetal_max: 2_500.0,
+    };
+    let arc_grid = path::sample_arclength_grid(&curve, 100).unwrap();
+    let chain_grid = chain::ChainGrid::from_segment_grids(vec![arc_grid], vec![limits]);
+    let profile = schedule_chain_with_tolerance(
+        &chain_grid,
+        EndpointConditions {
+            v_start: 575.0,
+            v_end: 0.0,
+            a_start: Some(2000.0),
+        },
+        ToleranceMode::Auto,
+    )
+    .expect("setup ok");
+    assert!(
+        matches!(
+            profile.status,
+            crate::SolveStatus::Solved
+                | crate::SolveStatus::SolvedInexact { .. }
+                | crate::SolveStatus::SolvedSlp { .. }
+        ),
+        "pinned nonzero a_start must converge, got {:?}",
+        profile.status
+    );
+    let start_a = profile.samples[0].a;
+    assert!(
+        (start_a - 2000.0).abs() < 0.15 * 2000.0,
+        "start accel {start_a} not near 2000 (tube gives jerk-bounded continuity)"
+    );
+}
+
+#[test]
+fn schedule_chain_two_collinear_segments_solves() {
+    let chain = crate::topp::chain::tests_support::two_segment_chain_with_junction();
+    let profile = schedule_chain_with_tolerance(
+        &chain,
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
+        ToleranceMode::Auto,
+    )
+    .expect("setup ok");
+    assert!(
+        matches!(
+            profile.status,
+            crate::SolveStatus::Solved
+                | crate::SolveStatus::SolvedInexact { .. }
+                | crate::SolveStatus::SolvedSlp { .. }
+        ),
+        "status: {:?}",
+        profile.status
+    );
+    assert_eq!(profile.samples.len(), chain.n_points());
+    assert!(profile.samples[0].v < 1e-3);
+    assert!(profile.samples.last().unwrap().v < 1e-3);
 }

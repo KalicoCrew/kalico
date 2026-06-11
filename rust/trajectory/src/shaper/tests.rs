@@ -46,7 +46,7 @@ fn linear_segment(x_start: f64, x_end: f64, t_start: f64, t_end: f64) -> FittedS
 }
 
 #[test]
-fn shape_constant_is_constant() {
+fn shaped_signal_constant_is_constant() {
     let freq = 150.0;
     let t_sm = 0.8025 / freq;
     let t_sm_half = t_sm / 2.0;
@@ -56,11 +56,10 @@ fn shape_constant_is_constant() {
     let fitted = vec![constant_segment(x_val, 0.0, 0.0, 0.0, 1.0)];
 
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 1.0);
-    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
+    let sig = ShapedSignal::new(&padded, &kernel, 0.0, 1.0);
 
-    let pieces = extract_bezier_pieces(&shaped);
     for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
-        let val = eval_at(&pieces, t);
+        let val = sig.eval(t);
         assert!(
             (val - x_val).abs() < 1e-4,
             "at t={t}: expected {x_val}, got {val}"
@@ -69,7 +68,7 @@ fn shape_constant_is_constant() {
 }
 
 #[test]
-fn pad_trim_matches_global_convolve() {
+fn pad_trim_shaped_signal_matches_global_convolve() {
     let freq = 10.0;
     let t_sm = 0.8025 / freq;
     let t_sm_half = t_sm / 2.0;
@@ -82,26 +81,6 @@ fn pad_trim_matches_global_convolve() {
     ];
     let batch_t_start = 0.0;
     let batch_t_end = 3.0;
-
-    let mut shaped_per_seg: Vec<ScalarNurbs<f64>> = Vec::new();
-    for seg_idx in 0..3 {
-        let padded = pad_segment_axis(
-            seg_idx,
-            0,
-            &fitted,
-            &[],
-            t_sm_half,
-            batch_t_start,
-            batch_t_end,
-        );
-        let shaped = shape_axis(
-            &padded,
-            &kernel,
-            fitted[seg_idx].t_start,
-            fitted[seg_idx].t_end,
-        );
-        shaped_per_seg.push(shaped);
-    }
 
     let mut global_pieces: Vec<BezierPiece<f64>> = Vec::new();
 
@@ -123,28 +102,37 @@ fn pad_trim_matches_global_convolve() {
 
     let global_nurbs = bezier_pieces_to_nurbs(&global_pieces);
     let global_convolved = convolve(&global_nurbs, &kernel).unwrap();
+    let global_conv_pieces = extract_bezier_pieces(&global_convolved);
 
     for seg_idx in 0..3 {
         let seg = &fitted[seg_idx];
-        let per_seg_pieces = extract_bezier_pieces(&shaped_per_seg[seg_idx]);
-        let global_pieces = extract_bezier_pieces(&global_convolved);
+        let padded = pad_segment_axis(
+            seg_idx,
+            0,
+            &fitted,
+            &[],
+            t_sm_half,
+            batch_t_start,
+            batch_t_end,
+        );
+        let sig = ShapedSignal::new(&padded, &kernel, seg.t_start, seg.t_end);
 
         let n_samples = 10;
         for i in 1..n_samples {
             let t = seg.t_start + (seg.t_end - seg.t_start) * (f64::from(i) / f64::from(n_samples));
-            let val_per_seg = eval_at(&per_seg_pieces, t);
-            let val_global = eval_at(&global_pieces, t);
+            let val_sig = sig.eval(t);
+            let val_global = eval_at(&global_conv_pieces, t);
             assert!(
-                (val_per_seg - val_global).abs() < 1e-4,
-                "seg {seg_idx}, t={t}: per_seg={val_per_seg}, global={val_global}, diff={}",
-                (val_per_seg - val_global).abs()
+                (val_sig - val_global).abs() < 1e-4,
+                "seg {seg_idx}, t={t}: sig={val_sig}, global={val_global}, diff={}",
+                (val_sig - val_global).abs()
             );
         }
     }
 }
 
 #[test]
-fn batch_edge_constant_extension() {
+fn shaped_signal_edge_boundary_approximately_correct() {
     let freq = 150.0;
     let t_sm = 0.8025 / freq;
     let t_sm_half = t_sm / 2.0;
@@ -163,16 +151,15 @@ fn batch_edge_constant_extension() {
         "padding should extend past t=1"
     );
 
-    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
-    let shaped_pieces = extract_bezier_pieces(&shaped);
+    let sig = ShapedSignal::new(&padded, &kernel, 0.0, 1.0);
 
-    let val_at_0 = eval_at(&shaped_pieces, 0.0);
+    let val_at_0 = sig.eval(0.0);
     assert!(
         (val_at_0 - x_start).abs() < 0.5,
         "at t=0: expected ~{x_start}, got {val_at_0}"
     );
 
-    let val_at_1 = eval_at(&shaped_pieces, 1.0);
+    let val_at_1 = sig.eval(1.0);
     assert!(
         (val_at_1 - x_end).abs() < 0.5,
         "at t=1: expected ~{x_end}, got {val_at_1}"
@@ -182,7 +169,7 @@ fn batch_edge_constant_extension() {
     let mut prev = f64::NEG_INFINITY;
     for i in 0..=n_samples {
         let t = f64::from(i) / f64::from(n_samples);
-        let val = eval_at(&shaped_pieces, t);
+        let val = sig.eval(t);
         assert!(
             val >= prev - 1e-10,
             "not monotone at t={t}: prev={prev}, val={val}"

@@ -347,9 +347,16 @@ fn run_one_iteration(
                     .iter()
                     .position(|&i| i == global_idx)
                     .unwrap();
+                let mut seg_a_max = planning_a_max[flat_idx];
+                if flat_idx == 0 && input.initial_v > 0.0 {
+                    let committed = input.initial_a.abs();
+                    for ax in 0..3 {
+                        seg_a_max[ax] = seg_a_max[ax].max(committed.min(orig.limits.a_max[ax]));
+                    }
+                }
                 let derated_limits = temporal::Limits::new(
                     orig.limits.v_max,
-                    planning_a_max[flat_idx],
+                    seg_a_max,
                     orig.limits.j_max,
                     orig.limits.a_centripetal_max,
                 );
@@ -364,6 +371,7 @@ fn run_one_iteration(
         let is_first_run = std::ptr::eq(run, &partition.runs[0]);
         let is_last_run = std::ptr::eq(run, &partition.runs[partition.runs.len() - 1]);
         let run_initial_v = if is_first_run { input.initial_v } else { 0.0 };
+        let run_initial_a = if is_first_run { input.initial_a } else { 0.0 };
         let run_terminal_v = if is_last_run { input.terminal_v } else { 0.0 };
 
         let batch_input = temporal::multi::BatchInput {
@@ -371,6 +379,7 @@ fn run_one_iteration(
             grid_strategy: input.grid_strategy,
             worker_threads: input.worker_threads,
             initial_velocity: run_initial_v,
+            initial_accel: run_initial_a,
             terminal_velocity: run_terminal_v,
         };
 
@@ -481,7 +490,13 @@ fn run_one_iteration(
                 arc_fit_tolerance,
             )?;
 
-            let mut seg_fitted = crate::fit::fit_and_split(&composed, input.fit_tolerance_mm)?;
+            let seg_d2_override = if run_idx == 0 && local_idx == 0 {
+                input.start_d2_override
+            } else {
+                None
+            };
+            let mut seg_fitted =
+                crate::fit::fit_and_split(&composed, input.fit_tolerance_mm, seg_d2_override)?;
             seg_fitted.t_start = s_pieces.t_start;
             seg_fitted.t_end = s_pieces.t_end;
 
@@ -696,7 +711,7 @@ fn assemble_with_e_gaps(
         let t_gap_end = t_gap_start + eg.duration;
 
         let const_axes = std::array::from_fn(|axis| {
-            constant_nurbs(eg.xyz_position[axis], t_gap_start, t_gap_end)
+            constant_cubic_nurbs(eg.xyz_position[axis], t_gap_start, t_gap_end)
         });
 
         let e_scheduled = seg_input
@@ -758,7 +773,7 @@ fn assemble_e_only_output(
         let t_end = t_start + eg.duration;
 
         let const_axes =
-            std::array::from_fn(|axis| constant_nurbs(eg.xyz_position[axis], t_start, t_end));
+            std::array::from_fn(|axis| constant_cubic_nurbs(eg.xyz_position[axis], t_start, t_end));
 
         let e_scheduled = seg_input
             .e_independent
@@ -797,18 +812,20 @@ pub(crate) fn kernel_half_support(kernel: &PiecewisePolynomialKernel<f64>) -> f6
     (hi - lo) / 2.0
 }
 
-fn constant_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
+pub(crate) fn constant_cubic_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
     let t_end_safe = if t_end <= t_start {
         t_start + 1e-12
     } else {
         t_end
     };
     ScalarNurbs::try_new(
-        1,
-        vec![t_start, t_start, t_end_safe, t_end_safe],
-        vec![value, value],
+        3,
+        vec![
+            t_start, t_start, t_start, t_start, t_end_safe, t_end_safe, t_end_safe, t_end_safe,
+        ],
+        vec![value, value, value, value],
     )
-    .expect("constant NURBS construction should never fail")
+    .expect("constant cubic NURBS construction should never fail")
 }
 
 #[cfg(test)]

@@ -8,9 +8,9 @@ mod parallel;
 mod partition;
 pub mod peak;
 pub mod plan_velocity;
-mod refit;
 mod reparam;
 mod shaper;
+mod smooth_fit;
 pub mod streaming;
 
 pub use emit_shaped::{emit_shaped, EmitSegmentMeta, PerAxisHistory};
@@ -31,7 +31,14 @@ pub struct ShapeBatchInput<'a> {
     pub beta_convergence_ratio: f64,
     pub e_limits: ELimits,
     pub initial_v: f64,
+    pub initial_a: f64,
     pub terminal_v: f64,
+    /// Axis-wise second derivatives `[d²x/dt², d²y/dt², d²z/dt²]` to pin at the
+    /// very first sample of the very first fitted segment. `None` uses the composed
+    /// polynomial's own boundary curvature. Set by the streaming state to the
+    /// old plan's derivatives at `t_dispatched` so the new plan achieves exact C2
+    /// continuity at the replan boundary.
+    pub start_d2_override: Option<[f64; 3]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +122,16 @@ pub enum ShapeError {
     EmptySegments,
     #[error("unsupported boundary velocity: initial_v and terminal_v must be finite and ≥ 0.0")]
     UnsupportedBoundaryVelocity,
+    #[error("unsupported boundary accel: initial_a must be finite, and 0.0 when initial_v is 0.0")]
+    UnsupportedBoundaryAccel,
+    #[error(
+        "witness fallback (rung 3) failed — single-segment rest-to-rest plan unsolvable; \
+         rung1: {rung1}; rung3: {rung3}"
+    )]
+    WitnessFallbackFailed {
+        rung1: Box<ShapeError>,
+        rung3: Box<ShapeError>,
+    },
 }
 
 pub fn shape_batch(input: &ShapeBatchInput<'_>) -> Result<ShapeBatchOutput, ShapeError> {

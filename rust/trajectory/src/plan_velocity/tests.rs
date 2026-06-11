@@ -47,8 +47,10 @@ fn default_input<'a>(segments: &'a [PlanSegment<'a>], safety: SafetyMode) -> Pla
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
         safety_mode: safety,
+        start_d2_override: None,
     }
 }
 
@@ -334,4 +336,46 @@ fn worst_case_future_is_no_faster_than_terminal_known() {
         dur_worst >= dur_known - 1e-9,
         "WorstCaseFuture duration {dur_worst} must be ≥ TerminalKnown duration {dur_known}",
     );
+}
+
+#[test]
+fn plan_velocity_rejects_accel_at_rest_start() {
+    let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+    let segments = [PlanSegment {
+        temporal: temporal::multi::SegmentInput {
+            curve: &curve,
+            limits: default_limits(),
+            trailing_junction_chord_tolerance_mm: 0.05,
+        },
+        e_mode: EMode::CoupledToXy,
+        extrusion_per_xy_mm: 0.04,
+        e_independent: None,
+        feedrate_mm_s: 100.0,
+    }];
+    let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+    input.initial_v = 0.0;
+    input.initial_a = 100.0;
+    let err = plan_velocity(&input).unwrap_err();
+    assert!(matches!(err, ShapeError::UnsupportedBoundaryAccel));
+}
+
+#[test]
+fn plan_velocity_rejects_nonfinite_accel() {
+    let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+    let segments = [PlanSegment {
+        temporal: temporal::multi::SegmentInput {
+            curve: &curve,
+            limits: default_limits(),
+            trailing_junction_chord_tolerance_mm: 0.05,
+        },
+        e_mode: EMode::CoupledToXy,
+        extrusion_per_xy_mm: 0.04,
+        e_independent: None,
+        feedrate_mm_s: 100.0,
+    }];
+    let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+    input.initial_v = 50.0;
+    input.initial_a = f64::NAN;
+    let err = plan_velocity(&input).unwrap_err();
+    assert!(matches!(err, ShapeError::UnsupportedBoundaryAccel));
 }

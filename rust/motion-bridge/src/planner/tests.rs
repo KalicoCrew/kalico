@@ -541,6 +541,79 @@ fn flush_blocks_until_motion_complete_by_clock() {
     h.shutdown();
 }
 
+fn peak_speed_of_single_x_move(max_velocity: f64, max_accel: f64, feedrate: f64) -> f64 {
+    let mut cfg = PlannerConfig::default();
+    cfg.limits.max_velocity = max_velocity;
+    cfg.limits.max_accel = max_accel;
+
+    let shapers = shaper_config_to_axis_shapers(&cfg.shaper);
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+    let replan_ctx = build_replan_context(&cfg);
+    let emit_kernels = shaper_config_to_emit_kernels(&cfg.shaper);
+    let e_halos: Vec<trajectory::EHalo> = Vec::new();
+    let emit_ctx = EmitContext {
+        kernels: &emit_kernels,
+        e_halos: &e_halos,
+    };
+
+    state.reset([0.0; 4]);
+    let m = classify_and_build([0.0; 3], 600.0, 0.0, 0.0, 0.0, feedrate)
+        .expect("classify_and_build should succeed");
+    state
+        .append_and_replan(m.segment, &replan_ctx)
+        .expect("append_and_replan should succeed");
+
+    let mut segs: Vec<ShapedSegment> = Vec::new();
+    segs.extend(
+        state
+            .emit_committed(&emit_ctx)
+            .expect("emit_committed should succeed"),
+    );
+    segs.extend(
+        state
+            .commit_decel_to_zero(&emit_ctx)
+            .expect("commit_decel_to_zero should succeed"),
+    );
+    assert!(!segs.is_empty(), "move produced no shaped segments");
+
+    let mut peak = 0.0_f64;
+    for seg in &segs {
+        let vel: Vec<nurbs::ScalarNurbs<f64>> =
+            seg.axes.iter().map(nurbs::eval::derivative).collect();
+        const SAMPLE_DT: f64 = 2e-4;
+        let steps = ((seg.t_end - seg.t_start) / SAMPLE_DT).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = seg.t_start + (seg.t_end - seg.t_start) * (i as f64) / (steps as f64);
+            let speed = vel
+                .iter()
+                .map(|d| nurbs::eval::eval(d, t).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            peak = peak.max(speed);
+        }
+    }
+    peak
+}
+
+#[test]
+fn motion_at_velocity_limit_cruises_at_limit() {
+    let peak = peak_speed_of_single_x_move(1000.0, 50_000.0, 1000.0);
+    assert!(
+        (peak - 1000.0).abs() < 15.0,
+        "feedrate at machine limit (1000 mm/s): peak speed {peak:.1} mm/s, expected ≈ 1000",
+    );
+}
+
+#[test]
+fn motion_above_velocity_limit_clamps_to_limit() {
+    let peak = peak_speed_of_single_x_move(1000.0, 50_000.0, 1100.0);
+    assert!(
+        (peak - 1000.0).abs() < 15.0,
+        "feedrate above machine limit (1100 > 1000 mm/s): \
+         peak speed {peak:.1} mm/s, expected clamp to ≈ 1000",
+    );
+}
+
 #[test]
 fn flush_then_move_dispatches_without_error() {
     let (dispatch, log) = capturing_dispatch();

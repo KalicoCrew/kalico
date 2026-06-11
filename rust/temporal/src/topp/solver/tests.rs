@@ -1,7 +1,173 @@
 use super::*;
 use crate::Limits;
-use crate::topp::constraints::{BuildOutcome, EndpointVelocities, build};
+use crate::topp::chain::ChainGrid;
+use crate::topp::constraints::{BuildOutcome, EndpointConditions, build_chain};
 use crate::topp::path::ArclengthGrid;
+
+/// Verify that `append_axis_jerk_cut_to_clarabel` emits ∞-norm-normalized rows.
+///
+/// With cp=1.0, b_bars=[6.0; 3], h=1e-3 the stencil coefficients include
+/// cp·√b/h² ≈ 2.449e6 — a scale that historically wrecked QDLDL conditioning.
+/// After the fix every pushed coefficient must be ≤ 1.0 in absolute value (the
+/// row has been divided through by its ∞-norm), and the RHS values must equal
+/// the unscaled values divided by that same scale.
+#[test]
+fn axis_jerk_cut_row_norm_is_one() {
+    let n_grid = 5_usize;
+    let off_a = n_grid;
+    let n_vars = 2 * n_grid;
+
+    let h = 1e-3_f64;
+    let b_val = 6.0_f64;
+    let cp = 1.0_f64;
+    // cpp and cppp set to zero so the dominant term is cp·√b/h², which is
+    // the O(N²) coefficient that caused conditioning failures.
+    let h_uniform = h;
+    let w = crate::topp::stencil::b_dd_weights(h_uniform, h_uniform);
+    let cut = AxisJerkCut {
+        i: 2,
+        axis: 0,
+        idx: [1, 2, 3],
+        w,
+        b_bars: [b_val, b_val, b_val],
+        a_bar_i: 0.0,
+        cp,
+        cpp: 0.0,
+        cppp: 0.0,
+        j_lim_inflated: 1_000.0,
+    };
+
+    // Compute the expected unscaled row_scale.  Interior stencil with cpp=cppp=0,
+    // a_bar=0, d2=0:
+    //   alpha_b_im1 = cp·√b / (2h²)
+    //   alpha_b_ip1 = cp·√b / (2h²)
+    //   alpha_b_i   = -cp·√b / h² + 0  (d2 = 0)
+    //   alpha_a_i   = 0
+    // So |alpha_b_i| = cp·√b/h² and the two side coefficients are half that.
+    // row_scale = cp·√b/h².
+    let s = b_val.sqrt();
+    let expected_scale = cp * s / (h * h);
+    assert!(
+        expected_scale > 1e5,
+        "test is only meaningful with large unscaled coefficients; got {expected_scale}"
+    );
+
+    let mut rowval: Vec<Vec<usize>> = vec![Vec::new(); n_vars];
+    let mut nzval: Vec<Vec<f64>> = vec![Vec::new(); n_vars];
+    let mut b_rhs: Vec<f64> = Vec::new();
+    let mut n_rows = 0_usize;
+
+    let b_floor = 0.0_f64;
+    append_axis_jerk_cut_to_clarabel(
+        &cut,
+        b_floor,
+        &mut n_rows,
+        &mut rowval,
+        &mut nzval,
+        &mut b_rhs,
+        n_grid,
+    );
+
+    assert_eq!(n_rows, 2, "expected two rows (± pair)");
+    assert_eq!(b_rhs.len(), 2);
+
+    // Collect all non-zero coefficient magnitudes across both rows.
+    let max_coeff: f64 = nzval
+        .iter()
+        .flat_map(|col| col.iter().copied())
+        .map(f64::abs)
+        .fold(0.0_f64, f64::max);
+
+    assert!(
+        (max_coeff - 1.0).abs() < 1e-10,
+        "∞-norm of emitted rows should be 1.0, got {max_coeff}"
+    );
+
+    // RHS pair: the cut has k_const = 0 (cpp=cppp=0, d2=0, a_bar=0), so
+    // rhs_pos = j / row_scale and rhs_neg = j / row_scale — both equal.
+    let j = cut.j_lim_inflated;
+    let expected_rhs = j / expected_scale;
+    assert!(
+        (b_rhs[0] - expected_rhs).abs() < 1e-10 * expected_rhs.abs(),
+        "rhs[0] = {}, expected {expected_rhs}",
+        b_rhs[0]
+    );
+    assert!(
+        (b_rhs[1] - expected_rhs).abs() < 1e-10 * expected_rhs.abs(),
+        "rhs[1] = {}, expected {expected_rhs}",
+        b_rhs[1]
+    );
+
+    // The ± rows must have identical coefficient magnitudes (symmetry preserved).
+    let coeff_pos: Vec<f64> = nzval
+        .iter()
+        .enumerate()
+        .filter_map(|(col, entries)| {
+            let idx = entries
+                .iter()
+                .zip(rowval[col].iter())
+                .position(|(_, &r)| r == 0)?;
+            Some(entries[idx])
+        })
+        .collect();
+    let coeff_neg: Vec<f64> = nzval
+        .iter()
+        .enumerate()
+        .filter_map(|(col, entries)| {
+            let idx = entries
+                .iter()
+                .zip(rowval[col].iter())
+                .position(|(_, &r)| r == 1)?;
+            Some(entries[idx])
+        })
+        .collect();
+    assert_eq!(
+        coeff_pos.len(),
+        coeff_neg.len(),
+        "± rows must touch the same number of columns"
+    );
+    for (p, n) in coeff_pos.iter().zip(coeff_neg.iter()) {
+        assert!(
+            (p.abs() - n.abs()).abs() < 1e-14,
+            "coefficient magnitudes must match between ± rows: {p} vs {n}"
+        );
+    }
+
+    // off_a column (alpha_a_i = 0) must not appear in the output.
+    assert!(
+        rowval[off_a + cut.i].is_empty(),
+        "a_i column should be absent when cpp = 0"
+    );
+}
+
+#[test]
+fn find_jerk_violators_chain_ratio_has_no_spurious_h_factor() {
+    // Uniform grid with h=0.5. b_dd_weights returns [1/h², -2/h², 1/h²], so
+    // b_dd = (b0 - 2*b1 + b2) / h² directly — no extra h² should appear in
+    // the ratio denominator.
+    //
+    // Construction: target ratio = 1.10 (safely above the 1+SLP_EPS_FEAS=1.05 gate).
+    //   ratio = |b_dd| * sqrt(b1) / (2*J)
+    //   want 1.10 = |b_dd| * sqrt(400) / (2*100) → |b_dd| = 1.10*200/20 = 11.0
+    //   b_dd = (b0 - 2*400 + b2)/h² with h=0.5 → (b0-800+b2)/0.25 = 11.0
+    //   symmetric: b0=b2=400 + 11.0*0.25/2 = 400 + 1.375 = 401.375
+    let h = 0.5_f64;
+    let j_path = 100.0_f64;
+    let b = vec![401.375_f64, 400.0, 401.375];
+    let h_intervals = vec![h, h];
+    let violators = find_jerk_violators_chain(&b, &h_intervals, j_path);
+    assert_eq!(
+        violators.len(),
+        1,
+        "middle point should be the lone violator"
+    );
+    let got_ratio = violators[0].ratio;
+    assert!(
+        (got_ratio - 1.10).abs() < 1e-3,
+        "ratio {got_ratio} should be ≈1.10; a spurious h² divisor would give {:.4} instead",
+        got_ratio / (h * h),
+    );
+}
 
 fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
@@ -11,6 +177,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
     let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
     let kappa = vec![0.0; n];
+    let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
     ArclengthGrid {
         s,
         u,
@@ -20,6 +187,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa,
     }
 }
 
@@ -32,13 +200,15 @@ fn straight_line_solves_to_nontrivial_profile() {
         j_max: [100_000.0, 100_000.0, 100_000.0],
         a_centripetal_max: 2_500.0,
     };
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions {
             v_start: 0.0,
             v_end: 0.0,
+            a_start: None,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(b) => panic!("expected Ok, got Boundary({b:?})"),
@@ -97,5 +267,269 @@ fn straight_line_solves_to_nontrivial_profile() {
         result.a[44] < 0.0,
         "a[44] = {} should be negative (decelerating)",
         result.a[44]
+    );
+}
+
+/// `damp_interior_a` must leave `b` and endpoint `a` values unchanged and scale
+/// every interior `a` by the requested factor.
+#[test]
+fn damp_interior_a_preserves_endpoints_scales_interior() {
+    let b = vec![0.0, 4.0, 9.0, 16.0, 0.0];
+    let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let result = SolverResult {
+        b: b.clone(),
+        a: a.clone(),
+        status: SolverStatus::Solved,
+    };
+    let damped = damp_interior_a(&result, 0.5);
+
+    assert_eq!(damped.b, b, "b must be unchanged");
+    assert!(
+        (damped.a[0] - 1.0).abs() < 1e-14,
+        "a[0] (left endpoint) must be unchanged"
+    );
+    assert!(
+        (damped.a[4] - 5.0).abs() < 1e-14,
+        "a[4] (right endpoint) must be unchanged"
+    );
+    for i in 1..4 {
+        let expected = a[i] * 0.5;
+        assert!(
+            (damped.a[i] - expected).abs() < 1e-14,
+            "a[{i}] should be {expected}, got {}",
+            damped.a[i],
+        );
+    }
+}
+
+/// `damp_scale_for_axis_feasibility` must return a scale that brings the axis-jerk
+/// ratio of the damped result to ≤ `SLP9_DAMP_TARGET_RATIO` when the violation
+/// comes from the `3·c''·a·√b` term (a-dependent, so damping is effective).
+///
+/// Geometry: `cppp = 0`, uniform b = b0, large a on all interior points, and
+/// `cpp` sized for an initial max_ratio of 1.8.
+#[test]
+fn damp_scale_for_axis_feasibility_achieves_target() {
+    let n = 7_usize;
+    let length = 6.0_f64;
+
+    let b0 = 100.0_f64;
+    let s_dot = b0.sqrt();
+    let j_max = 1_000.0_f64;
+
+    let target_initial_ratio = 1.8_f64;
+    let a_val = 10.0_f64;
+    let cpp_val = j_max * target_initial_ratio / (3.0 * s_dot * a_val);
+
+    let grid = {
+        let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
+        let u = s.clone();
+        let c = s.iter().map(|si| [*si, 0.0, 0.0]).collect();
+        let c_prime = vec![[1.0, 0.0, 0.0]; n];
+        let c_double_prime = vec![[0.0, cpp_val, 0.0]; n];
+        let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
+        let kappa = vec![0.0; n];
+        let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
+        ArclengthGrid {
+            s,
+            u,
+            c,
+            c_prime,
+            c_double_prime,
+            c_triple_prime,
+            kappa,
+            total_length: length,
+            inter_kappa,
+        }
+    };
+    let limits = Limits {
+        v_max: [500.0, 500.0, 500.0],
+        a_max: [50_000.0, 50_000.0, 50_000.0],
+        j_max: [j_max, j_max, j_max],
+        a_centripetal_max: 1e9,
+    };
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+
+    let b = vec![b0; n];
+    let a: Vec<f64> = (0..n)
+        .map(|i| if i == 0 || i == n - 1 { 0.0 } else { a_val })
+        .collect();
+    let result = SolverResult {
+        b,
+        a,
+        status: SolverStatus::Solved,
+    };
+
+    let initial_ratio = max_axis_ratio_chain(&result, &chain);
+    assert!(
+        initial_ratio > SLP9_DAMP_TARGET_RATIO,
+        "test requires initial_ratio > {SLP9_DAMP_TARGET_RATIO}, got {initial_ratio}",
+    );
+
+    let s = damp_scale_for_axis_feasibility(&result, &chain, initial_ratio);
+    let damped = damp_interior_a(&result, s);
+    let final_ratio = max_axis_ratio_chain(&damped, &chain);
+
+    assert!(
+        final_ratio <= SLP9_DAMP_TARGET_RATIO,
+        "damp_scale_for_axis_feasibility must bring ratio ≤ {SLP9_DAMP_TARGET_RATIO}; \
+         scale={s:.4}, ratio before={initial_ratio:.4}, after={final_ratio:.4}",
+    );
+}
+
+/// `build_axis_jerk_cuts_chain` must place maintenance cuts (j_lim = j_max) for
+/// non-violating points whose jerk ratio is above `SLP9_EPS_FEAS`, and tightening
+/// cuts (j_lim < j_max) only for points above the tightening threshold.
+///
+/// Two X-axis points are constructed:
+///   - i=1 (maintenance): ratio ≈ 0.20 — above SLP9_EPS_FEAS(0.05) but below
+///     `SLP9_CUT_PLACEMENT_FRACTION * target_ratio` — must get j_lim = j_max.
+///   - i=2 (tightening): ratio ≈ 1.30 — above the tightening threshold — must
+///     get j_lim = j_max * target_ratio.
+///   - i=3 (no cut): ratio ≈ 0.01 — below SLP9_EPS_FEAS — must produce no cut.
+#[test]
+fn build_axis_jerk_cuts_chain_places_maintenance_cuts() {
+    let n = 5_usize;
+    let h = 1.0_f64;
+    let length = h * (n - 1) as f64;
+    let j_max = 1_000.0_f64;
+
+    let target_ratio = 1.20_f64;
+
+    let b_val = 4.0_f64;
+    let s_dot = b_val.sqrt();
+    let s_dot3 = s_dot.powi(3);
+
+    let intended_jerk_ratios = [0.0, 0.20, 1.30, 0.01, 0.0];
+    let cppp_vals: Vec<f64> = intended_jerk_ratios
+        .iter()
+        .map(|&r| r * j_max / s_dot3)
+        .collect();
+
+    let grid = {
+        let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
+        let u = s.clone();
+        let c = s.iter().map(|si| [*si, 0.0, 0.0]).collect();
+        let c_prime = vec![[1.0, 0.0, 0.0]; n];
+        let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
+        let c_triple_prime: Vec<[f64; 3]> = cppp_vals.iter().map(|&v| [v, 0.0, 0.0]).collect();
+        let kappa = vec![0.0; n];
+        let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
+        ArclengthGrid {
+            s,
+            u,
+            c,
+            c_prime,
+            c_double_prime,
+            c_triple_prime,
+            kappa,
+            total_length: length,
+            inter_kappa,
+        }
+    };
+    let limits = Limits {
+        v_max: [500.0, 500.0, 500.0],
+        a_max: [50_000.0, 50_000.0, 50_000.0],
+        j_max: [j_max, j_max, j_max],
+        a_centripetal_max: 1e9,
+    };
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+
+    let b = vec![b_val; n];
+    let a = vec![0.0_f64; n];
+    let result = SolverResult {
+        b,
+        a,
+        status: SolverStatus::Solved,
+    };
+
+    let cuts = build_axis_jerk_cuts_chain(&result, &chain, target_ratio);
+
+    let axis_jerk_cuts: Vec<&AxisJerkCut> = cuts
+        .iter()
+        .filter_map(|c| {
+            if let SlpCut::AxisJerk(aj) = c {
+                Some(aj)
+            } else {
+                None
+            }
+        })
+        .filter(|aj| aj.axis == 0)
+        .collect();
+
+    let cut_for = |grid_i: usize| -> Option<f64> {
+        axis_jerk_cuts
+            .iter()
+            .find(|aj| aj.i == grid_i)
+            .map(|aj| aj.j_lim_inflated)
+    };
+
+    assert!(
+        cut_for(1).is_some(),
+        "i=1 (ratio=0.20 > SLP9_EPS_FEAS=0.05) must produce a maintenance cut",
+    );
+    assert!(
+        (cut_for(1).unwrap() - j_max).abs() < 1e-9,
+        "i=1 maintenance cut must have j_lim = j_max={j_max}, got {:?}",
+        cut_for(1),
+    );
+
+    let expected_tight = j_max * target_ratio;
+    assert!(
+        cut_for(2).is_some(),
+        "i=2 (ratio=1.30 > tightening threshold) must produce a tightening cut",
+    );
+    assert!(
+        (cut_for(2).unwrap() - expected_tight).abs() < 1e-9,
+        "i=2 tightening cut must have j_lim = {expected_tight}, got {:?}",
+        cut_for(2),
+    );
+
+    assert!(
+        cut_for(3).is_none(),
+        "i=3 (ratio=0.01 < SLP9_EPS_FEAS=0.05) must produce no cut, got {:?}",
+        cut_for(3),
+    );
+}
+
+/// Regression: `slp_solve_chain` must return `Converged`, not `MaxIters`, when
+/// all interior b values are below `SLP_B_CUT_FLOOR` (no cuts placeable).
+///
+/// `j_max = [1,1,1]` ensures the FD-estimated path-jerk ratio exceeds 1.05 on
+/// the initial SOCP solution while `a_centripetal_max = 1.0` caps peak b far
+/// below `SLP_B_CUT_FLOOR = 100.0`, making `added == 0` guaranteed. The old
+/// code returned `MaxIters`; the fix returns `Converged`.
+#[test]
+fn slp_solve_chain_zero_cuts_placeable_is_converged_not_max_iters() {
+    let grid = dummy_straight_grid(20, 0.03_f64);
+    let limits = Limits {
+        v_max: [300.0, 300.0, 15.0],
+        a_max: [5_000.0, 5_000.0, 350.0],
+        j_max: [1.0, 1.0, 1.0],
+        a_centripetal_max: 1.0,
+    };
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+    let scale = crate::topp::scaling::SolverScale::for_chain(&chain);
+    let scaled = scale.scale_chain_grid(&chain);
+    let bundle = match build_chain(
+        &scaled,
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: scale.scale_velocity(4e-4_f64),
+            a_start: None,
+        },
+        &scale,
+    ) {
+        BuildOutcome::Ok(b) => b,
+        BuildOutcome::Boundary(b) => panic!("unexpected boundary infeasibility: {b:?}"),
+    };
+
+    let (_result, outcome) =
+        slp_solve_chain(&bundle, 1e-8, &scale).expect("slp_solve_chain setup must succeed");
+
+    assert!(
+        !matches!(outcome, SlpOutcome::MaxIters { .. }),
+        "slp_solve_chain with zero cuts placeable must not return MaxIters \
+         (all b < SLP_B_CUT_FLOOR → converged-by-floor); got {outcome:?}",
     );
 }
