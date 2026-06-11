@@ -119,10 +119,6 @@ pub struct SharedState {
     pub tick_blocker_exc: AtomicU32,
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
-    /// Per-motor phase-stepping SPI config. Packed (`spi_bus_id << 8 |
-    /// cs_pin_id`). `0xFFFF` means "no phase config — use the StepPulse
-    /// output path."
-    pub phase_config: [AtomicU16; MAX_STEPPER_OIDS],
     /// `phase_slot_idx[motor_idx]` is the kinematic slot whose commanded
     /// `motors[slot_idx]` position drives motor `motor_idx`'s XDIRECT output.
     /// Unused entries hold `0xFF`.
@@ -296,24 +292,6 @@ impl SharedState {
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
-            ],
-            phase_config: [
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
             ],
             phase_slot_idx: [
                 AtomicU8::new(0xFF),
@@ -553,6 +531,40 @@ pub fn set_step_mode(
     #[allow(clippy::indexing_slicing)]
     shared.step_modes[stepper_idx as usize]
         .store(mode as u8, core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+/// Install the `motor_idx → kinematic slot` mapping `dispatch_phase` uses to
+/// address XDIRECT SPI writes, and mark the slot Modulated. Called from the
+/// foreground command path (C `runtime_register_phase_motor`), never the ISR.
+/// `Release` stores pair with the ISR's `Acquire` loads.
+pub fn bind_phase_motor(
+    shared: &SharedState,
+    motor_idx: u8,
+    slot_idx: u8,
+) -> Result<(), SetStepModeError> {
+    if (motor_idx as usize) >= MAX_STEPPER_OIDS
+        || (slot_idx as usize) >= crate::stepping_state::MAX_AXES
+    {
+        return Err(SetStepModeError::OutOfRange);
+    }
+    // SAFETY of indexing: both bounds checked above.
+    #[allow(clippy::indexing_slicing)]
+    shared.phase_slot_idx[motor_idx as usize]
+        .store(slot_idx, core::sync::atomic::Ordering::Release);
+    let count = shared
+        .phase_motor_count
+        .load(core::sync::atomic::Ordering::Acquire);
+    if motor_idx + 1 > count {
+        shared
+            .phase_motor_count
+            .store(motor_idx + 1, core::sync::atomic::Ordering::Release);
+    }
+    #[allow(clippy::indexing_slicing)]
+    shared.step_modes[slot_idx as usize].store(
+        StepMode::Modulated as u8,
+        core::sync::atomic::Ordering::Release,
+    );
     Ok(())
 }
 

@@ -339,14 +339,20 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
                 }
             }
 
-            let motor_idx = found_motor_idx.unwrap_or(0xFF);
+            let Some(motor_idx) = found_motor_idx else {
+                crate::fault_helpers::raise_phase_motor_unmapped(
+                    shared,
+                    axis_idx,
+                    stepper.stepper_oid,
+                );
+                return;
+            };
 
             #[cfg(all(any(test, feature = "host"), not(feature = "mcu-linux")))]
             crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
 
             // SAFETY: `phase_stepping_write_xdirect` accepts any
-            // (motor_idx, coil_a, coil_b) triple; motor_idx 0xFF is the
-            // "no slot found" sentinel the C side skips gracefully.
+            // (motor_idx, coil_a, coil_b) triple; motor_idx is a found slot.
             // coil_a/coil_b are PHASE_LUT values, always within i16 range.
             #[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
             unsafe {

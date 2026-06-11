@@ -273,7 +273,7 @@ fn phase_dispatch_at_phase_zero() {
 }
 
 #[test]
-fn phase_dispatch_empty_slot_table_uses_sentinel_motor_idx() {
+fn phase_dispatch_empty_slot_table_latches_phase_motor_unmapped() {
     let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
@@ -298,11 +298,18 @@ fn phase_dispatch_empty_slot_table_uses_sentinel_motor_idx() {
     );
 
     let records = test_xdirect_capture::drain();
-    assert_eq!(records.len(), 1, "capture must still happen");
-    assert_eq!(
-        records[0].motor_idx, 0xFF,
-        "sentinel motor_idx when slot table empty"
+    assert!(
+        records.is_empty(),
+        "no SPI write may reach an unmapped motor"
     );
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
+        runtime::error::FaultCode::PhaseMotorUnmapped.as_i32(),
+        "unmapped phase motor must latch PhaseMotorUnmapped"
+    );
+    let detail = shared.fault_detail.load(Ordering::Acquire);
+    assert_eq!(detail >> 16, 0, "axis_idx in detail high bits");
+    assert_eq!(detail & 0xFFFF, 0, "stepper_oid in detail low bits");
 }
 
 fn q_ptr_from(q: &mut StepQueue) -> *mut StepQueue {

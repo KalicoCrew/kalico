@@ -108,7 +108,14 @@ command_runtime_register_phase_motor(uint32_t *args)
     uint8_t motor_idx = (uint8_t)args[0];
     uint8_t bus_id    = (uint8_t)args[1];
     uint8_t cs_pin_id = (uint8_t)args[2];
+    uint8_t slot_idx  = (uint8_t)args[3];
+    if (!runtime_handle)
+        shutdown("register_phase_motor before runtime init");
     phase_stepping_register_motor(motor_idx, bus_id, cs_pin_id);
+    int32_t rc = kalico_runtime_bind_phase_motor(runtime_handle,
+                                                 motor_idx, slot_idx);
+    if (rc != 0)
+        shutdown("register_phase_motor bind rejected by runtime");
     sendf("kalico_register_phase_motor_response result=%i", 0);
 #else
     (void)args;
@@ -116,5 +123,6 @@ command_runtime_register_phase_motor(uint32_t *args)
 #endif
 }
 DECL_COMMAND(command_runtime_register_phase_motor,
-    "runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c");
+    "runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c"
+    " slot_idx=%c");
 
