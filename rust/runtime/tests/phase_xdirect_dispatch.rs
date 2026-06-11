@@ -298,7 +298,10 @@ fn phase_dispatch_empty_slot_table_latches_phase_motor_unmapped() {
     );
 
     let records = test_xdirect_capture::drain();
-    assert!(records.is_empty(), "no SPI write may reach an unmapped motor");
+    assert!(
+        records.is_empty(),
+        "no SPI write may reach an unmapped motor"
+    );
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         runtime::error::FaultCode::PhaseMotorUnmapped.as_i32(),

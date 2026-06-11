@@ -40,7 +40,6 @@ _STUB_MOTION_METHODS = frozenset(
         "update_shaper",
         "fallback_clock_conversions",
         "dispatched_segment_count",
-        "configure_axes",
         "register_phase_bus",
         "register_phase_motor",
         "get_mcu_capabilities",
@@ -280,39 +279,9 @@ class MotionBridgeWrapper:
         # Requires init_planner first.
         return self._bridge.ring_depth_for_axis(mcu_handle, axis_idx)
 
-    def configure_axes(
-        self,
-        mcu_handle,
-        kinematics,
-        present_mask,
-        awd_mask,
-        invert_mask,
-        steps_per_mm,
-        step_modes=None,
-        phase_configs=None,
-        timeout_s=2.0,
-    ):
-        """step_modes: optional [4] ints (0=Modulated, 1=StepTime); when set the
-        bridge emits the 25-byte extended format, else the legacy 20-byte path.
-        phase_configs: optional (bus_id, cs_pin_id, slot_idx) per phase-stepped
-        motor; slot_idx is the kinematic slot driving that motor's XDIRECT. Up
-        to 16. Pass None (not []) when nothing is phase stepped.
-        """
-        return self._bridge.configure_axes(
-            mcu_handle,
-            kinematics,
-            present_mask,
-            awd_mask,
-            invert_mask,
-            list(steps_per_mm),
-            list(step_modes) if step_modes is not None else None,
-            list(phase_configs) if phase_configs is not None else None,
-            timeout_s,
-        )
-
     def register_phase_bus(self, mcu_handle, bus_id, rate, timeout_s=5.0):
-        """Call once per bus_id, BEFORE any register_phase_motor for that bus
-        and BEFORE configure_axes. Per-motor CS GPIOs are registered separately
+        """Call once per bus_id, BEFORE any register_phase_motor for that bus.
+        Per-motor CS GPIOs are registered separately
         (each TMC5160 on a shared bus needs its own CS). No-op on stock MCUs.
         """
         return self._bridge.register_phase_bus(

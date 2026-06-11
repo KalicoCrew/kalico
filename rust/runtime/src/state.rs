@@ -119,10 +119,6 @@ pub struct SharedState {
     pub tick_blocker_exc: AtomicU32,
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
-    /// Per-motor phase-stepping SPI config. Packed (`spi_bus_id << 8 |
-    /// cs_pin_id`). `0xFFFF` means "no phase config — use the StepPulse
-    /// output path."
-    pub phase_config: [AtomicU16; MAX_STEPPER_OIDS],
     /// `phase_slot_idx[motor_idx]` is the kinematic slot whose commanded
     /// `motors[slot_idx]` position drives motor `motor_idx`'s XDIRECT output.
     /// Unused entries hold `0xFF`.
@@ -296,24 +292,6 @@ impl SharedState {
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
-            ],
-            phase_config: [
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
-                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
             ],
             phase_slot_idx: [
                 AtomicU8::new(0xFF),

@@ -38,7 +38,6 @@ pub mod log_codes;
 pub mod monomial;
 pub mod motion_core;
 pub mod per_axis_timer;
-pub mod phase_config;
 pub mod phase_lut;
 pub mod piece_ring;
 pub mod spi_queue;

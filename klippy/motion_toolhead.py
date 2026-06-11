@@ -795,8 +795,7 @@ class MotionToolhead(ToolHead):
             if any_phase_stepping:
                 # Two-stage registration: shared SPI cfg once per bus_id, then a
                 # CS GPIO per motor (multiple drivers on one bus each need their
-                # own CS). motor_idx MUST match the phase_configs list position,
-                # since the configure_axes blob is parsed in the same order.
+                # own CS). motor_idx MUST match the phase_configs list position.
                 seen_buses = set()
                 for bus_id, _cs_pin_id, _slot_idx in phase_configs:
                     if bus_id == 0xFF:

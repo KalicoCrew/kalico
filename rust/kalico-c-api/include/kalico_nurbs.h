@@ -4,7 +4,6 @@
 * See docs/superpowers/specs/2026-04-26-nurbs-evaluation-library-design.md.
 */
 
-
 #ifndef KALICO_NURBS_H
 #define KALICO_NURBS_H
 
@@ -96,8 +95,6 @@ uint32_t kalico_runtime_last_push_y_handle(kalico_nurbs_KalicoRuntime *rt);
 uint64_t kalico_runtime_now_ticks(kalico_nurbs_KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(kalico_nurbs_KalicoRuntime *rt);
-
-uint16_t kalico_runtime_query_phase_config(kalico_nurbs_KalicoRuntime *rt, uint8_t motor_idx);
 
 int32_t kalico_runtime_reset(kalico_nurbs_KalicoRuntime *rt);
 

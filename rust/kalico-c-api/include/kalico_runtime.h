@@ -4,7 +4,6 @@
 * See docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md.
 */
 
-
 #ifndef KALICO_RUNTIME_H
 #define KALICO_RUNTIME_H
 
@@ -92,8 +91,6 @@ uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
 uint64_t kalico_runtime_now_ticks(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
-
-uint16_t kalico_runtime_query_phase_config(struct KalicoRuntime *rt, uint8_t motor_idx);
 
 int32_t kalico_runtime_reset(struct KalicoRuntime *rt);
 

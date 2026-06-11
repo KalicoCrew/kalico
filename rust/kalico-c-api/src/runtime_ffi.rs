@@ -673,29 +673,6 @@ pub mod exports {
         }
     }
 
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_query_phase_config(
-        rt: *mut KalicoRuntime,
-        motor_idx: u8,
-    ) -> u16 {
-        if rt.is_null() || motor_idx >= 4 {
-            return 0xFFFF;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0xFFFF;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: phase_config is AtomicU16 in SharedState; shared &SharedState, no &mut.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let shared: &SharedState = &*shared_ptr;
-            match shared.phase_config.get(motor_idx as usize) {
-                Some(slot) => slot.load(Ordering::Acquire),
-                None => 0xFFFF,
-            }
-        }
-    }
-
     fn runtime_handle_or_null() -> Option<*const RuntimeContext> {
         if !INIT_DONE.load(Ordering::Acquire) {
             return None;
