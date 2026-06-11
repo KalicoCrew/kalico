@@ -172,13 +172,10 @@ TIM5_IRQHandler_body(uint32_t *frame)
 
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
-// Step-output timer uses TIM3; TIM2 is PWM and TIM5 is the motion tick, so
-// neither may be reused here. TIM3 runs at KALICO_MOTION_NVIC_PRIO (same as
-// TIM5): equal-priority IRQs don't nest, which is what makes the SPSC safe.
-#define STEP_OUT_MAX_DELTA 0xF000u
+#define STEP_OUT_MAX_DELTA 0x7000u
+_Static_assert(STEP_OUT_MAX_DELTA < 0x8000u,
+               "missed-compare passed-test needs int16 half-range headroom");
 
-// cycle_abs is in DWT ticks; TIM3 ticks slower, so step_out_clkdiv scales
-// DWT deltas into TIM3 ticks.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
 static uint32_t          step_out_clkdiv = 1;
@@ -190,11 +187,13 @@ step_output_program_delta(uint32_t dwt_delta)
     if (delta > STEP_OUT_MAX_DELTA)
         delta = STEP_OUT_MAX_DELTA;
     if (delta == 0)
-        delta = 1;  // never arm in the past
+        delta = 1;
+    TIM3->SR = (uint16_t)~TIM_SR_CC1IF;
     uint16_t ccr = (uint16_t)(TIM3->CNT + (uint16_t)delta);
     TIM3->CCR1 = ccr;
-    TIM3->SR = (uint16_t)~TIM_SR_CC1IF;
     TIM3->DIER |= TIM_DIER_CC1IE;
+    if ((int16_t)((uint16_t)TIM3->CNT - ccr) >= 0)
+        NVIC_SetPendingIRQ(TIM3_IRQn);
 }
 
 __attribute__((used, externally_visible))
