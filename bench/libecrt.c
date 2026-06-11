@@ -245,6 +245,28 @@ static int restore_power_on_equivalent_state(void) {
     return await_slave_state(EC_STATE_PRE_OP, "PRE-OP", EC_RT_ERR_PREOP_TIMEOUT);
 }
 
+/* A dead session latches ErC1.1 (sync loss, AL 0x001A) on the drive. The
+ * CiA402 fault reset (6040h bit 7 rising edge) works over SDO in PRE-OP,
+ * where sync monitoring is inactive — the alarm cannot re-raise mid-clear
+ * the way it can during the post-OP park loop on a still-settling DC clock. */
+static void clear_latched_alarm_in_preop(void) {
+    uint16_t err = 0;
+    int sz = sizeof(err);
+    if (ec_SDOread(1, 0x603F, 0x00, FALSE, &sz, &err, EC_TIMEOUTRXM) <= 0 || err == 0)
+        return;
+    fprintf(stderr, "ec_rt: clearing latched drive alarm 0x%04x in PRE-OP\n", err);
+    uint16_t cw = 0x0000;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    cw = 0x0080;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    cw = 0x0000;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    sz = sizeof(err);
+    if (ec_SDOread(1, 0x603F, 0x00, FALSE, &sz, &err, EC_TIMEOUTRXM) > 0 && err != 0)
+        fprintf(stderr, "ec_rt: drive alarm 0x%04x survived PRE-OP fault reset; "
+                "the post-OP park loop will keep pulsing\n", err);
+}
+
 int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
@@ -257,6 +279,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
 
     int reset_rc = restore_power_on_equivalent_state();
     if (reset_rc != 0) { ec_close(); return reset_rc; }
+
+    clear_latched_alarm_in_preop();
 
     if (remap_volatile_tx_pdo_1a00() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
     if (remap_volatile_rx_pdo_1600() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
@@ -495,7 +519,14 @@ void ec_rt_dump_al_state(void) {
             ec_slave[1].state, ec_slave[1].ALstatuscode, ec_group[0].docheckstate);
 }
 
+/* Leave OP before touching SYNC0: killing the DC pulse while the drive is
+ * still in OP trips its sync-loss monitor and latches ErC1.1, which the next
+ * bringup then has to clear (and a power cycle has to clear if that fails).
+ * In PRE-OP no process data is expected, so SYNC0 can stop silently. */
 void ec_rt_shutdown(void) {
+    ec_slave[0].state = EC_STATE_PRE_OP;
+    ec_writestate(0);
+    ec_statecheck(0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
     ec_dcsync0(1, FALSE, 0, 0);
     ec_slave[0].state = EC_STATE_INIT;
     ec_writestate(0);

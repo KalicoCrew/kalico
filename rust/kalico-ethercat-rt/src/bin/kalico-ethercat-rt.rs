@@ -93,6 +93,32 @@ impl SdoBus for FfiSdoBus {
     }
 }
 
+/// Post-bringup claim wait. The drive is already in OP with SYNC0 running, so
+/// its sync-loss monitor (ErC1.1 / AL 0x001A) is armed: every wait iteration
+/// must exchange process data via `ec_rt_cycle` — sleeping here starves the
+/// drive and latches the alarm. `ec_rt_cycle` paces itself to the DC cycle.
+fn wait_for_claim_while_cycling(
+    server: &mut FrameServer,
+    deadline: std::time::Instant,
+) -> Option<u32> {
+    loop {
+        for cmd in server.poll_commands() {
+            if let Command::ClaimHandshake { correlation_id } = cmd {
+                return Some(correlation_id);
+            }
+            eprintln!("ec-rt: unexpected pre-handshake command: {cmd:?}");
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut toff = 0i64;
+        unsafe { ffi::ec_rt_cycle(&mut toff) };
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ifname = args.get(1).cloned().unwrap_or_else(|| "eth0".into());
@@ -219,11 +245,9 @@ fn main() {
         run
     };
 
-    match wait_for_claim(
+    match wait_for_claim_while_cycling(
         &mut server,
         std::time::Instant::now() + std::time::Duration::from_secs(5),
-        &SIGTERM_RECEIVED,
-        "ec-rt",
     ) {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
