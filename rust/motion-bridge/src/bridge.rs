@@ -946,6 +946,56 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    fn start_servo_capture(
+        &self,
+        mcu_handle: u32,
+        path: String,
+        started_utc: String,
+        drive_name: String,
+    ) -> PyResult<()> {
+        let conn = self.ethercat_conn(mcu_handle, "start_servo_capture")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_start",
+            mcu_handle,
+            path,
+            "servo capture start"
+        );
+        let result =
+            crate::servo_capture::send_start_capture(&conn, &path, &started_utc, &drive_name)
+                .map_err(PyRuntimeError::new_err)?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "servo capture start failed: endpoint result {result}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn stop_servo_capture(&self, mcu_handle: u32) -> PyResult<(i32, u64, Option<u64>)> {
+        let conn = self.ethercat_conn(mcu_handle, "stop_servo_capture")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_stop",
+            mcu_handle,
+            "servo capture stop"
+        );
+        let resp =
+            crate::servo_capture::send_stop_capture(&conn).map_err(PyRuntimeError::new_err)?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_stopped",
+            mcu_handle,
+            result = resp.result,
+            samples = resp.samples,
+            "servo capture stopped"
+        );
+        let overflow = (resp.overflow_cycle
+            != kalico_protocol::messages::StopCaptureResponse::NO_OVERFLOW)
+            .then_some(resp.overflow_cycle);
+        Ok((resp.result, resp.samples, overflow))
+    }
+
     fn set_drive_limits(
         &self,
         mcu_handle: u32,

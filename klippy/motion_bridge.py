@@ -170,6 +170,14 @@ class MotionBridgeWrapper:
     def set_torque(self, mcu_handle, value, print_time):
         self._bridge.set_torque(mcu_handle, bool(value), print_time)
 
+    def start_servo_capture(self, mcu_handle, path, started_utc, drive_name):
+        return self._bridge.start_servo_capture(
+            mcu_handle, path, started_utc, drive_name
+        )
+
+    def stop_servo_capture(self, mcu_handle):
+        return self._bridge.stop_servo_capture(mcu_handle)
+
     def sdo_read(self, mcu_handle, index, subindex):
         return self._bridge.sdo_read(mcu_handle, index, subindex)
 

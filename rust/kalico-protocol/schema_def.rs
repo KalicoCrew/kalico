@@ -92,6 +92,44 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0068,
+        name: "StartCapture",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "path", ty: "string" },
+            SchemaField { name: "started_utc", ty: "string" },
+            SchemaField { name: "drive_name", ty: "string" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0069,
+        name: "StartCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x006A,
+        name: "StopCapture",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x006B,
+        name: "StopCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+            SchemaField { name: "samples", ty: "u64" },
+            SchemaField { name: "overflow_cycle", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0070,
         name: "SetTorque",
         version: 1,

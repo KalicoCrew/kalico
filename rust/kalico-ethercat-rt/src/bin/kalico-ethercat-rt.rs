@@ -5,6 +5,9 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use kalico_ethercat_rt::capture::{
+    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+};
 use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
@@ -19,9 +22,12 @@ use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
     restore_drive_limits_response_frame, resume_stream_response_frame, runtime_caps_response_frame,
     sdo_read_response_frame, sdo_write_response_frame, set_drive_limits_response_frame,
-    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
+    set_torque_response_frame, start_capture_response_frame, status_heartbeat_frame,
+    stop_capture_response_frame, stop_response_frame, Command,
 };
-use kalico_protocol::messages::{SlaveState, ERR_SDO_TRANSPORT, ERR_SDO_UNSUPPORTED_SIZE};
+use kalico_protocol::messages::{
+    SlaveState, StopCaptureResponse, ERR_SDO_TRANSPORT, ERR_SDO_UNSUPPORTED_SIZE,
+};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -204,6 +210,8 @@ fn main() {
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut gate = TorqueGate::new();
+    let mut capture = Capture::new();
+    let mut cycle_index: u64 = 0;
     let mut sdo_bus = FfiSdoBus;
     let mut prdiv = 0u64;
     let mut wkc_consecutive = 0u8;
@@ -320,6 +328,35 @@ fn main() {
                     eprintln!("ec-rt: Stop — ring discarded, discard_clock={now_ns}");
                     server.respond(&stop_response_frame(correlation_id, 0, now_ns));
                 }
+                Command::StartCapture {
+                    correlation_id,
+                    msg,
+                } => {
+                    let rc = capture.start(CaptureConfig {
+                        path: msg.path.clone(),
+                        started_utc: msg.started_utc.clone(),
+                        drive_name: msg.drive_name.clone(),
+                        cycle_ns,
+                        counts_per_mm,
+                        started_mono_ns: monotonic_ns(),
+                    });
+                    eprintln!("ec-rt: StartCapture path={} rc={rc}", msg.path);
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                Command::StopCapture { correlation_id } => {
+                    let out = capture.stop();
+                    eprintln!(
+                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
                 Command::ResumeStream { correlation_id } => {
                     server.respond(&resume_stream_response_frame(correlation_id, 0));
                 }
@@ -429,6 +466,7 @@ fn main() {
             }
         }
 
+        let mut motion_active = false;
         if gate.state() == TorqueState::Enabled {
             if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
                 let map = cmap.get_or_insert_with(|| {
@@ -437,6 +475,7 @@ fn main() {
                 });
                 let counts = map.target_counts(f64::from(pos_mm));
                 unsafe { ffi::ec_rt_set_target_position(counts) };
+                motion_active = true;
             } else {
                 cmap = None;
             }
@@ -493,6 +532,32 @@ fn main() {
             heartbeat_sent = true;
         }
 
+        cycle_index += 1;
+        if capture.is_active() {
+            let mut t = ffi::EcTelemetry::default();
+            unsafe { ffi::ec_rt_get_telemetry(&mut t) };
+            let mut flags = 0u8;
+            if gate.state() == TorqueState::Enabled {
+                flags |= FLAG_TORQUE_ENABLED;
+            }
+            if motion_active {
+                flags |= FLAG_MOTION_ACTIVE;
+            }
+            capture.push(CaptureRecord {
+                cycle_index,
+                flags,
+                drive: DriveSample {
+                    target_counts: t.target_position,
+                    position_demand: t.position_demand,
+                    position_actual: t.position_actual,
+                    following_error: t.following_error,
+                    torque_actual: t.torque_actual,
+                    statusword: t.statusword,
+                    error_code: t.error_code,
+                },
+            });
+        }
+
         match eval_wkc(wkc, 3, &mut wkc_consecutive) {
             WkcDecision::Good => {}
             WkcDecision::Warn(n) => {
@@ -510,6 +575,7 @@ fn main() {
                      {} consecutive bad cycles, halting",
                     kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
                 );
+                unsafe { ffi::ec_rt_dump_al_state() };
                 break;
             }
         }

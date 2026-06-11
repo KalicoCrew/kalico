@@ -4,6 +4,23 @@
 
 use std::os::raw::{c_char, c_int};
 
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EcTelemetry {
+    pub error_code: u16,
+    pub statusword: u16,
+    pub position_actual: i32,
+    pub torque_actual: i16,
+    pub following_error: i32,
+    pub position_demand: i32,
+    pub target_position: i32,
+}
+
+const _: () = assert!(
+    core::mem::size_of::<EcTelemetry>() == 24,
+    "EcTelemetry layout must match ec_telemetry_t in bench/libecrt.h"
+);
+
 extern "C" {
     pub fn ec_rt_bringup(
         ifname: *const c_char,
@@ -13,6 +30,8 @@ extern "C" {
     ) -> c_int;
 
     pub fn ec_rt_enable() -> c_int;
+
+    pub fn ec_rt_dump_al_state();
 
     pub fn ec_rt_cycle(toff_ns: *mut i64) -> c_int;
 
@@ -53,4 +72,6 @@ extern "C" {
     pub fn ec_rt_disable();
 
     pub fn ec_rt_shutdown();
+
+    pub fn ec_rt_get_telemetry(out: *mut EcTelemetry);
 }

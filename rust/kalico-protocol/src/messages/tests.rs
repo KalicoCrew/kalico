@@ -383,3 +383,77 @@ fn endstop_trip_round_trips_and_is_event() {
     assert!(MessageKind::EndstopTrip.is_event());
     assert_eq!(MessageKind::EndstopTrip.as_u16(), 0x0085);
 }
+
+#[test]
+fn put_get_str_round_trip() {
+    use crate::codec::{Cursor, get_str, put_str};
+    let mut buf = Vec::new();
+    put_str(&mut buf, "servo_captures/x_20260610.scap");
+    put_str(&mut buf, "");
+    let mut c = Cursor::new(&buf);
+    assert_eq!(get_str(&mut c).unwrap(), "servo_captures/x_20260610.scap");
+    assert_eq!(get_str(&mut c).unwrap(), "");
+}
+
+#[test]
+fn get_str_rejects_truncated_buffer() {
+    use crate::codec::{Cursor, get_str};
+    let length_prefix_overruns_payload = [10u8, 0, b'a', b'b'];
+    let mut c = Cursor::new(&length_prefix_overruns_payload);
+    assert!(get_str(&mut c).is_err());
+}
+
+#[test]
+fn get_str_rejects_invalid_utf8() {
+    use crate::codec::{Cursor, get_str};
+    let buf = [2u8, 0, 0xff, 0xfe];
+    let mut c = Cursor::new(&buf);
+    assert!(get_str(&mut c).is_err());
+}
+
+#[test]
+fn start_capture_round_trip() {
+    use crate::messages::StartCapture;
+    let msg = StartCapture {
+        path: "/home/pi/printer_data/logs/servo_captures/t.scap".into(),
+        started_utc: "2026-06-10T12:00:00Z".into(),
+        drive_name: "x".into(),
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(StartCapture::decode(&buf).unwrap(), msg);
+}
+
+#[test]
+fn stop_capture_response_round_trip() {
+    use crate::messages::StopCaptureResponse;
+    let msg = StopCaptureResponse {
+        result: -323,
+        samples: 12_345,
+        overflow_cycle: StopCaptureResponse::NO_OVERFLOW,
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(StopCaptureResponse::decode(&buf).unwrap(), msg);
+}
+
+#[test]
+fn get_str_zero_length_decodes_to_empty() {
+    use crate::codec::{Cursor, get_str};
+    let buf = [0u8, 0];
+    let mut c = Cursor::new(&buf);
+    assert_eq!(get_str(&mut c).unwrap(), "");
+}
+
+#[test]
+fn capture_message_kinds_round_trip_u16() {
+    use crate::messages::MessageKind;
+    for (kind, raw) in [
+        (MessageKind::StartCapture, 0x0068u16),
+        (MessageKind::StartCaptureResponse, 0x0069),
+        (MessageKind::StopCapture, 0x006A),
+        (MessageKind::StopCaptureResponse, 0x006B),
+    ] {
+        assert_eq!(kind.as_u16(), raw);
+        assert_eq!(MessageKind::from_u16(raw), Some(kind));
+        assert!(!kind.is_event());
+    }
+}
