@@ -323,6 +323,15 @@ int ec_rt_bringup_preop(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt
     ec_SDOwrite(1, 0x6066, 0x00, FALSE, sizeof(ferr_timeout_ms),
                 &ferr_timeout_ms, EC_TIMEOUTRXM);
 
+    /* 0x10F1:02 Sync Error Counter Limit (missed SM event +3, good cycle -1).
+     * Factory 8 faults the drive (ErC1.1) after ~3 consecutive late frames;
+     * 32 rides out ~10 ms of host/NIC jitter. Real degradation stays loud:
+     * every bad working counter still prints from the DC loop, and the SM
+     * watchdog (~100 ms) backstops genuine loss of process data. */
+    uint16_t sync_err_limit = 32;
+    ec_SDOwrite(1, 0x10F1, 0x02, FALSE, sizeof(sync_err_limit),
+                &sync_err_limit, EC_TIMEOUTRXM);
+
     if (route_feedforward_to_communication() != 0) {
         ec_close();
         return EC_RT_ERR_FF_ROUTING;

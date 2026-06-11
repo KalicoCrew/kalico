@@ -7,8 +7,8 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use kalico_ethercat_rt::capture::{
-    Capture, CaptureConfig, CaptureRecord, DriveSample, PendingStop, FLAG_MOTION_ACTIVE,
-    FLAG_TORQUE_ENABLED,
+    Capture, CaptureConfig, CaptureRecord, DriveSample, PendingStart, PendingStop,
+    FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
 };
 use kalico_ethercat_rt::claim::{
     eval_wkc, single_slave_reply, wait_for_claim, wait_for_claim_pumping, WkcDecision,
@@ -259,6 +259,7 @@ fn main() {
     let mailbox = MailboxWorker::spawn(FfiSdoBus, |ferr_counts, torque_tenth_pct| unsafe {
         ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
     });
+    let mut pending_starts: Vec<(u32, String, PendingStart)> = Vec::new();
     let mut pending_stops: Vec<(u32, PendingStop)> = Vec::new();
     let mut prdiv = 0u64;
     let mut ff_saturation = 0u32;
@@ -380,7 +381,7 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let rc = capture.start(CaptureConfig {
+                    let pending = capture.start_async(CaptureConfig {
                         path: msg.path.clone(),
                         started_utc: msg.started_utc.clone(),
                         drive_name: msg.drive_name.clone(),
@@ -388,8 +389,7 @@ fn main() {
                         counts_per_mm,
                         started_mono_ns: monotonic_ns(),
                     });
-                    eprintln!("ec-rt: StartCapture path={} rc={rc}", msg.path);
-                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                    pending_starts.push((correlation_id, msg.path, pending));
                 }
                 Command::StopCapture { correlation_id } => {
                     pending_stops.push((correlation_id, capture.stop_async()));
@@ -444,6 +444,21 @@ fn main() {
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
                 }
+            }
+        }
+
+        let mut start_idx = 0;
+        while start_idx < pending_starts.len() {
+            match pending_starts[start_idx].2.try_take() {
+                Some(rc) => {
+                    let (correlation_id, path, pending) = pending_starts.remove(start_idx);
+                    if rc != 0 && pending.claimed() {
+                        capture.clear_failed_start();
+                    }
+                    eprintln!("ec-rt: StartCapture path={path} rc={rc}");
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                None => start_idx += 1,
             }
         }
 
