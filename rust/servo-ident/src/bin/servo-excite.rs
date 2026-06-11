@@ -28,8 +28,25 @@ fn list(s: &str) -> Vec<f64> {
         .collect()
 }
 
+const KNOWN_KEYS: [&str; 7] = [
+    "--axis", "--min", "--max", "--accels", "--speeds", "--reps", "--out",
+];
+
+fn reject_unknown_flags(args: &[String]) {
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if !KNOWN_KEYS.contains(&a.as_str()) {
+            eprintln!("servo-excite: unknown argument {a:?}");
+            std::process::exit(1);
+        }
+        i += 2;
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    reject_unknown_flags(&args);
     let min_mm = list(&req(&args, "--min"))
         .into_iter()
         .next()

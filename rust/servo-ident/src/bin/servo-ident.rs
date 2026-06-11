@@ -30,8 +30,31 @@ fn req(args: &[String], key: &str) -> String {
     })
 }
 
+const KNOWN_KEYS: [&str; 7] = [
+    "--capture",
+    "--structure",
+    "--axes",
+    "--out",
+    "--rated-torque-nm",
+    "--rotor-inertia-kgm2",
+    "--rotation-distance-mm",
+];
+
+fn reject_unknown_flags(args: &[String]) {
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if !KNOWN_KEYS.contains(&a.as_str()) {
+            eprintln!("servo-ident: unknown argument {a:?}");
+            std::process::exit(1);
+        }
+        i += 2;
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    reject_unknown_flags(&args);
     let structure = match req(&args, "--structure").as_str() {
         "scalar" => Structure::CartesianScalar,
         "corexy" => Structure::CoreXY,

@@ -108,10 +108,19 @@ G-code would not produce the intended excitation.
 
 ### Step 2 — run under layer-2 telemetry capture
 
-Run the generated G-code through the printer while the layer-2 telemetry
-pipeline records per-DC-cycle PDO data.
+Run the generated G-code through the printer while `SERVO_CAPTURE_START` /
+`SERVO_CAPTURE_STOP` record per-DC-cycle PDO data to a `.scap` file, then
+convert it to the fitter's CSV with the capture analysis script:
 
-**Capture CSV interim contract.** The fitter reads a CSV with header columns:
+```sh
+python3 scripts/servo_capture.py run.scap --csv run.csv
+```
+
+The export derives `t` from the cycle index and `cycle_ns`, converts
+`target_counts` to mm with the header's `counts_per_mm`, and emits
+`torque_actual` as-is (already 0.1% rated).
+
+**Capture CSV contract.** The fitter reads a CSV with header columns:
 - `t` — time in seconds
 - `target_<axis>` — commanded position in mm (one column per axis)
 - `torque_<axis>` — measured torque from 6077h in 0.1% rated (one column per axis)

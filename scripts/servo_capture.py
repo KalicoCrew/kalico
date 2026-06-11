@@ -200,6 +200,22 @@ def _print_metrics(m, counts_per_mm):
         )
 
 
+def export_ident_csv(path, header, data, counts_per_mm):
+    axis = header["drives"][0]["name"]
+    cycle_index = data["cycle_index"].astype(np.int64)
+    t = (cycle_index - cycle_index[0]) * (header["cycle_ns"] * 1e-9)
+    target_mm = data["target_counts"].astype(np.float64) / counts_per_mm
+    torque = data["torque_actual"].astype(np.float64)
+    with open(path, "w") as f:
+        f.write("t,target_%s,torque_%s\n" % (axis, axis))
+        for row in zip(t, target_mm, torque):
+            f.write("%.6f,%.9g,%.9g\n" % row)
+    print(
+        "wrote %d samples for axis %r to %s (feed to servo-ident --capture)"
+        % (len(t), axis, path)
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("capture", help="path to a .scap capture file")
@@ -225,11 +241,22 @@ def main(argv=None):
         action="store_true",
         help="show a time-series dashboard (requires matplotlib)",
     )
+    p.add_argument(
+        "--csv",
+        metavar="PATH",
+        help="export t/target/torque in servo-ident's CSV contract "
+        "(t in s, target in mm, torque in 0.1%% rated) and exit",
+    )
     args = p.parse_args(argv)
 
     header, data = load_capture(args.capture)
     fs = 1e9 / header["cycle_ns"]
     counts_per_mm = header["drives"][0]["counts_per_mm"]
+
+    if args.csv:
+        export_ident_csv(args.csv, header, data, counts_per_mm)
+        return 0
+
     m = compute_metrics(data, args.settle_band, args.torque_limit, fs=fs)
     _print_metrics(m, counts_per_mm)
 
