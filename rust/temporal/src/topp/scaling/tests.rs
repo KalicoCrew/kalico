@@ -63,6 +63,7 @@ fn tiny_grid(s: f64, kappa: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa: kappa_vec,
         total_length: s,
+        inter_kappa: vec![vec![(0.25, kappa), (0.5, kappa), (0.75, kappa)]; n.saturating_sub(1)],
     }
 }
 

@@ -65,6 +65,11 @@ impl SolverScale {
                 .collect(),
             kappa: grid.kappa.iter().map(|k| k * s).collect(),
             total_length: grid.total_length / s,
+            inter_kappa: grid
+                .inter_kappa
+                .iter()
+                .map(|iv| iv.iter().map(|&(theta, k)| (theta, k * s)).collect())
+                .collect(),
         }
     }
 
@@ -142,6 +147,11 @@ impl SolverScale {
                 })
                 .collect(),
             segment_ranges: chain.segment_ranges.clone(),
+            inter_kappa: chain
+                .inter_kappa
+                .iter()
+                .map(|iv| iv.iter().map(|&(theta, k)| (theta, k * s)).collect())
+                .collect(),
         }
     }
 }

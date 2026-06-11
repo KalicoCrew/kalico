@@ -33,6 +33,9 @@ pub struct ChainGrid {
     /// Inclusive (start, end) point-index range per segment; consecutive
     /// ranges share their boundary index.
     pub segment_ranges: Vec<(usize, usize)>,
+    /// Interior κ samples for each chain interval `[i, i+1]`, len M−1.
+    /// Each entry is a vec of `(θ, κ)` pairs with θ ∈ (0,1).
+    pub inter_kappa: Vec<Vec<(f64, f64)>>,
 }
 
 pub(crate) const MAX_JUNCTION_SPACING_RATIO: f64 = 16.0;
@@ -82,6 +85,7 @@ impl ChainGrid {
         let mut limits_idx = Vec::new();
         let mut junctions = Vec::new();
         let mut segment_ranges = Vec::new();
+        let mut inter_kappa = Vec::new();
         let mut s_offset = 0.0;
 
         for (seg, g) in grids.iter().enumerate() {
@@ -112,8 +116,9 @@ impl ChainGrid {
                 geom.push(point_geom(g, i));
                 limits_idx.push(seg);
             }
-            for _ in 0..n - 1 {
+            for interval_idx in 0..n - 1 {
                 h_intervals.push(h_seg);
+                inter_kappa.push(g.inter_kappa[interval_idx].clone());
             }
             segment_ranges.push((range_start, s.len() - 1));
             s_offset += g.total_length;
@@ -127,6 +132,7 @@ impl ChainGrid {
             limits,
             junctions,
             segment_ranges,
+            inter_kappa,
         }
     }
 

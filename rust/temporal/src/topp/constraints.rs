@@ -526,6 +526,35 @@ pub fn build_chain(
 
     {
         let mut count = 0_usize;
+        for i in 0..n - 1 {
+            let a_cent_interval_owner = chain.limits_at(i + 1).a_centripetal_max;
+            let node_cap_i = b_max_cent[i];
+            let node_cap_j = b_max_cent[i + 1];
+            for &(theta, kappa) in &chain.inter_kappa[i] {
+                if kappa.abs() < kappa_floor {
+                    continue;
+                }
+                let inter_cap = (a_cent_interval_owner / kappa).min(b_cap);
+                let interp_node_cap = (1.0 - theta) * node_cap_i + theta * node_cap_j;
+                if inter_cap >= interp_node_cap * (1.0 - 1e-9) {
+                    continue;
+                }
+                push_row(
+                    &mut a_rows,
+                    &mut b_rhs,
+                    &[(off_b + i, -(1.0 - theta)), (off_b + i + 1, -theta)],
+                    inter_cap,
+                );
+                count += 1;
+            }
+        }
+        if count > 0 {
+            cones.push((Cone::Nonneg, count));
+        }
+    }
+
+    {
+        let mut count = 0_usize;
         if endpoints.v_start == 0.0 {
             for i in 1..n {
                 let d = chain.s[i] - chain.s[0];

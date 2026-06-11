@@ -177,6 +177,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
     let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
     let kappa = vec![0.0; n];
+    let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
     ArclengthGrid {
         s,
         u,
@@ -186,6 +187,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa,
     }
 }
 
@@ -327,6 +329,7 @@ fn damp_scale_for_axis_feasibility_achieves_target() {
         let c_double_prime = vec![[0.0, cpp_val, 0.0]; n];
         let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
         let kappa = vec![0.0; n];
+        let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
         ArclengthGrid {
             s,
             u,
@@ -336,6 +339,7 @@ fn damp_scale_for_axis_feasibility_achieves_target() {
             c_triple_prime,
             kappa,
             total_length: length,
+            inter_kappa,
         }
     };
     let limits = Limits {
@@ -410,6 +414,7 @@ fn build_axis_jerk_cuts_chain_places_maintenance_cuts() {
         let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
         let c_triple_prime: Vec<[f64; 3]> = cppp_vals.iter().map(|&v| [v, 0.0, 0.0]).collect();
         let kappa = vec![0.0; n];
+        let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
         ArclengthGrid {
             s,
             u,
@@ -419,6 +424,7 @@ fn build_axis_jerk_cuts_chain_places_maintenance_cuts() {
             c_triple_prime,
             kappa,
             total_length: length,
+            inter_kappa,
         }
     };
     let limits = Limits {

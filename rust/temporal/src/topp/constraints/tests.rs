@@ -12,6 +12,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
     let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
     let kappa = vec![0.0; n];
+    let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
     ArclengthGrid {
         s,
         u,
@@ -21,6 +22,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa,
     }
 }
 
@@ -463,6 +465,7 @@ fn diagonal_line_a_env_is_projected() {
         kappa: vec![0.0; n],
         total_length: length,
         s,
+        inter_kappa: vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)],
     };
     let limits = textbook_limits();
     let chain = chain_of_one(grid.clone(), limits);
@@ -741,4 +744,162 @@ fn boundary_tube_upper_reduces_to_rest_envelope() {
             "rest reduction s={s}: tube {tube} vs rest {rest}"
         );
     }
+}
+
+fn curvature_spike_grid() -> (ArclengthGrid, Limits) {
+    let n = 3_usize;
+    let length = 10.0_f64;
+    let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
+    let u = s.clone();
+    let c = s.iter().map(|si| [*si, 0.0, 0.0]).collect();
+    let c_prime = vec![[1.0, 0.0, 0.0]; n];
+    let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
+    let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
+    let kappa_nodes = vec![0.01_f64; n];
+
+    let kappa_spike = 0.5_f64;
+    let inter_kappa = vec![
+        vec![(0.25, 0.01), (0.5, kappa_spike), (0.75, 0.01)],
+        vec![(0.25, 0.01), (0.5, kappa_spike), (0.75, 0.01)],
+    ];
+
+    let limits = Limits {
+        v_max: [500.0, 500.0, 500.0],
+        a_max: [5_000.0, 5_000.0, 5_000.0],
+        j_max: [100_000.0, 100_000.0, 100_000.0],
+        a_centripetal_max: 2_500.0,
+    };
+    (
+        ArclengthGrid {
+            s,
+            u,
+            c,
+            c_prime,
+            c_double_prime,
+            c_triple_prime,
+            kappa: kappa_nodes,
+            total_length: length,
+            inter_kappa,
+        },
+        limits,
+    )
+}
+
+#[test]
+fn intergrid_centripetal_rows_added_when_spike_between_nodes() {
+    let (grid, limits) = curvature_spike_grid();
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Ok(b) => b,
+        BuildOutcome::Boundary(_) => panic!("should be feasible"),
+    };
+
+    let kappa_spike = 0.5_f64;
+    let a_cent = limits.a_centripetal_max;
+    let expected_cap = a_cent / kappa_spike;
+
+    let intergrid_rows: Vec<_> = bundle
+        .a_rows
+        .iter()
+        .zip(&bundle.b_rhs)
+        .filter(|(row, _)| {
+            let nz: Vec<(usize, f64)> = row
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.abs() > 1e-12)
+                .map(|(c, v)| (c, *v))
+                .collect();
+            nz.len() == 2
+                && nz.iter().all(|(_, v)| *v < 0.0)
+                && nz.iter().any(|(c, _)| *c < chain.n_points())
+        })
+        .map(|(_, &rhs)| rhs)
+        .collect();
+
+    assert!(
+        intergrid_rows
+            .iter()
+            .any(|&rhs| (rhs - expected_cap).abs() / expected_cap < 1e-6),
+        "expected inter-grid centripetal row with cap {expected_cap:.4} \
+         (a_cent/κ_spike), got rows: {intergrid_rows:?}"
+    );
+}
+
+#[test]
+fn intergrid_centripetal_rows_absent_when_kappa_valley_between_nodes() {
+    let n = 3_usize;
+    let length = 10.0_f64;
+    let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
+    let u = s.clone();
+    let c = s.iter().map(|si| [*si, 0.0, 0.0]).collect();
+    let c_prime = vec![[1.0, 0.0, 0.0]; n];
+    let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
+    let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
+
+    let k_node = 0.3_f64;
+    let node_kappas = vec![k_node; n];
+
+    let k_valley = 0.05_f64;
+    let inter_kappa = vec![
+        vec![(0.25, k_valley), (0.5, k_valley), (0.75, k_valley)],
+        vec![(0.25, k_valley), (0.5, k_valley), (0.75, k_valley)],
+    ];
+
+    let limits = textbook_limits();
+    let grid = ArclengthGrid {
+        s,
+        u,
+        c,
+        c_prime,
+        c_double_prime,
+        c_triple_prime,
+        kappa: node_kappas,
+        total_length: length,
+        inter_kappa,
+    };
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Ok(b) => b,
+        BuildOutcome::Boundary(_) => panic!("should be feasible"),
+    };
+
+    let a_cent = limits.a_centripetal_max;
+    let node_cap = a_cent / k_node;
+    let inter_cap = a_cent / k_valley;
+
+    assert!(
+        inter_cap > node_cap,
+        "precondition: valley κ gives looser cap ({inter_cap}) than node cap ({node_cap})"
+    );
+
+    let two_entry_rows_at_inter_cap_count = bundle
+        .a_rows
+        .iter()
+        .zip(&bundle.b_rhs)
+        .filter(|(row, rhs)| {
+            let nz_count = row.iter().filter(|v| v.abs() > 1e-12).count();
+            nz_count == 2 && (*rhs - inter_cap).abs() / inter_cap < 1e-6
+        })
+        .count();
+
+    assert_eq!(
+        two_entry_rows_at_inter_cap_count, 0,
+        "valley κ rows (cap={inter_cap:.2}) should not be added — node constraints dominate"
+    );
 }

@@ -21,6 +21,7 @@ fn dummy_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa: vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)],
     }
 }
 

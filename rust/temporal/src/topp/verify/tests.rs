@@ -12,6 +12,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
     let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
     let kappa = vec![0.0; n];
+    let inter_kappa = vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)];
     ArclengthGrid {
         s,
         u,
@@ -21,6 +22,7 @@ fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa,
     }
 }
 
@@ -235,6 +237,7 @@ fn over_centripetal_profile_flagged() {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa: vec![vec![(0.25, 1.0), (0.5, 1.0), (0.75, 1.0)]; n.saturating_sub(1)],
     };
 
     let limits = textbook_limits();
