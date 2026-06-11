@@ -7,10 +7,15 @@ time-series dashboard.
 """
 
 import argparse
+import glob
 import json
+import os
+import re
 import sys
 
 import numpy as np
+
+CAPTURE_TS_RE = re.compile(r"_(\d{8}_\d{6})\.scap$")
 
 DTYPE_MAP = {
     "u8": "u1",
@@ -21,6 +26,18 @@ DTYPE_MAP = {
 }
 FLAG_MOTION_ACTIVE = 1 << 1
 SETTLE_HOLD_MS = 50
+
+
+def resolve_newest_capture(captures_dir, name):
+    pattern = os.path.join(
+        os.path.expanduser(captures_dir), name + "_*.scap"
+    )
+    matches = [p for p in glob.glob(pattern) if CAPTURE_TS_RE.search(p)]
+    if not matches:
+        raise SystemExit(
+            "no capture named %r in %s" % (name, captures_dir)
+        )
+    return max(matches)
 
 
 def load_capture(path):
@@ -222,7 +239,15 @@ def export_ident_csv(path, header, data, counts_per_mm):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("capture", help="path to a .scap capture file")
+    p.add_argument("capture", nargs="?", help="path to a .scap capture file")
+    p.add_argument(
+        "--name",
+        help="capture base name; analyzes the newest matching capture "
+        "in --captures-dir instead of an explicit path",
+    )
+    p.add_argument(
+        "--captures-dir", default="~/printer_data/logs/servo_captures"
+    )
     p.add_argument(
         "--settle-band",
         type=int,
@@ -252,8 +277,13 @@ def main(argv=None):
         "(t in s, target in mm, torque in 0.1%% rated) and exit",
     )
     args = p.parse_args(argv)
+    if (args.capture is None) == (args.name is None):
+        raise SystemExit("pass a .scap path or --name, not both or neither")
+    capture_path = args.capture or resolve_newest_capture(
+        args.captures_dir, args.name
+    )
 
-    header, data = load_capture(args.capture)
+    header, data = load_capture(capture_path)
     fs = 1e9 / header["cycle_ns"]
     counts_per_mm = header["drives"][0]["counts_per_mm"]
 
@@ -261,6 +291,7 @@ def main(argv=None):
         export_ident_csv(args.csv, header, data, counts_per_mm)
         return 0
 
+    print("file: %s" % (capture_path,))
     m = compute_metrics(data, args.settle_band, args.torque_limit, fs=fs)
     _print_metrics(m, counts_per_mm)
 

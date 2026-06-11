@@ -371,3 +371,23 @@ def test_load_capture_offset_mismatch_raises(tmp_path):
         f.write((json.dumps(header) + "\n").encode())
     with pytest.raises(SystemExit):
         sc.load_capture(path)
+
+
+def test_main_requires_exactly_one_capture_source():
+    with pytest.raises(SystemExit, match="not both or neither"):
+        sc.main([])
+    with pytest.raises(SystemExit, match="not both or neither"):
+        sc.main(["/tmp/x.scap", "--name", "x"])
+
+
+def test_resolve_newest_capture_picks_latest(tmp_path):
+    for ts in ("20260611_210000", "20260611_230000"):
+        with open(tmp_path / ("track_%s.scap" % ts), "w"):
+            pass
+    newest = sc.resolve_newest_capture(str(tmp_path), "track")
+    assert newest.endswith("track_20260611_230000.scap")
+
+
+def test_resolve_newest_capture_missing_fails_loudly(tmp_path):
+    with pytest.raises(SystemExit, match="track"):
+        sc.resolve_newest_capture(str(tmp_path), "track")

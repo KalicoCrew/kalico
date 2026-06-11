@@ -15,29 +15,18 @@ Usage:
 """
 
 import argparse
-import glob
 import os
-import re
 import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from servo_capture import export_ident_csv, load_capture  # noqa: E402
-
-CAPTURE_TS_RE = re.compile(r"_(\d{8}_\d{6})\.scap$")
-
-
-def resolve_newest_capture(captures_dir, name):
-    pattern = os.path.join(
-        os.path.expanduser(captures_dir), name + "_*.scap"
-    )
-    matches = [p for p in glob.glob(pattern) if CAPTURE_TS_RE.search(p)]
-    if not matches:
-        raise SystemExit(
-            "no capture named %r in %s" % (name, captures_dir)
-        )
-    return max(matches)
+from servo_capture import (  # noqa: E402
+    CAPTURE_TS_RE,
+    export_ident_csv,
+    load_capture,
+    resolve_newest_capture,
+)
 
 
 def profile_path(out_dir, name, capture_path):
