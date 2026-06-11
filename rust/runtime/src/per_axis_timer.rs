@@ -36,8 +36,9 @@ fn record_drained(count: u32) {
     }
 }
 
-// Threshold: ~½ TIM5 sample period in DWT cycles.
-// H7 @ 520 MHz / 40 kHz → 6500 cyc; F446 @ 180 MHz / 40 kHz → 2250 cyc.
+// Threshold: 12.5 µs absolute (freq/80k), chip-independent — above normal
+// ISR-latency jitter (≤ a few µs), far below the ~266 µs USB-burst lateness
+// this instrument exists to catch.
 #[cfg(not(any(test, feature = "host")))]
 fn late_threshold_cycles() -> u32 {
     // SAFETY: runtime_clock_freq is a C const written once at boot before any

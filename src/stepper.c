@@ -339,6 +339,8 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     uint32_t count = (n_steps < 0) ? (uint32_t)-n_steps : (uint32_t)n_steps;
 
     if (runtime_motor_last_dir[motor_idx] != want_dir) {
+        // pin_level must be (!want_dir XOR invert_dir): bench-verified that
+        // the simpler-looking (want_dir XOR invert_dir) drives reverse motion.
         for (uint8_t j = 0; j < cnt; j++) {
             uint8_t pin_level = (uint8_t)(!want_dir)
                               ^ runtime_motor_steppers[motor_idx][j].invert_dir;

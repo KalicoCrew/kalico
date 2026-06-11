@@ -915,9 +915,14 @@ fault_handler_report_task(void)
             prior_diag.usb_in_dtxfsts         = diag.usb_in_dtxfsts;
             prior_diag.usb_out_doepctl        = diag.usb_out_doepctl;
             prior_diag.usb_out_doepint        = diag.usb_out_doepint;
-            prior_diag.stepout_late_max_cyc   = diag.stepout_late_max_cyc;
-            prior_diag.stepout_late_count     = diag.stepout_late_count;
-            prior_diag.stepout_late_max_drained = diag.stepout_late_max_drained;
+            {
+                extern void kalico_stepout_late_get(uint32_t *out_max_late,
+                                                    uint32_t *out_late_count,
+                                                    uint32_t *out_max_drained);
+                kalico_stepout_late_get(&prior_diag.stepout_late_max_cyc,
+                                        &prior_diag.stepout_late_count,
+                                        &prior_diag.stepout_late_max_drained);
+            }
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
                 prior_ring[i].tag       = diag_ring[i].tag;
                 prior_ring[i]._pad0     = diag_ring[i]._pad0;
