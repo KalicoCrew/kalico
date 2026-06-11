@@ -424,19 +424,16 @@ class Printer:
         except (self.config_error, pins.error) as e:
             logging.exception("Config error")
             self._set_state("%s\n%s" % (str(e), message_restart))
-            self._dispatch_disconnect()
             return
         except msgproto.error as e:
             logging.exception("Protocol error")
             self._set_state(self._build_protocol_error_message(e))
             util.dump_mcu_build()
-            self._dispatch_disconnect()
             return
         except mcu.error as e:
             logging.exception("MCU error during connect")
             self._set_state("%s%s" % (str(e), message_mcu_connect_error))
             util.dump_mcu_build()
-            self._dispatch_disconnect()
             return
         except Exception as e:
             logging.exception("Unhandled exception during connect")
@@ -447,7 +444,6 @@ class Printer:
                     message_restart,
                 )
             )
-            self._dispatch_disconnect()
             return
         try:
             self._set_state(message_ready)
@@ -571,11 +567,13 @@ class Printer:
         # Scoped to this one dispatch on purpose: other send_event callers rely
         # on exceptions propagating.
         #
-        # One-shot per Printer lifetime: the failed-connect except arms call this
-        # and so does the post-run path, so without a latch every disconnect
-        # handler (heaters, fans, webhooks, gcode, mcu._disconnect →
-        # serialhdl.disconnect) would run twice on that path. bridge.shutdown()
-        # is idempotent, but the broader handlers are not contractually so.
+        # Fired only from the post-run exit path — never on a failed connect.
+        # A connect error (config/protocol/mcu) must leave the printer alive in
+        # its error state so webhooks keeps serving it to moonraker; bridge
+        # resources are reclaimed when the process actually exits. One-shot:
+        # bridge.shutdown() is idempotent, but the broader disconnect handlers
+        # (heaters, fans, webhooks, gcode, mcu._disconnect) are not
+        # contractually so.
         if self._disconnect_dispatched:
             return
         self._disconnect_dispatched = True
