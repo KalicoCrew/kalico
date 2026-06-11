@@ -2,6 +2,7 @@
 #include "libecrt.h"
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <time.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -69,18 +70,25 @@ static void dc_sync(int64_t reftime, int64_t cycletime, int64_t *offset) {
     *offset = -(delta / 100) - (g_integral / 20);
 }
 
-/*
- * Best-effort RT hardening. Failures are non-fatal (the caller may lack
- * CAP_IPC_LOCK / CAP_SYS_NICE) but they ARE reported on stderr: without RT
- * scheduling the DC loop jitters and the drive throws Er74.1 / misses SYNC0,
- * which looks like a drive bug rather than a missing-capability problem.
- */
-static void go_realtime(int cpu, int prio) {
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) perror("ec_rt: mlockall (continuing)");
+static int go_realtime(int cpu, int prio) {
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        fprintf(stderr, "ec_rt: mlockall failed: %s — grant CAP_IPC_LOCK\n",
+                strerror(errno));
+        return EC_RT_ERR_RT_MLOCK;
+    }
     cpu_set_t set; CPU_ZERO(&set); CPU_SET(cpu, &set);
-    if (sched_setaffinity(0, sizeof(set), &set) != 0) perror("ec_rt: setaffinity (continuing)");
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        fprintf(stderr, "ec_rt: pin to CPU %d failed: %s — isolate the core "
+                "and grant the endpoint access to it\n", cpu, strerror(errno));
+        return EC_RT_ERR_RT_AFFINITY;
+    }
     struct sched_param sp; sp.sched_priority = prio;
-    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) perror("ec_rt: SCHED_FIFO (continuing)");
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+        fprintf(stderr, "ec_rt: SCHED_FIFO(prio %d) failed: %s — grant "
+                "CAP_SYS_NICE\n", prio, strerror(errno));
+        return EC_RT_ERR_RT_SCHED;
+    }
+    return 0;
 }
 
 #define COE_ENTRY(index, sub, bits) \
@@ -147,6 +155,15 @@ static int remap_volatile_tx_pdo_1a00(void) {
     return rewrite_1a00_entry_table();
 }
 
+static int assign_fixed_rx_pdo_0x1701(void) {
+    uint8_t  no_pdos  = 0;
+    uint8_t  one_pdo  = 1;
+    uint16_t pdo_1701 = 0x1701;
+    if (remap_write(0x1C12, 0x00, &no_pdos,  sizeof(no_pdos))  != 0) return -1;
+    if (remap_write(0x1C12, 0x01, &pdo_1701, sizeof(pdo_1701)) != 0) return -1;
+    return remap_write(0x1C12, 0x00, &one_pdo, sizeof(one_pdo));
+}
+
 static int rt_exchange(int64_t *toff) {
     int64_t off = 0;
     add_ts(&g_ts, g_cycle_ns + (toff ? *toff : 0));
@@ -183,7 +200,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
     g_enabled  = 0;
-    go_realtime(rt_cpu, rt_prio);
+    int rt_rc = go_realtime(rt_cpu, rt_prio);
+    if (rt_rc != 0) return rt_rc;
 
     if (!ec_init(ifname)) return EC_RT_ERR_EC_INIT;
     if (ec_config_init(FALSE) <= 0) { ec_close(); return EC_RT_ERR_NO_SLAVES; }
@@ -192,6 +210,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     if (reset_rc != 0) { ec_close(); return reset_rc; }
 
     if (remap_volatile_tx_pdo_1a00() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
+    if (assign_fixed_rx_pdo_0x1701() != 0) { ec_close(); return EC_RT_ERR_RXPDO_ASSIGN; }
 
     /* Write order matters: mode, both sync types, then cycle times. The
      * drive requires SYNC0 active before SAFE-OP (else AL 0x0030 / Er74.1). */
