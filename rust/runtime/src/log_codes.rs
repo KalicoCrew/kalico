@@ -52,12 +52,6 @@ pub const EVENT_RUNTIME_ISR_PHASE: u16 = 11;
 pub const EVENT_RUNTIME_BLOCK_SOURCE: u16 = 12;
 pub const EVENT_RUNTIME_TIM5_IA: u16 = 13;
 pub const EVENT_RUNTIME_DIAG_DUMP: u16 = 14;
-/// Step-output lateness summary.
-///
-/// arg0 = max_late_cycles (DWT cycles the emission was overdue; 0 if never late)
-/// arg1 = (late_count << 16) | (max_drained & 0xFFFF)
-///   late_count: emissions where cycle_abs was already past by > threshold
-///   max_drained: largest number of entries emitted in a single event call
 pub const EVENT_RUNTIME_STEPOUT_LATE: u16 = 15;
 
 pub const EVENT_MOTION_PIECE_START_PAST: u16 = 1;
@@ -156,7 +150,7 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_STEPOUT_LATE) => (
             "runtime.stepout_late",
-            "stepout late max_late_cyc={arg0} late_count_drained={arg1}",
+            "stepout late max_late_cyc={arg0} late_count<<16|max_drained={arg1}",
         ),
         (SUBSYSTEM_DIAG, EVENT_DIAG_TIM5_LONG) => {
             ("diag.tim5_long", "TIM5 ISR long {arg0} cyc at t={arg1}")

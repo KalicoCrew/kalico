@@ -170,8 +170,6 @@ fn mixed_due_and_future_across_axes() {
     assert_eq!(next, 6000);
 }
 
-// ---- lateness tracking ----
-
 #[test]
 fn on_time_emission_produces_zero_late_stats() {
     reset();

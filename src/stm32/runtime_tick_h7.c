@@ -172,13 +172,10 @@ TIM5_IRQHandler_body(uint32_t *frame)
 
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
-// Step-output timer uses TIM3; TIM2 is PWM and TIM5 is the motion tick, so
-// neither may be reused here. TIM3 runs at KALICO_MOTION_NVIC_PRIO (equal to
-// TIM5): equal-priority IRQs don't nest, keeping the SPSC non-racing.
 #define STEP_OUT_MAX_DELTA 0x7000u
+_Static_assert(STEP_OUT_MAX_DELTA < 0x8000u,
+               "missed-compare passed-test needs int16 half-range headroom");
 
-// cycle_abs is in DWT ticks; TIM3 ticks slower, so step_out_clkdiv scales
-// DWT deltas into TIM3 ticks.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
 static uint32_t          step_out_clkdiv = 1;
@@ -195,10 +192,6 @@ step_output_program_delta(uint32_t dwt_delta)
     uint16_t ccr = (uint16_t)(TIM3->CNT + (uint16_t)delta);
     TIM3->CCR1 = ccr;
     TIM3->DIER |= TIM_DIER_CC1IE;
-    // 16-bit twin of the F4 guard in runtime_tick_f4.c: a compare that slips
-    // behind CNT before CCR1 goes live will not match again for a full 252 us
-    // wrap; force the handler instead. The signed half-range test is sound
-    // only while STEP_OUT_MAX_DELTA stays below 0x8000.
     if ((int16_t)((uint16_t)TIM3->CNT - ccr) >= 0)
         NVIC_SetPendingIRQ(TIM3_IRQn);
 }

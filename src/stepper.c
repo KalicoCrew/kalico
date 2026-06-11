@@ -310,13 +310,6 @@ DECL_COMMAND(command_kalico_set_stepper_offset,
              "kalico_set_stepper_offset stepper_idx=%c delta_microsteps=%i"
              " max_microsteps_per_sample=%hu");
 
-// Minimum DWT cycles between consecutive step-pin toggles on the same motor.
-// 1 µs expressed from CONFIG_CLOCK_FREQ so it is correct on both H7 (520 MHz)
-// and F446 (180 MHz). Worst-case cost when the priority lift has NOT yet taken
-// effect and a 32-step catch-up batch arrives: MAX_STEPS_PER_EVENT=32 × 1 µs =
-// 32 µs of busy-wait in this ISR body. Acceptable at priority 0 because
-// catch-up batches are rare once the lift prevents USB preemption; the bound is
-// documented here so it can be re-evaluated if CONFIG_CLOCK_FREQ changes.
 #define STEP_MIN_EDGE_DWT ((CONFIG_CLOCK_FREQ) / 1000000u)
 
 static uint32_t step_last_edge_dwt[RUNTIME_MOTOR_COUNT];
@@ -339,13 +332,12 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     uint32_t count = (n_steps < 0) ? (uint32_t)-n_steps : (uint32_t)n_steps;
 
     if (runtime_motor_last_dir[motor_idx] != want_dir) {
-        // pin_level must be (!want_dir XOR invert_dir): bench-verified that
-        // the simpler-looking (want_dir XOR invert_dir) drives reverse motion.
         for (uint8_t j = 0; j < cnt; j++) {
-            uint8_t pin_level = (uint8_t)(!want_dir)
-                              ^ runtime_motor_steppers[motor_idx][j].invert_dir;
+            uint8_t bench_verified_not_want_dir_xor_invert
+                = (uint8_t)(!want_dir)
+                ^ runtime_motor_steppers[motor_idx][j].invert_dir;
             gpio_out_write(runtime_motor_steppers[motor_idx][j].stepper->dir_pin,
-                           pin_level);
+                           bench_verified_not_want_dir_xor_invert);
         }
         runtime_motor_last_dir[motor_idx] = want_dir;
     }

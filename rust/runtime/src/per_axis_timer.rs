@@ -33,19 +33,14 @@ fn record_drained(count: u32) {
     }
 }
 
-// Threshold: 12.5 µs absolute (freq/80k), chip-independent — above normal
-// ISR-latency jitter (≤ a few µs), far below the ~266 µs USB-burst lateness
-// this instrument exists to catch.
 #[cfg(not(any(test, feature = "host")))]
-fn late_threshold_cycles() -> u32 {
-    // SAFETY: runtime_clock_freq is a C const written once at boot before any
-    // ISR fires; it is effectively immutable from that point on.
+fn late_threshold_12p5_us_in_cycles() -> u32 {
     let freq = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(runtime_clock_freq)) };
-    freq / (2 * 40_000)
+    freq / 80_000
 }
 
 #[cfg(any(test, feature = "host"))]
-fn late_threshold_cycles() -> u32 {
+fn late_threshold_12p5_us_in_cycles() -> u32 {
     test_hooks::late_threshold()
 }
 
@@ -56,7 +51,6 @@ pub extern "C" fn kalico_stepout_late_get(
     out_late_count: *mut u32,
     out_max_drained: *mut u32,
 ) {
-    // SAFETY: caller (C foreground) passes valid non-null stack pointers.
     unsafe {
         *out_max_late = STEPOUT_MAX_LATE_CYCLES.load(Ordering::Relaxed);
         *out_late_count = STEPOUT_LATE_COUNT.load(Ordering::Relaxed);
@@ -104,7 +98,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     let owned = unsafe { kalico_step_output_owned_mask() };
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_ENTER);
 
-    let threshold = late_threshold_cycles();
+    let threshold = late_threshold_12p5_us_in_cycles();
     let mut emitted: u32 = 0;
     'outer: loop {
         let mut emitted_this_pass = false;
