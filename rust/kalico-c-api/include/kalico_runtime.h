@@ -4,6 +4,7 @@
 * See docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md.
 */
 
+
 #ifndef KALICO_RUNTIME_H
 #define KALICO_RUNTIME_H
 
@@ -26,6 +27,10 @@ typedef struct StepperBindingRust {
   uint8_t tmc_cs_oid;
   uint8_t _pad[2];
 } StepperBindingRust;
+
+int32_t kalico_runtime_bind_phase_motor(struct KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint8_t slot_idx);
 
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
@@ -100,10 +105,6 @@ int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
                                      int32_t z_q16);
 
 int32_t kalico_runtime_set_axis_mode(struct KalicoRuntime *rt, uint8_t axis_idx, uint8_t new_mode);
-
-int32_t kalico_runtime_bind_phase_motor(struct KalicoRuntime *rt,
-                                        uint8_t motor_idx,
-                                        uint8_t slot_idx);
 
 int32_t kalico_runtime_set_step_mode(struct KalicoRuntime *rt,
                                      uint8_t stepper_idx,

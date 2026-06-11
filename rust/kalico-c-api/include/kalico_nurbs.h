@@ -4,6 +4,7 @@
 * See docs/superpowers/specs/2026-04-26-nurbs-evaluation-library-design.md.
 */
 
+
 #ifndef KALICO_NURBS_H
 #define KALICO_NURBS_H
 
@@ -28,6 +29,10 @@ float kalico_nurbs_param_from_arc_length_f32(const struct kalico_nurbs_ArcLength
 void kalico_nurbs_vector_eval_3_f32(const struct kalico_nurbs_VectorNurbsRef_f32__3 *curve,
                                     float u,
                                     float *out);
+
+int32_t kalico_runtime_bind_phase_motor(kalico_nurbs_KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint8_t slot_idx);
 
 int32_t kalico_runtime_clock_sync_request(kalico_nurbs_KalicoRuntime *rt,
                                           uint32_t request_id,
@@ -106,10 +111,6 @@ int32_t kalico_runtime_seed_position(kalico_nurbs_KalicoRuntime *rt,
 int32_t kalico_runtime_set_axis_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t axis_idx,
                                      uint8_t new_mode);
-
-int32_t kalico_runtime_bind_phase_motor(kalico_nurbs_KalicoRuntime *rt,
-                                        uint8_t motor_idx,
-                                        uint8_t slot_idx);
 
 int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t stepper_idx,
