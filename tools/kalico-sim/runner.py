@@ -1499,7 +1499,9 @@ def run_probe_test(
                     check(
                         "query-probe-open",
                         "probe: open" in out and not resp.get("error"),
-                        [l.strip() for l in out.split("\n") if "probe:" in l][:1]
+                        [l.strip() for l in out.split("\n") if "probe:" in l][
+                            :1
+                        ]
                         or resp,
                     )
 
@@ -1514,7 +1516,9 @@ def run_probe_test(
                     _, offset = _log_tail_since(klippy_log, offset)
                     resp = send_gcode(api_socket, "G28", timeout=180)
                     out, offset = _log_tail_since(klippy_log, offset)
-                    check("g28", not resp.get("error"), resp.get("error") or "ok")
+                    check(
+                        "g28", not resp.get("error"), resp.get("error") or "ok"
+                    )
                     homing_lines = [
                         l.strip() for l in out.split("\n") if "homing: " in l
                     ]
@@ -1596,7 +1600,9 @@ def run_probe_test(
                     check(
                         "query-probe-open-after",
                         "probe: open" in out and not resp.get("error"),
-                        [l.strip() for l in out.split("\n") if "probe:" in l][:1]
+                        [l.strip() for l in out.split("\n") if "probe:" in l][
+                            :1
+                        ]
                         or resp,
                     )
 

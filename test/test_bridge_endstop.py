@@ -25,7 +25,13 @@ class FakeMcu:
         self.config_callbacks = []
         self.query_cmd = FakeCommand()
         self.state_cmd = FakeCommand(
-            {"oid": 0, "armed": 0, "pin_value": 0, "tripped": 0, "trip_clock": 0}
+            {
+                "oid": 0,
+                "armed": 0,
+                "pin_value": 0,
+                "tripped": 0,
+                "trip_clock": 0,
+            }
         )
 
     def create_oid(self):
