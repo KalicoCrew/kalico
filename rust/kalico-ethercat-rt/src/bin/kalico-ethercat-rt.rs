@@ -7,7 +7,8 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use kalico_ethercat_rt::capture::{
-    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+    Capture, CaptureConfig, CaptureRecord, DriveSample, PendingStop, FLAG_MOTION_ACTIVE,
+    FLAG_TORQUE_ENABLED,
 };
 use kalico_ethercat_rt::claim::{
     eval_wkc, single_slave_reply, wait_for_claim, wait_for_claim_pumping, WkcDecision,
@@ -258,6 +259,7 @@ fn main() {
     let mailbox = MailboxWorker::spawn(FfiSdoBus, |ferr_counts, torque_tenth_pct| unsafe {
         ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
     });
+    let mut pending_stops: Vec<(u32, PendingStop)> = Vec::new();
     let mut prdiv = 0u64;
     let mut ff_saturation = 0u32;
     let mut wkc_consecutive = 0u8;
@@ -390,18 +392,7 @@ fn main() {
                     server.respond(&start_capture_response_frame(correlation_id, rc));
                 }
                 Command::StopCapture { correlation_id } => {
-                    let out = capture.stop();
-                    eprintln!(
-                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
-                        out.result, out.samples, out.overflow_cycle
-                    );
-                    server.respond(&stop_capture_response_frame(
-                        correlation_id,
-                        out.result,
-                        out.samples,
-                        out.overflow_cycle
-                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
-                    ));
+                    pending_stops.push((correlation_id, capture.stop_async()));
                 }
                 Command::ResumeStream { correlation_id } => {
                     server.respond(&resume_stream_response_frame(correlation_id, 0));
@@ -453,6 +444,27 @@ fn main() {
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
                 }
+            }
+        }
+
+        let mut stop_idx = 0;
+        while stop_idx < pending_stops.len() {
+            match pending_stops[stop_idx].1.try_take() {
+                Some(out) => {
+                    let (correlation_id, _) = pending_stops.remove(stop_idx);
+                    eprintln!(
+                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
+                None => stop_idx += 1,
             }
         }
 

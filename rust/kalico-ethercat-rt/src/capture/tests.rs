@@ -232,3 +232,50 @@ fn writer_death_latches_file_error() {
     assert!(failed.exists(), "failed capture must be renamed");
     std::fs::remove_file(&failed).unwrap();
 }
+
+#[test]
+fn stop_async_returns_while_writer_is_still_finalizing() {
+    let path = tmp_path("async");
+    let _ = std::fs::remove_file(&path);
+    let (gate_tx, gate_rx) = sync_channel::<()>(1);
+    let mut cap = Capture::new();
+    assert_eq!(cap.start_gated(cfg(&path), gate_rx), 0);
+    for i in 0..20u64 {
+        cap.push(record(i));
+    }
+
+    let started = std::time::Instant::now();
+    let pending = cap.stop_async();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(20),
+        "stop_async must not wait for the writer"
+    );
+    assert!(
+        pending.try_take().is_none(),
+        "outcome must not exist while the writer is gated"
+    );
+    assert!(!cap.is_active(), "capture slot frees immediately");
+
+    gate_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let out = loop {
+        if let Some(out) = pending.try_take() {
+            break out;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "finalizer never completed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(out.result, 0);
+    assert_eq!(out.samples, 20);
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn stop_async_without_start_resolves_not_active_immediately() {
+    let mut cap = Capture::new();
+    let out = cap.stop_async().try_take().expect("immediate outcome");
+    assert_eq!(out.result, ERR_CAPTURE_NOT_ACTIVE);
+}

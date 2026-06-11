@@ -9,5 +9,6 @@ pub mod mailbox;
 pub mod scale;
 pub mod sdo;
 pub mod server;
+pub mod thread_prio;
 pub mod torque;
 pub mod wire;

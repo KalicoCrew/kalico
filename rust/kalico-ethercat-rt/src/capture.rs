@@ -5,6 +5,8 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::thread_prio::demote_to_normal_scheduling;
+
 pub const ERR_CAPTURE_ACTIVE: i32 = -320;
 pub const ERR_CAPTURE_NOT_ACTIVE: i32 = -321;
 pub const ERR_CAPTURE_FILE: i32 = -322;
@@ -232,40 +234,84 @@ impl Capture {
         }
     }
 
+    /// Blocking stop — for the stub endpoint and tests, where there is no
+    /// realtime cycle to starve.
     pub fn stop(&mut self) -> StopOutcome {
+        self.stop_async().wait()
+    }
+
+    /// Finalizing a capture joins the writer through its final fsync —
+    /// hundreds of ms on an SD card. The DC thread must never wait on that
+    /// (drive latches ErC1.1 / AL 0x001a when cyclic frames pause), so the
+    /// join runs on a demoted finalizer thread and the outcome arrives
+    /// through the returned handle; poll it from the cycle.
+    pub fn stop_async(&mut self) -> PendingStop {
+        let (tx, rx) = sync_channel(1);
         let Some(active) = self.active.take() else {
-            return StopOutcome {
+            let _ = tx.send(StopOutcome {
                 result: ERR_CAPTURE_NOT_ACTIVE,
                 samples: 0,
                 overflow_cycle: None,
-            };
+            });
+            return PendingStop { rx };
         };
-        drop(active.tx);
-        let written = active.writer.join().expect("capture writer panicked");
-        let (mut result, mut overflow_cycle) = (0i32, None);
-        if let Some((cycle, code)) = active.failure {
-            result = code;
-            overflow_cycle = Some(cycle);
+        std::thread::Builder::new()
+            .name("capture-finalizer".into())
+            .spawn(move || {
+                demote_to_normal_scheduling();
+                let _ = tx.send(finalize(active));
+            })
+            .expect("spawn capture finalizer thread");
+        PendingStop { rx }
+    }
+}
+
+pub struct PendingStop {
+    rx: Receiver<StopOutcome>,
+}
+
+impl PendingStop {
+    pub fn try_take(&self) -> Option<StopOutcome> {
+        self.rx.try_recv().ok()
+    }
+
+    pub fn wait(self) -> StopOutcome {
+        self.rx.recv().expect("capture finalizer died")
+    }
+}
+
+fn finalize(active: ActiveCapture) -> StopOutcome {
+    drop(active.tx);
+    let written = match active.writer.join() {
+        Ok(w) => w,
+        Err(_) => {
+            eprintln!("ec-rt: capture writer panicked — aborting");
+            std::process::abort();
         }
-        let samples = match written {
-            Ok(n) => n,
-            Err((n, _)) if result == 0 => {
-                result = ERR_CAPTURE_FILE;
-                n
-            }
-            Err((n, _)) => n,
-        };
-        if result != 0 {
-            let failed = active.path.with_extension("failed.scap");
-            if std::fs::rename(&active.path, &failed).is_err() {
-                result = ERR_CAPTURE_FILE;
-            }
+    };
+    let (mut result, mut overflow_cycle) = (0i32, None);
+    if let Some((cycle, code)) = active.failure {
+        result = code;
+        overflow_cycle = Some(cycle);
+    }
+    let samples = match written {
+        Ok(n) => n,
+        Err((n, _)) if result == 0 => {
+            result = ERR_CAPTURE_FILE;
+            n
         }
-        StopOutcome {
-            result,
-            samples,
-            overflow_cycle,
+        Err((n, _)) => n,
+    };
+    if result != 0 {
+        let failed = active.path.with_extension("failed.scap");
+        if std::fs::rename(&active.path, &failed).is_err() {
+            result = ERR_CAPTURE_FILE;
         }
+    }
+    StopOutcome {
+        result,
+        samples,
+        overflow_cycle,
     }
 }
 
@@ -275,6 +321,7 @@ fn writer_thread(
     header: String,
     hook: WriterHook,
 ) -> Result<u64, (u64, String)> {
+    demote_to_normal_scheduling();
     file.write_all(header.as_bytes())
         .map_err(|e| (0u64, format!("capture header write: {e}")))?;
     match hook {
