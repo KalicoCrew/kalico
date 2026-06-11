@@ -435,6 +435,14 @@ class MotionBridgeWrapper:
     def home_abort(self):
         return self._bridge.home_abort()
 
+    def arm_remote_trigger(self, mcu_handle, trsync_oid, endstop_id):
+        return self._bridge.arm_remote_trigger(
+            mcu_handle, trsync_oid, endstop_id
+        )
+
+    def disarm_remote_trigger(self, endstop_id):
+        return self._bridge.disarm_remote_trigger(endstop_id)
+
     def update_limits(self, max_velocity, max_accel):
         return self._bridge.update_limits(max_velocity, max_accel)
 

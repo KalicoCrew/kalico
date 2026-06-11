@@ -27,13 +27,21 @@ class BridgeEndstop:
         )
         self._state_cmd = self.mcu.lookup_query_command(
             "endstop_query_state oid=%c",
-            "endstop_state oid=%c armed=%c pin_value=%c",
+            "endstop_state oid=%c armed=%c pin_value=%c tripped=%c"
+            " trip_clock=%u",
             oid=self.oid,
         )
 
     def is_triggered(self):
         params = self._state_cmd.send([self.oid])
         return bool(params["pin_value"] ^ self.invert)
+
+    def query_trip_state(self):
+        params = self._state_cmd.send([self.oid])
+        return {
+            "tripped": bool(params["tripped"]),
+            "trip_clock": params["trip_clock"],
+        }
 
     def arm(self, poll_period):
         rest_ticks = self.mcu.seconds_to_clock(poll_period)
@@ -49,6 +57,42 @@ class BridgeEndstop:
 
     def bridge_mcu_handle(self):
         return getattr(self.mcu, "_bridge_handle", None)
+
+
+class RemoteBridgeEndstop:
+    """Endstop whose trigger is a trsync on a non-bridge-driven MCU (e.g. a
+    Beacon-class probe). Arming registers a Rust-side relay that translates
+    the trsync's terminal report into a bridge endstop trip; the device-side
+    arming dance (trsync_start, heartbeats, probe commands) is the
+    provider's job, via trip_move_begin/trip_move_end."""
+
+    def __init__(self, printer, mcu, trsync_oid):
+        # Constructed at provider config-load time, possibly before
+        # motion_bridge exists — look the bridge up lazily at arm time.
+        self._printer = printer
+        self.mcu = mcu
+        self.trsync_oid = trsync_oid
+        self.endstop_id = allocate_provider_id(printer)
+
+    def bridge_mcu_handle(self):
+        return getattr(self.mcu, "_bridge_handle", None)
+
+    def is_triggered(self):
+        return False
+
+    def arm(self, poll_period):
+        del poll_period
+        bridge = self._printer.lookup_object("motion_bridge")
+        bridge.arm_remote_trigger(
+            self.bridge_mcu_handle(), self.trsync_oid, self.endstop_id
+        )
+
+    def disarm(self):
+        bridge = self._printer.lookup_object("motion_bridge")
+        bridge.disarm_remote_trigger(self.endstop_id)
+
+    def query_endstop(self, print_time):
+        return False
 
 
 class _ProviderIdAllocator:

@@ -71,6 +71,54 @@ def _check_servo_drive_fault(gcmd, bridge, axis, servo_handle):
         )
 
 
+def _homed_axis_position(provider, axis, trip_pos, final_pos, trigger_height):
+    if provider is not None and hasattr(provider, "measured_trip_position"):
+        measured = provider.measured_trip_position(axis, trip_pos, final_pos)
+        if measured is not None:
+            return measured
+    return trigger_height + (final_pos[axis] - trip_pos[axis])
+
+
+def _verify_latched_trip(gcmd, axis, endstop, doorbell_clock):
+    query = getattr(endstop, "query_trip_state", None)
+    if query is None:
+        return
+    latch = query()
+    if not latch["tripped"]:
+        raise gcmd.error(
+            "%s endstop: doorbell event arrived but the MCU latch shows no"
+            " trip — duplicate or stale trip event" % ("XYZ"[axis],)
+        )
+    if latch["trip_clock"] != (doorbell_clock & 0xFFFFFFFF):
+        raise gcmd.error(
+            "%s endstop: latch/doorbell clock mismatch — latch=%d"
+            " doorbell_low32=%d"
+            % (
+                "XYZ"[axis],
+                latch["trip_clock"],
+                doorbell_clock & 0xFFFFFFFF,
+            )
+        )
+
+
+def _no_trigger_error_message(axis, endstop, max_travel):
+    base = "%s endstop did not trigger within %.1fmm of travel" % (
+        "XYZ"[axis],
+        max_travel,
+    )
+    query = getattr(endstop, "query_trip_state", None)
+    if query is None:
+        return base
+    latch = query()
+    if latch["tripped"]:
+        return (
+            "%s endstop tripped (latched clock %d) but the trip event was"
+            " lost — doorbell never reached the host"
+            % ("XYZ"[axis], latch["trip_clock"])
+        )
+    return base
+
+
 class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -249,15 +297,16 @@ class Homing:
                 ),
             )
 
-            overshoot = final_pos[axis] - trip_pos[axis]
             newpos = list(toolhead.get_position())
-            newpos[axis] = trigger_height + overshoot
+            newpos[axis] = _homed_axis_position(
+                entry["provider"], axis, trip_pos, final_pos, trigger_height
+            )
             toolhead.set_position(newpos, homing_axes=[axis])
             logging.info(
                 "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
                 "XYZ"[axis],
                 trigger_height,
-                overshoot,
+                final_pos[axis] - trip_pos[axis],
                 "XYZ"[axis],
                 newpos[axis],
             )
@@ -338,14 +387,22 @@ class Homing:
                 if reactor.monotonic() > deadline:
                     bridge.home_abort()
                     raise gcmd.error(
-                        "%s endstop did not trigger within %.1fmm of travel"
-                        % ("XYZ"[axis], max_travel)
+                        _no_trigger_error_message(axis, endstop, max_travel)
                     )
                 reactor.pause(reactor.monotonic() + 0.010)
         finally:
+            disarm = getattr(endstop, "disarm", None)
+            if disarm is not None:
+                try:
+                    disarm()
+                except Exception:
+                    logging.exception(
+                        "trip_move: remote trigger disarm failed during unwind"
+                    )
             if provider is not None and hasattr(provider, "trip_move_end"):
                 provider.trip_move_end(entry)
-        trip_pos, final_pos = result
+        trip_pos, final_pos, trip_clock = result
+        _verify_latched_trip(gcmd, axis, endstop, trip_clock)
         if abs(trip_pos[axis] - start_axis_pos) < NO_MOVEMENT_EPSILON:
             raise gcmd.error(
                 "%s endstop triggered prior to movement — trigger is stuck"

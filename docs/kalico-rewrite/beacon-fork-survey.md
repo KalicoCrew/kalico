@@ -189,6 +189,7 @@ those above. Expected to merge-and-run; validated in spec E.
    dependency; independently valuable; testable in sim.
 2. **Spec B — external-trigger homing + probing moves** (P2). Uses the
    existing trip reconstruction; contact-time validation consumes P1.
+   Designed: [`external-trigger-homing.md`](external-trigger-homing.md).
 3. **Spec C — probe interface restoration** (P3). Independent of A/B;
    parallelizable; unblocks Z_TILT_ADJUST on the bench.
 4. **Spec D — the beacon fork seam**: rewrite the integration layer in

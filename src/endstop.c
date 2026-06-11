@@ -18,6 +18,7 @@ struct endstop {
     uint8_t invert;
     uint8_t armed;
     uint8_t trip_pending;
+    uint8_t tripped;
 };
 
 static struct task_wake endstop_trip_wake;
@@ -36,6 +37,7 @@ endstop_event(struct timer *t)
         e->trip_clock = kalico_runtime_now_ticks(runtime_handle);
         e->armed = 0;
         e->trip_pending = 1;
+        e->tripped = 1;
         sched_wake_task(&endstop_trip_wake);
         return SF_DONE;
     }
@@ -53,6 +55,8 @@ command_config_endstop(uint32_t *args)
     e->invert = args[4] ? 1 : 0;
     e->armed = 0;
     e->trip_pending = 0;
+    e->tripped = 0;
+    e->trip_clock = 0;
     e->time.func = endstop_event;
 
     uint8_t oid;
@@ -75,6 +79,8 @@ command_query_endstop(uint32_t *args)
         e->armed = 0;
         return;
     }
+    e->tripped = 0;
+    e->trip_clock = 0;
     e->armed = 1;
     e->time.waketime = timer_read_time() + e->rest_ticks;
     sched_add_timer(&e->time);
@@ -87,7 +93,9 @@ command_endstop_query_state(uint32_t *args)
 {
     struct endstop *e = oid_lookup(args[0], command_config_endstop);
     uint8_t raw = gpio_in_read(e->pin) ? 1 : 0;
-    sendf("endstop_state oid=%c armed=%c pin_value=%c", args[0], e->armed, raw);
+    sendf("endstop_state oid=%c armed=%c pin_value=%c tripped=%c"
+          " trip_clock=%u",
+          args[0], e->armed, raw, e->tripped, (uint32_t)e->trip_clock);
 }
 DECL_COMMAND(command_endstop_query_state, "endstop_query_state oid=%c");
 
