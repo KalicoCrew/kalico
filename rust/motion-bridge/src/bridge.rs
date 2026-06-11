@@ -29,6 +29,7 @@ struct HomingRun {
     axis: u8,
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
+    window_start_clock: u64,
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
 }
 
@@ -68,6 +69,8 @@ struct McuConnection {
 }
 
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+
+const ETHERCAT_CLOCK_FREQ_HZ: u32 = 1_000_000_000;
 
 #[derive(Debug, thiserror::Error)]
 enum RuntimeCapsError {
@@ -470,13 +473,13 @@ pub struct PyMotionBridge {
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
+    nominal_clock_freqs: Arc<Mutex<HashMap<u32, u32>>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
-    homing_trajectory:
-        Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
+    motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
     latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
@@ -754,12 +757,13 @@ impl PyMotionBridge {
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
+            nominal_clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             events_dir: Mutex::new(None),
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
             active_drip_cohort: Arc::new(Mutex::new(None)),
-            homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
+            motion_history: Arc::new(Mutex::new(crate::motion_history::HistoryStore::default())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
             latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
@@ -860,22 +864,8 @@ impl PyMotionBridge {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let handle = router.claim_mcu(label);
         let raw = handle.raw();
-        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
-            raw,
-            McuConnection {
-                label: label.to_owned(),
-                serial_path: String::new(),
-                baud: 0,
-                host_io: None,
-                runtime_rx: None,
-                runtime_caps: None,
-                identify_caps: 0,
-                kalico_native_supported: true,
-                ethercat_socket: Some(socket_path.to_owned()),
-                endpoint_process: Some(child),
-                endpoint_conn: Some(Arc::new(conn)),
-            },
-        );
+        drop(router);
+        self.register_ethercat_mcu(raw, label, socket_path, child, conn);
         Ok(raw)
     }
 
@@ -2283,6 +2273,20 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    #[pyo3(signature = (mcu, freq_hz))]
+    fn set_nominal_clock_freq(&self, mcu: u32, freq_hz: u32) -> PyResult<()> {
+        if freq_hz == 0 {
+            return Err(PyRuntimeError::new_err(
+                "set_nominal_clock_freq: freq_hz must be nonzero",
+            ));
+        }
+        self.nominal_clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(mcu, freq_hz);
+        Ok(())
+    }
+
     fn extract_old(&self, py: Python<'_>, mcu: u32) -> PyResult<Py<PyDict>> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let (sent, received) = router
@@ -2505,10 +2509,9 @@ impl PyMotionBridge {
             let now_ns = crate::motion_node::monotonic_ns();
             for &mcu_id in &ethercat_mcu_ids {
                 let mcu_h = mcu_handle_from_raw(mcu_id);
-                // freq=1e9: EtherCAT timestamps are CLOCK_MONOTONIC_RAW nanoseconds.
                 let _ = router.set_clock_est_from_sample(
                     mcu_h,
-                    1_000_000_000.0_f64,
+                    f64::from(ETHERCAT_CLOCK_FREQ_HZ),
                     Instant::now(),
                     now_ns,
                 );
@@ -2793,7 +2796,8 @@ impl PyMotionBridge {
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
         let active_drip_cohort_for_cb = Arc::clone(&self.active_drip_cohort);
-        let homing_traj_for_cb = Arc::clone(&self.homing_trajectory);
+        let motion_history_for_cb = Arc::clone(&self.motion_history);
+        let nominal_freqs_for_cb = Arc::clone(&self.nominal_clock_freqs);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2859,12 +2863,20 @@ impl PyMotionBridge {
                     max_piece_secs,
                 );
 
+                let nominal_freqs = nominal_freqs_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 for m in msgs {
-                    if active_cohort.is_some() {
-                        let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = traj.entry(m.key).or_default();
+                    let nominal_freq = *nominal_freqs
+                        .get(&m.key.mcu_id)
+                        .ok_or(DispatchError::MissingNominalFreq(m.key.mcu_id))?;
+                    {
+                        let mut store = motion_history_for_cb
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
                         for (piece, _host_t) in &m.pieces {
-                            entry.push(*piece);
+                            store.record(m.key, piece, nominal_freq);
                         }
                     }
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
@@ -2969,7 +2981,8 @@ impl PyMotionBridge {
         planner.dwell(duration_s).map_err(planner_err)
     }
 
-    fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64) -> PyResult<()> {
+    #[pyo3(signature = (x, y, z, host_now))]
+    fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64, host_now: f64) -> PyResult<()> {
         {
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
@@ -3035,6 +3048,46 @@ impl PyMotionBridge {
                         s.mcu_id
                     ))
                 })?;
+            }
+        }
+
+        {
+            let configs: Vec<crate::dispatch::McuAxisConfig> = self
+                .mcu_axis_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            let positions = [x, y, z];
+            let rebases: Vec<(crate::pump::AxisKey, u64, f64)> = {
+                let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+                configs
+                    .iter()
+                    .flat_map(|cfg| {
+                        let handle = crate::types::mcu_handle_from_raw(cfg.mcu_id);
+                        let now_clock =
+                            router.host_time_to_mcu_clock(handle, host_now).unwrap_or(0);
+                        cfg.axes
+                            .iter()
+                            .filter(|&&a| a < 3)
+                            .map(move |&axis| {
+                                let key = crate::pump::AxisKey {
+                                    mcu_id: cfg.mcu_id,
+                                    axis: axis as u8,
+                                };
+                                (key, now_clock, positions[axis])
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            };
+            {
+                let mut store = self
+                    .motion_history
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                for (key, now_clock, pos) in rebases {
+                    store.rebase_axis(key, now_clock, pos);
+                }
             }
         }
 
@@ -3164,18 +3217,18 @@ impl PyMotionBridge {
         }
 
         {
-            let mut traj = self
-                .homing_trajectory
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            traj.clear();
-        }
-
-        {
             let drain = self.drain.clone();
             py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
                 .map_err(PyRuntimeError::new_err)?;
         }
+
+        let window_start_clock = {
+            let store = self
+                .motion_history
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            store.last_endpoint_clock(axis_key)
+        };
 
         {
             let mut cohort_guard = self
@@ -3212,6 +3265,7 @@ impl PyMotionBridge {
                 axis,
                 axis_key,
                 all_axis_keys: all_axis_keys.clone(),
+                window_start_clock,
                 notify: result_tx,
             });
         }
@@ -3329,7 +3383,7 @@ impl PyMotionBridge {
         self.finish_homing();
 
         let final_motor_pos =
-            crate::homing::trajectory_final_position(ctx.axis_key, &self.homing_trajectory);
+            crate::homing::trajectory_final_position(ctx.axis_key, &self.motion_history);
 
         let final_motor_pos = match final_motor_pos {
             Ok(p) => p,
@@ -3385,6 +3439,75 @@ impl PyMotionBridge {
         drop(planner_guard);
 
         *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = cartesian;
+    }
+
+    #[pyo3(signature = (source_mcu, clock, host_now))]
+    fn motion_state_at_clock(
+        &self,
+        source_mcu: u32,
+        clock: u64,
+        host_now: f64,
+    ) -> PyResult<std::collections::HashMap<String, (f64, f64, f64)>> {
+        const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "e"];
+        let configs: Vec<crate::dispatch::McuAxisConfig> = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if configs.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "motion_state_at: no axes configured on the bridge",
+            ));
+        }
+        let resolved: Vec<(crate::pump::AxisKey, u64, u64)> = {
+            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let source_handle = crate::types::mcu_handle_from_raw(source_mcu);
+            let mut acc = Vec::new();
+            for cfg in &configs {
+                let target_handle = crate::types::mcu_handle_from_raw(cfg.mcu_id);
+                let axis_clock = crate::motion_history::clock_between_mcus(
+                    &router,
+                    source_handle,
+                    target_handle,
+                    clock,
+                )
+                .map_err(PyRuntimeError::new_err)?;
+                let now_clock = router
+                    .host_time_to_mcu_clock(target_handle, host_now)
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "motion_state_at: clock unsynced for mcu {}: {e:?}",
+                            cfg.mcu_id
+                        ))
+                    })?;
+                for &axis in &cfg.axes {
+                    let key = crate::pump::AxisKey {
+                        mcu_id: cfg.mcu_id,
+                        axis: axis as u8,
+                    };
+                    acc.push((key, axis_clock, now_clock));
+                }
+            }
+            acc
+        };
+        let store = self
+            .motion_history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut out = std::collections::HashMap::new();
+        for (key, axis_clock, now_clock) in resolved {
+            let st = store
+                .state_at_clock(key, axis_clock, Some(now_clock))
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let name = AXIS_NAMES.get(key.axis as usize).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("motion_state_at: unnamed axis {}", key.axis))
+            })?;
+            out.insert(
+                (*name).to_string(),
+                (st.position, st.velocity, st.acceleration),
+            );
+        }
+        Ok(out)
     }
 }
 
@@ -3485,7 +3608,7 @@ impl PyMotionBridge {
         };
 
         let router_arc = Arc::clone(&self.router);
-        let homing_traj = Arc::clone(&self.homing_trajectory);
+        let history_arc = Arc::clone(&self.motion_history);
         let configs: Vec<McuAxisConfig> = self
             .mcu_axis_configs
             .lock()
@@ -3549,8 +3672,8 @@ impl PyMotionBridge {
                         clock,
                         axis_key,
                         &router_arc,
-                        &homing_traj,
-                        &configs,
+                        &history_arc,
+                        run.window_start_clock,
                     )?;
                     let motor_frame =
                         trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
@@ -3601,6 +3724,38 @@ impl PyMotionBridge {
                 let _ = run.notify.send(outcome);
             })
             .expect("spawn homing-trip-handler");
+    }
+}
+
+impl PyMotionBridge {
+    fn register_ethercat_mcu(
+        &self,
+        raw: u32,
+        label: &str,
+        socket_path: &str,
+        child: std::process::Child,
+        conn: UnixNativeConn,
+    ) {
+        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            raw,
+            McuConnection {
+                label: label.to_owned(),
+                serial_path: String::new(),
+                baud: 0,
+                host_io: None,
+                runtime_rx: None,
+                runtime_caps: None,
+                identify_caps: 0,
+                kalico_native_supported: true,
+                ethercat_socket: Some(socket_path.to_owned()),
+                endpoint_process: Some(child),
+                endpoint_conn: Some(Arc::new(conn)),
+            },
+        );
+        self.nominal_clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(raw, ETHERCAT_CLOCK_FREQ_HZ);
     }
 }
 

@@ -117,6 +117,11 @@ pub enum DispatchError {
     #[error("piece pump thread is gone; cannot dispatch")]
     PumpGone,
     #[error(
+        "no nominal clock frequency registered for mcu {0} \
+         — set_nominal_clock_freq was not called"
+    )]
+    MissingNominalFreq(u32),
+    #[error(
         "planner stream starvation: segment (stream t={seg_t_start:.3}s) scheduled \
          {gap_s:.3}s in the past; refusing to silently re-anchor — planner failed \
          to keep ahead of playback"

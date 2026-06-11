@@ -649,6 +649,44 @@ fn shutdown_does_not_abort_on_detached_ethercat_weak() {
     );
 }
 
+#[test]
+fn register_ethercat_mcu_seeds_nominal_clock_freq() {
+    use std::os::unix::net::UnixStream;
+
+    use kalico_host_rt::unix_native_conn::UnixNativeConn;
+
+    let bridge = PyMotionBridge::new();
+    const RAW: u32 = 77;
+
+    let (conn_stream, _peer) = UnixStream::pair().expect("socketpair");
+    let conn = UnixNativeConn::from_stream(conn_stream).expect("from_stream");
+    let child = std::process::Command::new("true")
+        .spawn()
+        .expect("spawn true");
+
+    bridge.register_ethercat_mcu(RAW, "servo", "/tmp/test.sock", child, conn);
+
+    assert!(
+        bridge
+            .mcus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&RAW),
+        "mcus must contain the raw handle after register_ethercat_mcu"
+    );
+    assert_eq!(
+        bridge
+            .nominal_clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&RAW)
+            .copied(),
+        Some(1_000_000_000_u32),
+        "nominal_clock_freqs must contain 1 GHz for the ethercat raw handle; \
+         removing the insert from register_ethercat_mcu must cause this to fail"
+    );
+}
+
 /// Failed-connect partial teardown: one serial MCU attached, the (would-be)
 /// second never attached. `shutdown()` must release the one attached MCU's fd —
 /// mirroring the `printer._connect` except-arm firing a guarded disconnect.
