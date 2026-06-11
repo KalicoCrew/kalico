@@ -1611,7 +1611,7 @@ fn rung3_with_gap_at_cutoff_boundary_does_not_panic_on_emit() {
         }
     }
 
-    let mut rung3_ctx = ctx.clone();
+    let mut rung3_ctx = ctx;
     rung3_ctx.fallback_initial_v = 600.0;
     state.t_dispatched = t_prior_end + 0.001;
 

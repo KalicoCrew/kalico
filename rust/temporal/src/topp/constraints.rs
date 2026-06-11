@@ -154,27 +154,24 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
             t = (t - step).clamp(0.0, t_stop_ph1);
         }
         v_ph1(t).powi(2).max(0.0)
-    } else {
-        if s <= s1_prime {
-            let t_guess = if v0 > 1e-12 {
-                (s / v0).min(t1_prime)
-            } else {
-                0.0
-            };
-            let mut t = t_guess.clamp(0.0, t1_prime);
-            for _ in 0..12 {
-                let vt = v_ph1(t);
-                if vt.abs() < 1e-15 {
-                    break;
-                }
-                let step = (s_ph1(t) - s) / vt;
-                t = (t - step).clamp(0.0, t1_prime);
-            }
-            v_ph1(t).powi(2).max(0.0)
+    } else if s <= s1_prime {
+        let t_guess = if v0 > 1e-12 {
+            (s / v0).min(t1_prime)
         } else {
-            let v_sq = (v1_prime * v1_prime - 2.0 * a_max * (s - s1_prime)).max(0.0);
-            v_sq
+            0.0
+        };
+        let mut t = t_guess.clamp(0.0, t1_prime);
+        for _ in 0..12 {
+            let vt = v_ph1(t);
+            if vt.abs() < 1e-15 {
+                break;
+            }
+            let step = (s_ph1(t) - s) / vt;
+            t = (t - step).clamp(0.0, t1_prime);
         }
+        v_ph1(t).powi(2).max(0.0)
+    } else {
+        (v1_prime * v1_prime - 2.0 * a_max * (s - s1_prime)).max(0.0)
     }
 }
 

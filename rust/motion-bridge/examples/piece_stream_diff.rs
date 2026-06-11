@@ -209,34 +209,6 @@ fn analyze_pieces(label: &str, pieces: &[PieceStreamEntry]) {
             );
         }
 
-        const STEPS_PER_MM: f64 = 160.0;
-        const DT: f64 = 25.0e-6;
-
-        let mut all_step_intervals: Vec<f64> = Vec::new();
-        let mut prev_pos: Option<f64> = None;
-        let mut prev_frac_steps: f64 = 0.0;
-
-        for piece in &axis_pieces {
-            let n = (piece.duration_secs / DT).ceil() as usize;
-            let n = n.max(1);
-            for k in 0..=n {
-                let t_norm = if k == n { 1.0 } else { (k as f64) / (n as f64) };
-                let pos = bernstein_eval(&piece.coeffs, t_norm);
-                let steps_here = pos * STEPS_PER_MM + prev_frac_steps;
-                if let Some(prev) = prev_pos {
-                    let step_delta = pos - prev;
-                    let step_count = (step_delta * STEPS_PER_MM).abs();
-                    if step_count >= 1.0 {
-                        let interval = (piece.duration_secs * (t_norm / n as f64).max(DT))
-                            / step_count.max(1.0);
-                        all_step_intervals.push(interval);
-                    }
-                }
-                prev_pos = Some(pos);
-                let _ = steps_here;
-            }
-        }
-
         compute_step_stats(axis, &axis_pieces);
     }
 }

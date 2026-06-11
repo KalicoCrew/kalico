@@ -4,6 +4,7 @@ use std::ops::RangeInclusive;
 
 /// Maximal runs of segments joined by Smooth junctions. `kinds[k]` is the
 /// junction between segments k and k+1.
+#[allow(clippy::range_minus_one)]
 pub(crate) fn partition_chains(
     n_segments: usize,
     kinds: &[JunctionKind],

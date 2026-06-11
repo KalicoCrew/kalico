@@ -77,18 +77,14 @@ pub(crate) fn fan_out_solves(
                         ..
                     }
                 );
-                if !start_is_pinned_boundary {
-                    if success {
-                        if let Some(first) = profile.samples.first() {
-                            states[idx].v_start = first.v.min(v_starts[idx]);
-                        }
+                if !start_is_pinned_boundary && success {
+                    if let Some(first) = profile.samples.first() {
+                        states[idx].v_start = first.v.min(v_starts[idx]);
                     }
                 }
-                if !end_is_pinned_boundary {
-                    if success || kinematic_boundary_end {
-                        if let Some(last) = profile.samples.last() {
-                            states[idx].v_end = last.v.min(v_ends[idx]);
-                        }
+                if !end_is_pinned_boundary && (success || kinematic_boundary_end) {
+                    if let Some(last) = profile.samples.last() {
+                        states[idx].v_end = last.v.min(v_ends[idx]);
                     }
                 }
                 states[idx].profile = Some(profile);
