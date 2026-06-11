@@ -757,6 +757,41 @@ class MotionToolhead(ToolHead):
                         "large runtime profile for the chip family) and "
                         "reflash." % (slot_name, name, mcu_caps)
                     )
+            # One kalico_configure_axis per axis carries a 4-byte-per-stepper
+            # blob { stepper_oid: u8, dir_invert: u8, tmc_cs_oid: u8, flags: u8 }.
+            # dir_invert (from `dir_pin: !PIN`) is forwarded because bridge mode
+            # bypasses stepcompress's step-count sign flip; without it motors run
+            # reversed. MCUs lacking the command skip silently.
+            try:
+                configure_axis_cmd = mcu_obj.lookup_command(
+                    "kalico_configure_axis axis_idx=%c mode=%c"
+                    " microstep_distance=%u extrusion_per_xy_mm=%u"
+                    " stepper_count=%c ring_depth=%hu steppers=%*s"
+                )
+            except Exception:
+                logging.info(
+                    "MotionToolhead: mcu=%s lacks kalico_configure_axis "
+                    "(no new stepping redesign command); skipping runtime "
+                    "binding",
+                    name,
+                )
+                continue
+
+            # Reset before (re)configuring: the engine's ring allocator never
+            # frees and configure_axis re-runs every klippy:connect, so a
+            # reconnect without an MCU reboot would overflow the pool. Idempotent
+            # on a fresh MCU; same queue, so it runs before configure_axis.
+            try:
+                reset_cmd = mcu_obj.lookup_command("kalico_runtime_reset")
+            except Exception:
+                reset_cmd = None
+            if reset_cmd is not None:
+                reset_cmd.send([])
+                logging.info(
+                    "MotionToolhead: sent kalico_runtime_reset to mcu=%s",
+                    name,
+                )
+
             if any_phase_stepping:
                 # Two-stage registration: shared SPI cfg once per bus_id, then a
                 # CS GPIO per motor (multiple drivers on one bus each need their
@@ -798,46 +833,12 @@ class MotionToolhead(ToolHead):
                         cs_pin_id,
                         slot_idx,
                     )
-            # One kalico_configure_axis per axis carries a 4-byte-per-stepper
-            # blob { stepper_oid: u8, dir_invert: u8, tmc_cs_oid: u8, flags: u8 }.
-            # dir_invert (from `dir_pin: !PIN`) is forwarded because bridge mode
-            # bypasses stepcompress's step-count sign flip; without it motors run
-            # reversed. MCUs lacking the command skip silently.
-            try:
-                configure_axis_cmd = mcu_obj.lookup_command(
-                    "kalico_configure_axis axis_idx=%c mode=%c"
-                    " microstep_distance=%u extrusion_per_xy_mm=%u"
-                    " stepper_count=%c ring_depth=%hu steppers=%*s"
-                )
-            except Exception:
-                logging.info(
-                    "MotionToolhead: mcu=%s lacks kalico_configure_axis "
-                    "(no new stepping redesign command); skipping runtime "
-                    "binding",
-                    name,
-                )
-                continue
-
-            # Reset before (re)configuring: the engine's ring allocator never
-            # frees and configure_axis re-runs every klippy:connect, so a
-            # reconnect without an MCU reboot would overflow the pool. Idempotent
-            # on a fresh MCU; same queue, so it runs before configure_axis.
-            try:
-                reset_cmd = mcu_obj.lookup_command("kalico_runtime_reset")
-            except Exception:
-                reset_cmd = None
-            if reset_cmd is not None:
-                reset_cmd.send([])
-                logging.info(
-                    "MotionToolhead: sent kalico_runtime_reset to mcu=%s",
-                    name,
-                )
-
             axis_bindings = defaultdict(list)
             for motor_idx, sname, oid, inv in bind_list:
                 axis_bindings[motor_idx].append((oid, inv))
 
-            MODE_PULSE = 0
+            MODE_PULSE = 0  # wire encoding: 0=Pulse, 1=Phase
+            MODE_PHASE = 1  # (host step_modes list: 0=Modulated, 1=StepTime)
             TMC_CS_OID_NONE = 0xFF
             FLAGS_DEFAULT = 0
 
@@ -876,10 +877,13 @@ class MotionToolhead(ToolHead):
                 ring_depth = self.bridge.ring_depth_for_axis(
                     mcu_handle, axis_idx
                 )
+                axis_mode = (
+                    MODE_PHASE if step_modes[axis_idx] == 0 else MODE_PULSE
+                )
                 configure_axis_cmd.send(
                     [
                         axis_idx,
-                        MODE_PULSE,
+                        axis_mode,
                         microstep_bits,
                         extrusion_bits,
                         len(bindings),
