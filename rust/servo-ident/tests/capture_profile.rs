@@ -56,5 +56,8 @@ fn renders_integer_valued_floats_as_toml_floats() {
     let toml_text = render_profile(&p, &["x"], &[1.0]);
     assert!(toml_text.contains("mass = [[2.0]]"), "{toml_text}");
     assert!(toml_text.contains("viscous = [0.0]"), "{toml_text}");
-    assert!(toml_text.contains("fit_rms_residual = [1.0]"), "{toml_text}");
+    assert!(
+        toml_text.contains("fit_rms_residual = [1.0]"),
+        "{toml_text}"
+    );
 }

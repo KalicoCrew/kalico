@@ -10,6 +10,7 @@ pub enum TransportError {
     Parse(String),
     DispatcherTimeout,
     Backpressure,
+    McuShutdown(String),
 }
 
 impl std::fmt::Display for TransportError {
@@ -24,6 +25,9 @@ impl std::fmt::Display for TransportError {
             }
             TransportError::Backpressure => {
                 write!(f, "transport backpressure (pending submission queue full)")
+            }
+            TransportError::McuShutdown(reason) => {
+                write!(f, "mcu is in shutdown state: {reason}")
             }
         }
     }

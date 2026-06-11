@@ -818,6 +818,37 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_gate_pieces(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.gate_pieces();
+        }
+        KALICO_OK
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_ungate_pieces(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.ungate_pieces()
+        }
+    }
+
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_write_piece(
         rt: *mut KalicoRuntime,
         axis_idx: u8,
@@ -874,6 +905,9 @@ pub mod exports {
         // SAFETY: §11.2 foreground-only. ring.head is a plain u32 written only by foreground; on single-core ARMv7E-M exception entry/return are memory barriers — no explicit fence needed.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            if (*isr_ptr).engine.pieces_gated() {
+                return runtime::error::KALICO_ERR_STREAM_HALTED;
+            }
             let Some(axis) = (*isr_ptr)
                 .engine
                 .stepping_axes
@@ -942,7 +976,7 @@ pub mod exports {
     pub unsafe extern "C" fn kalico_runtime_get_heartbeat(
         rt: *mut KalicoRuntime,
         out_engine_state: *mut u8,
-        out_fault_code: *mut u8,
+        out_fault_code: *mut u16,
         out_retired: *mut u32,
         max_axes: usize,
     ) -> i32 {
@@ -957,13 +991,12 @@ pub mod exports {
             return KALICO_ERR_NOT_INIT;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: §11.2 shared-borrow on IsrState; retired_counts() reads u32 fields written only by ISR — aligned u32 read is single-instruction on Cortex-M.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let engine = &(*isr_ptr).engine;
 
             let engine_state = engine.status() as u8;
-            let fault_code = (engine.last_error() as u32 & 0xFF) as u8;
+            let fault_code = (engine.last_error() as u32 & 0xFFFF) as u16;
             let num_axes = engine.num_axes as usize;
             let counts = engine.retired_counts();
             let n_write = num_axes.min(max_axes);

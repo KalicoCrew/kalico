@@ -6,11 +6,7 @@ fn physical_torque(
     acc: &[f64],
     vel: &[f64],
 ) -> f64 {
-    let inertial: f64 = p.mass[motor]
-        .iter()
-        .zip(acc)
-        .map(|(m, a)| m * a)
-        .sum();
+    let inertial: f64 = p.mass[motor].iter().zip(acc).map(|(m, a)| m * a).sum();
     let v = vel[motor];
     let coulomb = if v > COULOMB_DEADBAND_MM_S {
         p.coulomb_fwd[motor]
@@ -25,10 +21,7 @@ fn physical_torque(
 #[test]
 fn row_dot_theta_matches_unpacked_physics() {
     let cases: &[(Structure, Vec<f64>)] = &[
-        (
-            Structure::CartesianScalar,
-            vec![0.0123, 0.0045, 1.2, -1.1],
-        ),
+        (Structure::CartesianScalar, vec![0.0123, 0.0045, 1.2, -1.1]),
         (
             Structure::CoreXY,
             vec![0.030, -0.010, 0.004, 1.0, -1.1, 0.005, 0.9, -0.8],

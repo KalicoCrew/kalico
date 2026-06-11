@@ -6,7 +6,7 @@ use runtime::piece_ring::PieceEntry;
 use kalico_host_rt::passthrough_queue::PassthroughRouter;
 
 use crate::dispatch::{AXIS_X, AXIS_Z, McuAxisConfig, McuCaps};
-use crate::homing::{eval_bernstein_cubic, reconstruct_axis_position};
+use crate::homing::{eval_bernstein_cubic, reconstruct_axis_position, trajectory_final_position};
 use crate::pump::AxisKey;
 
 fn stub_configs(mcu_id: u32, axes: Vec<usize>) -> Vec<McuAxisConfig> {
@@ -275,4 +275,175 @@ fn multiple_pieces_trip_in_second_piece() {
         (pos - 75.0).abs() < 1.0,
         "midpoint of 50..100mm second piece should be ~75mm, got {pos:.4}"
     );
+}
+
+#[test]
+fn trajectory_final_position_single_piece() {
+    let key = AxisKey {
+        mcu_id: 10,
+        axis: AXIS_X as u8,
+    };
+    let piece = make_linear_piece(1_000_000, 0.025, 5.0, 45.0);
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos =
+        trajectory_final_position(key, &homing_traj).expect("single-piece store must succeed");
+    assert!(
+        (pos - 45.0).abs() < 1e-4,
+        "final position must equal last coeffs[3]=45.0, got {pos:.6}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_multi_piece_takes_last() {
+    let key = AxisKey {
+        mcu_id: 11,
+        axis: AXIS_X as u8,
+    };
+    let piece1 = make_linear_piece(1_000_000, 0.025, 0.0, 50.0);
+    let piece2 = make_linear_piece(5_500_000, 0.025, 50.0, 82.5);
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece1, piece2]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos = trajectory_final_position(key, &homing_traj).expect("multi-piece store must succeed");
+    assert!(
+        (pos - 82.5).abs() < 1e-4,
+        "final position must equal last piece's coeffs[3]=82.5, got {pos:.6}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_missing_key_errors() {
+    let key = AxisKey {
+        mcu_id: 12,
+        axis: AXIS_X as u8,
+    };
+    let homing_traj: Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let result = trajectory_final_position(key, &homing_traj);
+    assert!(
+        result.is_err(),
+        "missing key must return Err, got: {result:?}"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("NoTrajectoryPieces") || msg.contains("no trajectory"),
+        "error must mention missing pieces, got: {msg}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_constant_piece() {
+    let key = AxisKey {
+        mcu_id: 13,
+        axis: AXIS_Z as u8,
+    };
+    let piece = PieceEntry {
+        start_time: 0,
+        coeffs: [99.0_f32; 4],
+        duration: 0.01,
+        _reserved: 0,
+    };
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos =
+        trajectory_final_position(key, &homing_traj).expect("constant-piece store must succeed");
+    assert!(
+        (pos - 99.0).abs() < 1e-4,
+        "constant piece endpoint must be 99.0, got {pos:.6}"
+    );
+}
+
+mod drive_fault_routing_tests {
+    use crate::homing::{DriveFaultRoute, route_drive_fault};
+
+    #[test]
+    fn homing_active_on_faulting_mcu_routes_to_homing_error() {
+        assert_eq!(route_drive_fault(7, Some(7)), DriveFaultRoute::HomingError);
+    }
+
+    #[test]
+    fn homing_on_other_mcu_latches_for_klippy() {
+        assert_eq!(
+            route_drive_fault(7, Some(3)),
+            DriveFaultRoute::LatchForKlippy
+        );
+    }
+
+    #[test]
+    fn idle_fault_latches_for_klippy() {
+        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::LatchForKlippy);
+    }
+}
+
+mod broadcast_stop_tests {
+    use crate::homing::broadcast_stop;
+    use kalico_protocol::messages::StopResponse;
+    use std::collections::HashSet;
+
+    #[test]
+    fn collects_discard_clock_from_the_axis_mcu() {
+        let ids: HashSet<u32> = [1, 2].into_iter().collect();
+        let clock = broadcast_stop(&ids, 2, |mcu_id| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: u64::from(mcu_id) * 100,
+            })
+        })
+        .unwrap();
+        assert_eq!(clock, 200);
+    }
+
+    #[test]
+    fn missing_transport_fails_loudly() {
+        let ids: HashSet<u32> = [1, 7].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |mcu_id| {
+            if mcu_id == 7 {
+                Err("Stop: no transport for mcu 7".to_owned())
+            } else {
+                Ok(StopResponse {
+                    result: 0,
+                    discard_clock: 42,
+                })
+            }
+        })
+        .unwrap_err();
+        assert!(err.contains("no transport for mcu 7"), "got: {err}");
+        assert!(err.contains("Stop broadcast failed"), "got: {err}");
+    }
+
+    #[test]
+    fn rejected_result_is_an_error() {
+        let ids: HashSet<u32> = [1].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |_| {
+            Ok(StopResponse {
+                result: -5,
+                discard_clock: 0,
+            })
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("Stop rejected by mcu 1: result=-5"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn axis_mcu_without_a_discard_clock_is_an_error() {
+        let ids: HashSet<u32> = [2].into_iter().collect();
+        let err = broadcast_stop(&ids, 9, |_| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: 5,
+            })
+        })
+        .unwrap_err();
+        assert!(err.contains("did not report a discard clock"), "got: {err}");
+    }
 }

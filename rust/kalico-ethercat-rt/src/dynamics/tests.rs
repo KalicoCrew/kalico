@@ -43,7 +43,10 @@ fn torque_ff_reverse_coulomb_and_deadband() {
     let rev = m.torque_ff(0, &[0.0], &[-100.0]);
     assert!((rev - (0.0045 * -100.0 + -1.1)).abs() < 1e-4);
     let dead = m.torque_ff(0, &[0.0], &[0.1]);
-    assert!((dead - 0.0045 * 0.1).abs() < 1e-4, "no coulomb inside deadband");
+    assert!(
+        (dead - 0.0045 * 0.1).abs() < 1e-4,
+        "no coulomb inside deadband"
+    );
 }
 
 #[test]

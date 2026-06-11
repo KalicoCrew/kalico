@@ -17,6 +17,10 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::McuLog,
         MessageKind::ClaimHandshakeReply,
         MessageKind::ClaimHandshake,
+        MessageKind::SdoRead,
+        MessageKind::SdoReadResponse,
+        MessageKind::SdoWrite,
+        MessageKind::SdoWriteResponse,
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }
@@ -83,7 +87,7 @@ fn status_heartbeat_roundtrip_empty() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 7);
+    assert_eq!(buf.len(), 8);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.retired_counts.len(), 0);
@@ -100,7 +104,7 @@ fn status_heartbeat_roundtrip_with_axes() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 23);
+    assert_eq!(buf.len(), 24);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.engine_state, 1);
@@ -306,6 +310,37 @@ fn stop_response_round_trips() {
 }
 
 #[test]
+fn resume_stream_round_trips_empty_body() {
+    let bytes = ResumeStream.encoded_to_vec();
+    assert!(bytes.is_empty(), "ResumeStream body is empty");
+    let back = ResumeStream::decode(&bytes).expect("decode");
+    assert_eq!(back, ResumeStream);
+}
+
+#[test]
+fn resume_stream_response_round_trips() {
+    let msg = ResumeStreamResponse { result: -142 };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 4, "i32 = 4 bytes");
+    assert_eq!(ResumeStreamResponse::decode(&bytes).expect("decode"), msg);
+}
+
+#[test]
+fn resume_stream_kinds_have_stable_tags() {
+    assert_eq!(MessageKind::ResumeStream.as_u16(), 0x0078);
+    assert_eq!(MessageKind::ResumeStreamResponse.as_u16(), 0x0079);
+    assert_eq!(
+        MessageKind::from_u16(0x0078),
+        Some(MessageKind::ResumeStream)
+    );
+    assert_eq!(
+        MessageKind::from_u16(0x0079),
+        Some(MessageKind::ResumeStreamResponse)
+    );
+    assert!(!MessageKind::ResumeStream.is_event());
+}
+
+#[test]
 fn stop_kinds_have_stable_tags() {
     assert_eq!(MessageKind::Stop.as_u16(), 0x0072);
     assert_eq!(MessageKind::StopResponse.as_u16(), 0x0073);
@@ -315,6 +350,43 @@ fn stop_kinds_have_stable_tags() {
         Some(MessageKind::StopResponse)
     );
     assert!(!MessageKind::Stop.is_event());
+}
+
+#[test]
+fn set_drive_limits_round_trips() {
+    let msg = SetDriveLimits {
+        following_error_counts: 8192,
+        max_torque_tenth_pct: 500,
+    };
+    let bytes = msg.encoded_to_vec();
+    let decoded = SetDriveLimits::decode(&bytes).unwrap();
+    assert_eq!(decoded, msg);
+}
+
+#[test]
+fn drive_limits_responses_round_trip() {
+    let r = SetDriveLimitsResponse { result: -315 };
+    assert_eq!(
+        SetDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+    let r = RestoreDriveLimitsResponse { result: 0 };
+    assert_eq!(
+        RestoreDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+}
+
+#[test]
+fn drive_limits_message_kinds_round_trip() {
+    for kind in [
+        MessageKind::SetDriveLimits,
+        MessageKind::SetDriveLimitsResponse,
+        MessageKind::RestoreDriveLimits,
+        MessageKind::RestoreDriveLimitsResponse,
+    ] {
+        assert_eq!(MessageKind::from_u16(kind.as_u16()), Some(kind));
+    }
 }
 
 #[test]
@@ -330,4 +402,78 @@ fn endstop_trip_round_trips_and_is_event() {
     assert_eq!(EndstopTrip::decode(&bytes).expect("decode"), msg);
     assert!(MessageKind::EndstopTrip.is_event());
     assert_eq!(MessageKind::EndstopTrip.as_u16(), 0x0085);
+}
+
+#[test]
+fn put_get_str_round_trip() {
+    use crate::codec::{Cursor, get_str, put_str};
+    let mut buf = Vec::new();
+    put_str(&mut buf, "servo_captures/x_20260610.scap");
+    put_str(&mut buf, "");
+    let mut c = Cursor::new(&buf);
+    assert_eq!(get_str(&mut c).unwrap(), "servo_captures/x_20260610.scap");
+    assert_eq!(get_str(&mut c).unwrap(), "");
+}
+
+#[test]
+fn get_str_rejects_truncated_buffer() {
+    use crate::codec::{Cursor, get_str};
+    let length_prefix_overruns_payload = [10u8, 0, b'a', b'b'];
+    let mut c = Cursor::new(&length_prefix_overruns_payload);
+    assert!(get_str(&mut c).is_err());
+}
+
+#[test]
+fn get_str_rejects_invalid_utf8() {
+    use crate::codec::{Cursor, get_str};
+    let buf = [2u8, 0, 0xff, 0xfe];
+    let mut c = Cursor::new(&buf);
+    assert!(get_str(&mut c).is_err());
+}
+
+#[test]
+fn start_capture_round_trip() {
+    use crate::messages::StartCapture;
+    let msg = StartCapture {
+        path: "/home/pi/printer_data/logs/servo_captures/t.scap".into(),
+        started_utc: "2026-06-10T12:00:00Z".into(),
+        drive_name: "x".into(),
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(StartCapture::decode(&buf).unwrap(), msg);
+}
+
+#[test]
+fn stop_capture_response_round_trip() {
+    use crate::messages::StopCaptureResponse;
+    let msg = StopCaptureResponse {
+        result: -323,
+        samples: 12_345,
+        overflow_cycle: StopCaptureResponse::NO_OVERFLOW,
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(StopCaptureResponse::decode(&buf).unwrap(), msg);
+}
+
+#[test]
+fn get_str_zero_length_decodes_to_empty() {
+    use crate::codec::{Cursor, get_str};
+    let buf = [0u8, 0];
+    let mut c = Cursor::new(&buf);
+    assert_eq!(get_str(&mut c).unwrap(), "");
+}
+
+#[test]
+fn capture_message_kinds_round_trip_u16() {
+    use crate::messages::MessageKind;
+    for (kind, raw) in [
+        (MessageKind::StartCapture, 0x0068u16),
+        (MessageKind::StartCaptureResponse, 0x0069),
+        (MessageKind::StopCapture, 0x006A),
+        (MessageKind::StopCaptureResponse, 0x006B),
+    ] {
+        assert_eq!(kind.as_u16(), raw);
+        assert_eq!(MessageKind::from_u16(raw), Some(kind));
+        assert!(!kind.is_event());
+    }
 }

@@ -12,6 +12,8 @@ _DEFAULT_ENDPOINT = os.path.join(
     _REPO_ROOT, "rust", "target", "release", "kalico-ethercat-rt"
 )
 
+DRIVE_FAULT_POLL_PERIOD = 1.0
+
 
 class EtherCatNode:
     def __init__(self, config):
@@ -46,8 +48,13 @@ class EtherCatNode:
         # runs on "klippy:connect" — so the handle is populated before the
         # planner is built. This mirrors MCU._mcu_identify's claim_mcu call.
         self.printer.register_event_handler("klippy:mcu_identify", self._claim)
+        self.printer.load_object(config, "servo_capture")
+        self.printer.load_object(config, "servo_param")
 
-    def _find_servo_rail(self):
+    def _find_rail(self):
+        # ServoRails are not printer objects (the toolhead builds them directly
+        # into kin.rails), so iterate the toolhead's rails rather than
+        # printer.lookup_objects.
         toolhead = self.printer.lookup_object("toolhead")
         for rail in getattr(toolhead.get_kinematics(), "rails", ()):
             if (
@@ -63,9 +70,12 @@ class EtherCatNode:
     def _claim(self):
         if self.bridge_handle is not None:
             return
-        rail = self._find_servo_rail()
+        rail = self._find_rail()
         self._counts_per_mm = rail.get_counts_per_mm()
         velocity_ff, dynamics_profile, ff_torque_clamp = rail.get_ff_config()
+        following_error_counts, max_torque_tenth_pct = (
+            rail.get_session_drive_limits()
+        )
         bridge = self.printer.lookup_object("motion_bridge")
         try:
             self.bridge_handle = bridge.claim_ethercat_node(
@@ -77,6 +87,8 @@ class EtherCatNode:
                 velocity_ff,
                 dynamics_profile,
                 ff_torque_clamp,
+                following_error_counts,
+                max_torque_tenth_pct,
             )
         except RuntimeError as e:
             raise self.printer.config_error(str(e))
@@ -94,6 +106,47 @@ class EtherCatNode:
             dynamics_profile,
             ff_torque_clamp,
         )
+        self._push_drive_params(rail)
+        reactor = self.printer.get_reactor()
+        reactor.register_timer(
+            self._poll_drive_fault,
+            reactor.monotonic() + DRIVE_FAULT_POLL_PERIOD,
+        )
+
+    def _poll_drive_fault(self, eventtime):
+        bridge = self.printer.lookup_object("motion_bridge")
+        fault = bridge.take_drive_fault(self.bridge_handle)
+        if fault is None:
+            return eventtime + DRIVE_FAULT_POLL_PERIOD
+        self.printer.invoke_shutdown(
+            "EtherCAT drive fault 0x%04x on node %s — drive parked by the"
+            " realtime endpoint" % (fault, self.name)
+        )
+        return self.printer.get_reactor().NEVER
+
+    def _push_drive_params(self, rail):
+        params = rail.get_sdo_params()
+        if not params:
+            return
+        bridge = self.printer.lookup_object("motion_bridge")
+        for index, subindex, size, value in params:
+            try:
+                bridge.sdo_write(
+                    self.bridge_handle, index, subindex, size, value
+                )
+            except RuntimeError as e:
+                raise self.printer.config_error(
+                    "ethercat_node %s: claim-time drive param "
+                    "0x%04x.%d = %d failed: %s"
+                    % (self.name, index, subindex, value, e)
+                )
+            logging.info(
+                "ethercat_node %s: drive param 0x%04x.%d = %d pushed",
+                self.name,
+                index,
+                subindex,
+                value,
+            )
 
     def get_bridge_handle(self):
         return self.bridge_handle

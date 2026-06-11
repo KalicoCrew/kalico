@@ -14,8 +14,8 @@ disagreed with the workflows — that is exactly the failure mode this prevents)
 
 ```sh
 ./scripts/ci.sh            # run every gate, with a pass/fail summary
-./scripts/ci.sh quick      # fast pre-push subset: ruff + rust build/test/clippy/fmt
-./scripts/ci.sh rust-host  # one gate (what the rust-host CI job runs)
+./scripts/ci.sh quick      # fast pre-push subset: ruff + rust test/clippy/fmt
+./scripts/ci.sh rust-test  # one gate (CI runs rust-test / rust-clippy / rust-fmt as parallel jobs)
 ./scripts/ci.sh py 3.13    # klippy pytest under one Python version (needs docker)
 ./scripts/ci.sh sim        # kalico-sim unit tests
 ```
@@ -39,7 +39,7 @@ The single source of truth runs the same gates CI does. Before opening a PR to
 merge a chunk of work, run the fast subset (or the full suite):
 
 ```sh
-./scripts/ci.sh quick      # ruff + rust build/test/clippy/fmt
+./scripts/ci.sh quick      # ruff + rust test/clippy/fmt
 ./scripts/ci.sh            # everything
 ```
 

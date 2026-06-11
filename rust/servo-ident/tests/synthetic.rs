@@ -52,8 +52,16 @@ fn recovers_scalar_truth() {
     let p = &r.params;
     assert!((p.mass[0][0] - m).abs() < 0.1 * m, "m: {}", p.mass[0][0]);
     assert!((p.viscous[0] - b).abs() < 0.1 * b, "b: {}", p.viscous[0]);
-    assert!((p.coulomb_fwd[0] - cf).abs() < 0.5, "cf: {}", p.coulomb_fwd[0]);
-    assert!((p.coulomb_rev[0] - cr).abs() < 0.5, "cr: {}", p.coulomb_rev[0]);
+    assert!(
+        (p.coulomb_fwd[0] - cf).abs() < 0.5,
+        "cf: {}",
+        p.coulomb_fwd[0]
+    );
+    assert!(
+        (p.coulomb_rev[0] - cr).abs() < 0.5,
+        "cr: {}",
+        p.coulomb_rev[0]
+    );
     assert!(r.rms_residual < 2.0);
 }
 

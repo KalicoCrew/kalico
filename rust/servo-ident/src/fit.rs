@@ -54,9 +54,7 @@ pub struct FitResult {
 pub fn fit(input: &FitInput, opts: &FitOptions) -> Result<FitResult, FitError> {
     let s = input.structure;
     let n_motors = s.axis_count();
-    if input.acc.len() != n_motors
-        || input.vel.len() != n_motors
-        || input.torque.len() != n_motors
+    if input.acc.len() != n_motors || input.vel.len() != n_motors || input.torque.len() != n_motors
     {
         return Err(FitError::ShapeMismatch("motor count"));
     }
@@ -129,8 +127,8 @@ pub fn fit(input: &FitInput, opts: &FitOptions) -> Result<FitResult, FitError> {
     }
 
     let aty_s: Vec<f64> = (0..p).map(|i| aty[i] / scale[i]).collect();
-    let theta_s = solve_spd(&ata_s, &aty_s, p)
-        .ok_or(FitError::InsufficientExcitation { condition })?;
+    let theta_s =
+        solve_spd(&ata_s, &aty_s, p).ok_or(FitError::InsufficientExcitation { condition })?;
     let theta: Vec<f64> = (0..p).map(|i| theta_s[i] / scale[i]).collect();
 
     let mut sq_sum = 0.0_f64;

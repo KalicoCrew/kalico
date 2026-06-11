@@ -143,6 +143,26 @@ fn lowercase_param_letter_returns_error() {
 }
 
 #[test]
+fn multibyte_whitespace_after_head_letter_returns_error() {
+    let toks = collect("A\u{85}0\t");
+    assert_eq!(toks.len(), 1);
+    match &toks[0] {
+        Err(ParseError::UnrecognizedHead { line_no: 1, .. }) => {}
+        other => panic!("expected UnrecognizedHead, got {other:?}"),
+    }
+}
+
+#[test]
+fn ascii_space_after_head_letter_returns_error() {
+    let toks = collect("G 1 X0\n");
+    assert_eq!(toks.len(), 1);
+    match &toks[0] {
+        Err(ParseError::UnrecognizedHead { line_no: 1, .. }) => {}
+        other => panic!("expected UnrecognizedHead, got {other:?}"),
+    }
+}
+
+#[test]
 fn head_with_no_number_returns_error() {
     let toks = collect("G\n");
     assert_eq!(toks.len(), 1);

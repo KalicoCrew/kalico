@@ -11,8 +11,12 @@ fn strokes_stay_in_bounds_and_reach_peak_speed() {
         reps: 3,
     };
     let g = generate(&e).unwrap();
-    assert!(g.lines().any(|l| l == "SET_VELOCITY_LIMIT ACCEL=1000 ACCEL_TO_DECEL=1000"));
-    assert!(g.lines().any(|l| l == "SET_VELOCITY_LIMIT ACCEL=3000 ACCEL_TO_DECEL=3000"));
+    assert!(g
+        .lines()
+        .any(|l| l == "SET_VELOCITY_LIMIT ACCEL=1000 ACCEL_TO_DECEL=1000"));
+    assert!(g
+        .lines()
+        .any(|l| l == "SET_VELOCITY_LIMIT ACCEL=3000 ACCEL_TO_DECEL=3000"));
     assert!(g.lines().any(|l| l == "G1 X210 F18000"));
     assert!(g.lines().any(|l| l == "M400"));
     for line in g.lines().filter(|l| l.starts_with("G1 X")) {
@@ -54,10 +58,35 @@ fn refuses_empty_or_nonpositive_inputs() {
         reps: 1,
     };
 
-    assert!(generate(&Excitation { accels_mm_s2: vec![], ..base.clone() }).is_err());
-    assert!(generate(&Excitation { speeds_mm_s: vec![], ..base.clone() }).is_err());
-    assert!(generate(&Excitation { reps: 0, ..base.clone() }).is_err());
-    assert!(generate(&Excitation { accels_mm_s2: vec![-1.0], ..base.clone() }).is_err());
-    assert!(generate(&Excitation { speeds_mm_s: vec![0.0], ..base.clone() }).is_err());
-    assert!(generate(&Excitation { min_mm: 100.0, max_mm: 0.0, ..base.clone() }).is_err());
+    assert!(generate(&Excitation {
+        accels_mm_s2: vec![],
+        ..base.clone()
+    })
+    .is_err());
+    assert!(generate(&Excitation {
+        speeds_mm_s: vec![],
+        ..base.clone()
+    })
+    .is_err());
+    assert!(generate(&Excitation {
+        reps: 0,
+        ..base.clone()
+    })
+    .is_err());
+    assert!(generate(&Excitation {
+        accels_mm_s2: vec![-1.0],
+        ..base.clone()
+    })
+    .is_err());
+    assert!(generate(&Excitation {
+        speeds_mm_s: vec![0.0],
+        ..base.clone()
+    })
+    .is_err());
+    assert!(generate(&Excitation {
+        min_mm: 100.0,
+        max_mm: 0.0,
+        ..base.clone()
+    })
+    .is_err());
 }

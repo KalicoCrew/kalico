@@ -168,5 +168,74 @@ pub fn reconstruct_axis_position(
     eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock).map_err(|e| e.to_string())
 }
 
+#[allow(clippy::implicit_hasher)]
+pub fn trajectory_final_position(
+    axis_key: AxisKey,
+    homing_traj: &Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>>,
+) -> Result<f64, String> {
+    let traj = homing_traj.lock().unwrap_or_else(|p| p.into_inner());
+    let pieces = traj
+        .get(&axis_key)
+        .ok_or_else(|| ReconstructError::NoTrajectoryPieces(axis_key).to_string())?;
+    let last = pieces.last().ok_or_else(|| {
+        format!(
+            "trajectory_final_position: piece list for axis {axis_key:?} is empty \
+             (populated during dispatch but now zero-length — broken invariant)"
+        )
+    })?;
+    Ok(last.coeffs[3] as f64)
+}
+
+pub fn broadcast_stop<S, F>(
+    mcu_ids: &std::collections::HashSet<u32, S>,
+    axis_mcu: u32,
+    call: F,
+) -> Result<u64, String>
+where
+    S: std::hash::BuildHasher,
+    F: Fn(u32) -> Result<kalico_protocol::messages::StopResponse, String>,
+{
+    let mut errors: Vec<String> = Vec::new();
+    let mut axis_discard_clock: Option<u64> = None;
+    for &mcu_id in mcu_ids {
+        match call(mcu_id) {
+            Ok(resp) if resp.result != 0 => {
+                errors.push(format!(
+                    "Stop rejected by mcu {mcu_id}: result={}",
+                    resp.result
+                ));
+            }
+            Ok(resp) => {
+                if mcu_id == axis_mcu {
+                    axis_discard_clock = Some(resp.discard_clock);
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "EndstopTrip Stop broadcast failed: {}",
+            errors.join("; ")
+        ));
+    }
+    axis_discard_clock
+        .ok_or_else(|| format!("EndstopTrip: axis MCU {axis_mcu} did not report a discard clock"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveFaultRoute {
+    HomingError,
+    LatchForKlippy,
+}
+
+pub fn route_drive_fault(fault_mcu: u32, homing_axis_mcu: Option<u32>) -> DriveFaultRoute {
+    if homing_axis_mcu == Some(fault_mcu) {
+        DriveFaultRoute::HomingError
+    } else {
+        DriveFaultRoute::LatchForKlippy
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -24,6 +24,10 @@ pub mod planner;
 pub mod pump;
 mod router_transport;
 #[doc(hidden)]
+pub mod servo_capture;
+#[doc(hidden)]
+pub mod servo_sdo;
+#[doc(hidden)]
 pub mod servo_torque;
 mod types;
 

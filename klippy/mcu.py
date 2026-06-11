@@ -22,6 +22,7 @@ MIN_SCHEDULE_TIME = 0.100
 # The maximum number of clock cycles an MCU is expected
 # to schedule into the future, due to the protocol and firmware.
 MAX_SCHEDULE_TICKS = (1 << 31) - 1
+MIN_SCHEDULE_LEAD = 0.050
 # Maximum time all MCUs can internally schedule into the future.
 # Directly caused by the limitation of MAX_SCHEDULE_TICKS.
 MAX_NOMINAL_DURATION = 3.0
@@ -493,6 +494,22 @@ class MCU_digital_out:
         if self._mcu.non_critical_disconnected:
             raise self._printer.command_error(
                 f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
+            )
+        est = self._mcu.estimated_print_time(
+            self._printer.get_reactor().monotonic()
+        )
+        if print_time < est + MIN_SCHEDULE_LEAD:
+            raise self._printer.command_error(
+                "digital_out %s on mcu '%s' scheduled with stale print_time:"
+                " print_time=%.6f estimated_now=%.6f lead=%.1fms (< %.0fms)"
+                % (
+                    self._pin,
+                    self._mcu.get_name(),
+                    print_time,
+                    est,
+                    (print_time - est) * 1000.0,
+                    MIN_SCHEDULE_LEAD * 1000.0,
+                )
             )
         clock = self._mcu.print_time_to_clock(print_time)
         self._set_cmd.send(

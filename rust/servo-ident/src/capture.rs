@@ -68,7 +68,11 @@ pub fn parse_capture_csv(text: &str, axes: &[&str]) -> Result<Capture, CaptureEr
         let mut d = vec![0.0; n];
         for k in 1..n - 1 {
             let dt = t[k + 1] - t[k - 1];
-            d[k] = if dt > 0.0 { (x[k + 1] - x[k - 1]) / dt } else { 0.0 };
+            d[k] = if dt > 0.0 {
+                (x[k + 1] - x[k - 1]) / dt
+            } else {
+                0.0
+            };
         }
         d[0] = d[1];
         d[n - 1] = d[n - 2];
@@ -78,5 +82,10 @@ pub fn parse_capture_csv(text: &str, axes: &[&str]) -> Result<Capture, CaptureEr
     let vel: Vec<Vec<f64>> = target.iter().map(|x| diff(x)).collect();
     let acc: Vec<Vec<f64>> = vel.iter().map(|v| diff(v)).collect();
 
-    Ok(Capture { t, acc, vel, torque })
+    Ok(Capture {
+        t,
+        acc,
+        vel,
+        torque,
+    })
 }

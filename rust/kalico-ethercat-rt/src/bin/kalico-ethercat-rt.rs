@@ -6,21 +6,30 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use kalico_ethercat_rt::capture::{
+    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+};
 use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::dynamics::{clamp_torque, DynamicsModel};
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
+use kalico_ethercat_rt::sdo::{execute_sdo_read, execute_sdo_write, SdoBus};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
-    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED,
+    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame, Command,
+    restore_drive_limits_response_frame, resume_stream_response_frame, runtime_caps_response_frame,
+    sdo_read_response_frame, sdo_write_response_frame, set_drive_limits_response_frame,
+    set_torque_response_frame, start_capture_response_frame, status_heartbeat_frame,
+    stop_capture_response_frame, stop_response_frame, Command,
 };
-use kalico_protocol::messages::SlaveState;
+use kalico_protocol::messages::{
+    SlaveState, StopCaptureResponse, ERR_SDO_TRANSPORT, ERR_SDO_UNSUPPORTED_SIZE,
+};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -32,6 +41,56 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+struct FfiSdoBus;
+
+fn ffi_sdo_error(abort: u32) -> i32 {
+    if abort == 0 {
+        return ERR_SDO_TRANSPORT;
+    }
+    debug_assert!(
+        abort < 0x8000_0000,
+        "CoE abort code 0x{abort:08x} would collide with local error codes as i32"
+    );
+    abort as i32
+}
+
+impl SdoBus for FfiSdoBus {
+    fn read(&mut self, index: u16, subindex: u8) -> Result<(u8, [u8; 4]), i32> {
+        let mut buf = [0u8; 8];
+        let mut size: std::os::raw::c_int = buf.len() as std::os::raw::c_int;
+        let mut abort: u32 = 0;
+        let rc = unsafe {
+            ffi::ec_rt_sdo_read(index, subindex, buf.as_mut_ptr(), &mut size, &mut abort)
+        };
+        if rc != 0 {
+            return Err(ffi_sdo_error(abort));
+        }
+        if !(1..=4).contains(&size) {
+            return Err(ERR_SDO_UNSUPPORTED_SIZE);
+        }
+        let mut data = [0u8; 4];
+        data[..size as usize].copy_from_slice(&buf[..size as usize]);
+        Ok((size as u8, data))
+    }
+
+    fn write(&mut self, index: u16, subindex: u8, bytes: &[u8]) -> Result<(), i32> {
+        let mut abort: u32 = 0;
+        let rc = unsafe {
+            ffi::ec_rt_sdo_write(
+                index,
+                subindex,
+                bytes.as_ptr(),
+                bytes.len() as std::os::raw::c_int,
+                &mut abort,
+            )
+        };
+        if rc != 0 {
+            return Err(ffi_sdo_error(abort));
+        }
+        Ok(())
+    }
 }
 
 fn main() {
@@ -123,6 +182,43 @@ fn main() {
     }
     eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
+    let run_limits: (u32, u16) = {
+        let mut ferr = 0u32;
+        let mut tmo = 0u16;
+        let mut tq = 0u16;
+        let rc = unsafe { ffi::ec_rt_read_limits(&mut ferr, &mut tmo, &mut tq) };
+        if rc != 0 {
+            eprintln!("ec-rt: SDO read of protection limits failed rc={rc} — aborting bringup");
+            unsafe {
+                ffi::ec_rt_disable();
+                ffi::ec_rt_shutdown();
+            }
+            std::process::exit(1);
+        }
+        eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
+        let cli_ferr: Option<u32> =
+            arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
+        let cli_tq: Option<u16> =
+            arg_val(&args, "--max-torque-tenth-pct").and_then(|s| s.parse().ok());
+        let run = (cli_ferr.unwrap_or(ferr), cli_tq.unwrap_or(tq));
+        if cli_ferr.is_some() || cli_tq.is_some() {
+            let rc = unsafe { ffi::ec_rt_write_limits(run.0, run.1) };
+            if rc != 0 {
+                eprintln!("ec-rt: SDO write of session limits failed rc={rc} — aborting bringup");
+                unsafe {
+                    ffi::ec_rt_disable();
+                    ffi::ec_rt_shutdown();
+                }
+                std::process::exit(1);
+            }
+            eprintln!(
+                "ec-rt: session limits applied: 6065h={} 6072h={}",
+                run.0, run.1
+            );
+        }
+        run
+    };
+
     match wait_for_claim(
         &mut server,
         std::time::Instant::now() + std::time::Duration::from_secs(5),
@@ -147,9 +243,13 @@ fn main() {
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut gate = TorqueGate::new();
+    let mut capture = Capture::new();
+    let mut cycle_index: u64 = 0;
+    let mut sdo_bus = FfiSdoBus;
     let mut prdiv = 0u64;
     let mut ff_saturation = 0u32;
     let mut wkc_consecutive = 0u8;
+    let mut latched_drive_err: u16 = 0;
     'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
@@ -172,25 +272,35 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
-                        u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
-                    } else {
-                        0
-                    };
-                    let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
                     let now_ns = monotonic_ns();
-                    let arrival_clock = now_ns;
-                    let result = if pushed == msg.piece_count {
-                        0i32
+                    if gate.state() == TorqueState::Faulted {
+                        server.respond(&push_pieces_response_frame(
+                            correlation_id,
+                            ERR_PIECES_WHILE_FAULTED,
+                            now_ns,
+                            0,
+                        ));
                     } else {
-                        -309
-                    };
-                    server.respond(&push_pieces_response_frame(
-                        correlation_id,
-                        result,
-                        arrival_clock,
-                        front_start_time,
-                    ));
+                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8
+                        {
+                            u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
+                        } else {
+                            0
+                        };
+                        let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
+                        let arrival_clock = now_ns;
+                        let result = if pushed == msg.piece_count {
+                            0i32
+                        } else {
+                            -309
+                        };
+                        server.respond(&push_pieces_response_frame(
+                            correlation_id,
+                            result,
+                            arrival_clock,
+                            front_start_time,
+                        ));
+                    }
                 }
                 Command::QueryRuntimeCaps { correlation_id } => {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
@@ -199,44 +309,21 @@ fn main() {
                 Command::SetTorque {
                     correlation_id,
                     msg,
-                } => {
-                    let now_ns = monotonic_ns();
-                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
-                        CommandAction::Enable => {
-                            let rc = unsafe { ffi::ec_rt_enable() };
-                            gate.enable_finished(rc == 0);
-                            if rc == 0 {
-                                eprintln!("ec-rt: torque enabled (CiA402 operation enabled)");
-                                server.respond(&set_torque_response_frame(correlation_id, 0));
-                            } else {
-                                eprintln!(
-                                    "ec-rt: CiA402 enable failed rc={rc} — disabling and exiting"
-                                );
-                                server.respond(&set_torque_response_frame(
-                                    correlation_id,
-                                    ERR_ENABLE_FAILED,
-                                ));
-                                unsafe {
-                                    ffi::ec_rt_disable();
-                                    ffi::ec_rt_shutdown();
-                                }
-                                std::process::exit(1);
-                            }
-                        }
-                        CommandAction::ScheduleDisable => {
-                            eprintln!(
-                                "ec-rt: torque disable scheduled at {} (now {now_ns})",
-                                msg.execute_at_ns
-                            );
+                } => match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
+                    CommandAction::Enable => {
+                        let rc = unsafe { ffi::ec_rt_enable() };
+                        gate.enable_finished(rc == 0);
+                        if rc == 0 {
+                            eprintln!("ec-rt: torque enabled (CiA402 operation enabled)");
                             server.respond(&set_torque_response_frame(correlation_id, 0));
-                        }
-                        CommandAction::Reject { code } => {
+                        } else {
                             eprintln!(
-                                "ec-rt: SetTorque rejected code={code} \
-                                 (value={} execute_at={} now={now_ns}) — exiting",
-                                msg.value, msg.execute_at_ns
+                                "ec-rt: CiA402 enable failed rc={rc} — disabling and exiting"
                             );
-                            server.respond(&set_torque_response_frame(correlation_id, code));
+                            server.respond(&set_torque_response_frame(
+                                correlation_id,
+                                ERR_ENABLE_FAILED,
+                            ));
                             unsafe {
                                 ffi::ec_rt_disable();
                                 ffi::ec_rt_shutdown();
@@ -244,6 +331,68 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
+                    CommandAction::ScheduleDisable => {
+                        eprintln!(
+                            "ec-rt: torque disable scheduled at {} (now {})",
+                            msg.execute_at_ns,
+                            monotonic_ns()
+                        );
+                        server.respond(&set_torque_response_frame(correlation_id, 0));
+                    }
+                    CommandAction::Reject { code } => {
+                        eprintln!(
+                            "ec-rt: SetTorque rejected code={code} \
+                                 (value={} execute_at={} now={}) — exiting",
+                            msg.value,
+                            msg.execute_at_ns,
+                            monotonic_ns()
+                        );
+                        server.respond(&set_torque_response_frame(correlation_id, code));
+                        unsafe {
+                            ffi::ec_rt_disable();
+                            ffi::ec_rt_shutdown();
+                        }
+                        std::process::exit(1);
+                    }
+                },
+                Command::Stop { correlation_id } => {
+                    let now_ns = monotonic_ns();
+                    ring.reset();
+                    cmap = None;
+                    eprintln!("ec-rt: Stop — ring discarded, discard_clock={now_ns}");
+                    server.respond(&stop_response_frame(correlation_id, 0, now_ns));
+                }
+                Command::StartCapture {
+                    correlation_id,
+                    msg,
+                } => {
+                    let rc = capture.start(CaptureConfig {
+                        path: msg.path.clone(),
+                        started_utc: msg.started_utc.clone(),
+                        drive_name: msg.drive_name.clone(),
+                        cycle_ns,
+                        counts_per_mm,
+                        started_mono_ns: monotonic_ns(),
+                    });
+                    eprintln!("ec-rt: StartCapture path={} rc={rc}", msg.path);
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                Command::StopCapture { correlation_id } => {
+                    let out = capture.stop();
+                    eprintln!(
+                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
+                Command::ResumeStream { correlation_id } => {
+                    server.respond(&resume_stream_response_frame(correlation_id, 0));
                 }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(
@@ -251,6 +400,72 @@ fn main() {
                          — ending session"
                     );
                     break 'dc;
+                }
+                Command::SetDriveLimits {
+                    correlation_id,
+                    msg,
+                } => {
+                    let rc = unsafe {
+                        ffi::ec_rt_write_limits(
+                            msg.following_error_counts,
+                            msg.max_torque_tenth_pct,
+                        )
+                    };
+                    if rc != 0 {
+                        eprintln!(
+                            "ec-rt: SetDriveLimits SDO write failed rc={rc} \
+                             ferr={} tq={}",
+                            msg.following_error_counts, msg.max_torque_tenth_pct
+                        );
+                    } else {
+                        eprintln!(
+                            "ec-rt: SetDriveLimits applied ferr={} tq={}",
+                            msg.following_error_counts, msg.max_torque_tenth_pct
+                        );
+                    }
+                    server.respond(&set_drive_limits_response_frame(correlation_id, rc));
+                }
+                Command::RestoreDriveLimits { correlation_id } => {
+                    let rc = unsafe { ffi::ec_rt_write_limits(run_limits.0, run_limits.1) };
+                    if rc != 0 {
+                        eprintln!(
+                            "ec-rt: RestoreDriveLimits SDO write failed rc={rc} \
+                             ferr={} tq={}",
+                            run_limits.0, run_limits.1
+                        );
+                    } else {
+                        eprintln!(
+                            "ec-rt: RestoreDriveLimits applied ferr={} tq={}",
+                            run_limits.0, run_limits.1
+                        );
+                    }
+                    server.respond(&restore_drive_limits_response_frame(correlation_id, rc));
+                }
+                Command::SdoRead {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = execute_sdo_read(&mut sdo_bus, &msg);
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt: SdoRead 0x{:04x}.{} failed result={}",
+                            msg.index, msg.subindex, resp.result
+                        );
+                    }
+                    server.respond(&sdo_read_response_frame(correlation_id, &resp));
+                }
+                Command::SdoWrite {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = execute_sdo_write(&mut sdo_bus, &msg);
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt: SdoWrite 0x{:04x}.{} value={} size={} failed result={}",
+                            msg.index, msg.subindex, msg.value, msg.size, resp.result
+                        );
+                    }
+                    server.respond(&sdo_write_response_frame(correlation_id, &resp));
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
@@ -274,6 +489,7 @@ fn main() {
                 );
                 server.respond(&status_heartbeat_frame(
                     ENGINE_STATE_FAULT,
+                    0,
                     &[ring.retired_count()],
                     ff_saturation,
                 ));
@@ -285,6 +501,7 @@ fn main() {
             }
         }
 
+        let mut motion_active = false;
         if gate.state() == TorqueState::Enabled {
             if let Some((pos_mm, vel_mm_s, acc_mm_s2)) = ring.sample(now) {
                 let map = cmap.get_or_insert_with(|| {
@@ -306,6 +523,7 @@ fn main() {
                             );
                             server.respond(&status_heartbeat_frame(
                                 ENGINE_STATE_FAULT,
+                                0,
                                 &[ring.retired_count()],
                                 ff_saturation,
                             ));
@@ -324,6 +542,7 @@ fn main() {
                     ffi::ec_rt_set_velocity_offset(vel_offset);
                     ffi::ec_rt_set_torque_offset(torque_offset);
                 }
+                motion_active = true;
             } else {
                 cmap = None;
                 unsafe {
@@ -342,6 +561,7 @@ fn main() {
             let current_retired = ring.retired_count();
             server.respond(&status_heartbeat_frame(
                 ENGINE_STATE_FAULT,
+                (fault_val & 0xFFFF) as u16,
                 &[current_retired],
                 ff_saturation,
             ));
@@ -366,6 +586,51 @@ fn main() {
         let mut toff = 0i64;
         let wkc = unsafe { ffi::ec_rt_cycle(&mut toff) };
 
+        let drive_err = unsafe { ffi::ec_rt_get_error_code() };
+        if drive_err != 0 && gate.state() != TorqueState::Faulted {
+            eprintln!(
+                "ec-rt: DRIVE FAULT err=0x{drive_err:04x} — parking, reporting via heartbeat"
+            );
+            gate.on_drive_fault();
+            ring.reset();
+            cmap = None;
+            latched_drive_err = drive_err;
+            server.respond(&status_heartbeat_frame(
+                0,
+                drive_err,
+                &[ring.retired_count()],
+                ff_saturation,
+            ));
+            last_sent_retired = ring.retired_count();
+            heartbeat_sent = true;
+        }
+
+        cycle_index += 1;
+        if capture.is_active() {
+            let mut t = ffi::EcTelemetry::default();
+            unsafe { ffi::ec_rt_get_telemetry(&mut t) };
+            let mut flags = 0u8;
+            if gate.state() == TorqueState::Enabled {
+                flags |= FLAG_TORQUE_ENABLED;
+            }
+            if motion_active {
+                flags |= FLAG_MOTION_ACTIVE;
+            }
+            capture.push(CaptureRecord {
+                cycle_index,
+                flags,
+                drive: DriveSample {
+                    target_counts: t.target_position,
+                    position_demand: t.position_demand,
+                    position_actual: t.position_actual,
+                    following_error: t.following_error,
+                    torque_actual: t.torque_actual,
+                    statusword: t.statusword,
+                    error_code: t.error_code,
+                },
+            });
+        }
+
         match eval_wkc(wkc, 3, &mut wkc_consecutive) {
             WkcDecision::Good => {}
             WkcDecision::Warn(n) => {
@@ -383,6 +648,7 @@ fn main() {
                      {} consecutive bad cycles, halting",
                     kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
                 );
+                unsafe { ffi::ec_rt_dump_al_state() };
                 break;
             }
         }
@@ -393,6 +659,7 @@ fn main() {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
             server.respond(&status_heartbeat_frame(
                 engine_state,
+                0,
                 &[current_retired],
                 ff_saturation,
             ));
@@ -406,25 +673,27 @@ fn main() {
         prdiv += 1;
         if prdiv >= telemetry_period {
             prdiv = 0;
-            let (sw, err, pos, ferr, vel_act, tq_act) = unsafe {
+            let (sw, pos, ferr, tq_act) = unsafe {
                 (
                     ffi::ec_rt_get_statusword(),
-                    ffi::ec_rt_get_error_code(),
                     ffi::ec_rt_get_position_actual(),
                     ffi::ec_rt_get_following_error(),
-                    ffi::ec_rt_get_velocity_actual(),
                     ffi::ec_rt_get_torque_actual(),
                 )
             };
             eprintln!(
-                "ec-rt: wkc={wkc} sw=0x{sw:04x} err=0x{err:04x} pos={pos} ferr={ferr} toff={toff} \
-                 ring_len={} retired={} vel_act={vel_act} tq_act={tq_act} ff_sat={ff_saturation}",
+                "ec-rt: wkc={wkc} sw=0x{sw:04x} err=0x{drive_err:04x} pos={pos} ferr={ferr} toff={toff} \
+                 ring_len={} retired={} tq_act={tq_act} ff_sat={ff_saturation}",
                 ring.is_empty() as u8 ^ 1,
                 current_retired,
             );
-            if err != 0 {
-                eprintln!("ec-rt: DRIVE FAULT err=0x{err:04x}, disabling");
-                break;
+            if gate.state() == TorqueState::Faulted {
+                server.respond(&status_heartbeat_frame(
+                    0,
+                    latched_drive_err,
+                    &[current_retired],
+                    ff_saturation,
+                ));
             }
         }
     }

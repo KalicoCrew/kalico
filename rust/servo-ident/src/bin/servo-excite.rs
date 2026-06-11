@@ -5,7 +5,9 @@
 use servo_ident::gcode_gen::{generate, Excitation};
 
 fn arg(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn req(args: &[String], key: &str) -> String {

@@ -2,7 +2,7 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::float_cmp,
+    clippy::float_cmp
 )]
 
 use runtime::motion_core::{eval_accel, eval_horner};

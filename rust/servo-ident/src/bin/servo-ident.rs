@@ -9,7 +9,9 @@ use servo_ident::model::Structure;
 use servo_ident::profile_out::{c0006_recommendation, render_profile};
 
 fn arg(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn opt_f64(args: &[String], key: &str) -> Option<f64> {

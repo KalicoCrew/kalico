@@ -36,8 +36,7 @@ pub struct DynamicsModel {
 
 impl DynamicsModel {
     pub fn from_toml_str(s: &str) -> Result<Self, ProfileError> {
-        let f: ProfileFile =
-            toml::from_str(s).map_err(|e| ProfileError::Parse(e.to_string()))?;
+        let f: ProfileFile = toml::from_str(s).map_err(|e| ProfileError::Parse(e.to_string()))?;
         if f.version != 1 {
             return Err(ProfileError::Version(f.version));
         }

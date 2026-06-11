@@ -13,7 +13,11 @@ pub struct Excitation {
 #[derive(Debug)]
 pub enum GenError {
     BadBounds,
-    StrokeTooShort { accel: f64, speed: f64, needed_mm: f64 },
+    StrokeTooShort {
+        accel: f64,
+        speed: f64,
+        needed_mm: f64,
+    },
 }
 
 pub fn generate(e: &Excitation) -> Result<String, GenError> {
@@ -32,7 +36,11 @@ pub fn generate(e: &Excitation) -> Result<String, GenError> {
         for &v in &e.speeds_mm_s {
             let needed = v * v / a;
             if needed > span {
-                return Err(GenError::StrokeTooShort { accel: a, speed: v, needed_mm: needed });
+                return Err(GenError::StrokeTooShort {
+                    accel: a,
+                    speed: v,
+                    needed_mm: needed,
+                });
             }
             let f = (v * 60.0).round();
             let _ = writeln!(g, "SET_VELOCITY_LIMIT ACCEL={a} ACCEL_TO_DECEL={a}");

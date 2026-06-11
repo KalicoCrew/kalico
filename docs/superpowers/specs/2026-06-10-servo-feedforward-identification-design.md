@@ -86,9 +86,10 @@ parameters; PRBS/chirp excitation buys bandwidth we do not need.
 Linear least squares of measured per-motor torque against the model above.
 
 - Regressors (α, ω) come from the **commanded** trajectory — exactly known,
-  noise-free. 606Ch measured velocity is kept as an alternative regressor for
-  cross-validation; large divergence between the two fits indicates tracking
-  error is polluting the regression (lower gains or slow the excitation).
+  noise-free. Differentiated 6064h position-actual provides an alternative
+  regressor for cross-validation; large divergence between the two fits
+  indicates tracking error is polluting the regression (lower gains or slow
+  the excitation).
 - The **structure** of M is supplied per kinematics: scalar for a single
   Cartesian servo; symmetric 2×2 with equal diagonals for CoreXY A/B. The
   fitter takes the structure as input and fits only the free coefficients.
@@ -158,13 +159,15 @@ New mappings (existing objects kept in current order, additions appended):
 | | 60BAh tp1 pos i32 |
 | | 60BCh tp2 pos i32 |
 | | 60FDh digital inputs u32 |
-| | **606Ch velocity actual i32** |
+| | **6062h position demand i32** |
 
 Sync-manager assignment: 1C12:01 = 1600h, 1C13:01 = 1A00h (clear, write
 entries, write counts, reassign — per manual §8.3.1). `out_t`/`in_t` in
-`bench/libecrt.c` grow accordingly. 6074h (drive-internal torque reference)
-is the acknowledged sacrifice at the 10-object limit; revisit only if a
-bench question demands it.
+`bench/libecrt.c` grow accordingly. 606Ch velocity actual and 6074h
+(drive-internal torque reference) are the acknowledged sacrifices at the
+10-object limit — the last slot carries 6062h position demand, which the
+layer-2 capture record requires; revisit only if a bench question demands
+it.
 
 Drive-side FF routing joins the existing bring-up SDO writes (layer 1 not
 required): C01.13 = 5 (speed FF source = communication), C01.16 = 5 (torque
@@ -176,7 +179,7 @@ difference).
 
 New FFI surface: `ec_rt_set_velocity_offset(i32 /* counts/s */)`,
 `ec_rt_set_torque_offset(i16 /* 0.1% rated */)`,
-`ec_rt_get_velocity_actual()`, `ec_rt_get_torque_actual()`.
+`ec_rt_get_torque_actual()`.
 
 ### Acceleration evaluation
 
@@ -244,13 +247,13 @@ Torque FF requires α_j for every motor coupled through M. Cases:
 
 ## Interface contracts with layers 1–2 (parallel work)
 
-1. **`bench/libecrt.c` ownership**: this design takes the PDO remap; layer-2
-   telemetry builds on the remapped TxPDO and gains 606Ch velocity-actual for
-   free. If the telemetry work needs to touch the mapping first, coordinate
-   before either lands.
+1. **`bench/libecrt.c` ownership**: layer-2 telemetry landed the 1A00h
+   TxPDO remap first (10th slot: 6062h position demand for the capture
+   record); this design adds the 1600h RxPDO remap alongside it for the
+   60B1h/60B2h offsets.
 2. **Capture format**: the fitter core consumes time-aligned arrays of
-   (t, target position, position actual 6064h, torque actual 6077h,
-   velocity actual 606Ch). The adapter from the layer-2 capture format to
+   (t, target position, position actual 6064h, torque actual 6077h). The
+   adapter from the layer-2 capture format to
    these arrays is the only fitter component that waits on layer 2; it is
    kept as a thin boundary. Until it exists, the fitter runs on synthetic
    captures.
