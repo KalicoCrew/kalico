@@ -649,12 +649,6 @@ fn shutdown_does_not_abort_on_detached_ethercat_weak() {
     );
 }
 
-/// Regression: `register_ethercat_mcu` must seed `nominal_clock_freqs` for the
-/// raw handle so that dispatch on the servo MCU never hits `MissingNominalFreq`.
-///
-/// This calls the production helper directly — no socket, no handshake, no
-/// endpoint binary. Removing the `nominal_clock_freqs.insert` line from
-/// `register_ethercat_mcu` causes the second assertion to fail.
 #[test]
 fn register_ethercat_mcu_seeds_nominal_clock_freq() {
     use std::os::unix::net::UnixStream;
