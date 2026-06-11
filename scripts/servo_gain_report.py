@@ -3,11 +3,17 @@
 
 The sweep macro records one capture per gain step, named
 <tag>_p<POS>_s<SPEED>_i<INTEGRAL>, which SERVO_CAPTURE timestamps into
-<name>_<YYYYmmdd_HHMMSS>.scap. This script picks the newest capture per gain
-step, computes tracking metrics, flags resonance, writes a comparison PNG,
+<name>_<YYYYmmdd_HHMMSS>.scap. This script resolves each step to its newest
+capture, computes tracking metrics, flags resonance, writes a comparison PNG,
 and prints a table plus a recommendation.
 
+The sweep macro passes --steps with the exact step names it just recorded,
+so the report covers only that run. Without --steps the script falls back to
+every step name matching the tag, which mixes in steps left over from older
+runs that used different gain lists.
+
 Usage:
+  servo_gain_report.py --tag cal --steps cal_p2000_s1250_i1000,cal_p2400_s1500_i833
   servo_gain_report.py --captures-dir ~/printer_data/logs/servo_captures \
       --tag cal --out-dir ~/printer_data/config/servo_calibrate_results
   servo_gain_report.py file1.scap file2.scap ... --out report.png
@@ -42,6 +48,24 @@ def find_sweep_files(captures_dir, tag):
         if key not in newest or path > newest[key]:
             newest[key] = path
     return [(k, newest[k]) for k in sorted(newest, key=lambda k: k[1])]
+
+
+def find_named_steps(captures_dir, step_names):
+    files = []
+    for name in step_names:
+        pattern = os.path.join(
+            os.path.expanduser(captures_dir), name + "_*.scap"
+        )
+        matches = [p for p in glob.glob(pattern) if STEP_RE.search(p)]
+        if not matches:
+            raise SystemExit(
+                "sweep step %r has no capture in %s"
+                % (name, captures_dir)
+            )
+        path = max(matches)
+        files.append((gains_from_name(path), path))
+    files.sort(key=lambda kp: kp[0][1])
+    return files
 
 
 def gains_from_name(path):
@@ -271,11 +295,18 @@ def main(argv=None):
     p.add_argument("--captures-dir", default="~/printer_data/logs/servo_captures")
     p.add_argument("--tag", default="cal")
     p.add_argument(
+        "--steps",
+        help="comma list of step names recorded by this sweep run "
+        "(<tag>_p<P>_s<S>_i<I>); only these steps are reported",
+    )
+    p.add_argument(
         "--out-dir", default="~/printer_data/config/servo_calibrate_results"
     )
     p.add_argument("--out", help="explicit output PNG path")
     args = p.parse_args(argv)
 
+    if args.captures and args.steps:
+        raise SystemExit("pass explicit .scap files or --steps, not both")
     if args.captures:
         files = []
         for path in args.captures:
@@ -287,6 +318,10 @@ def main(argv=None):
                 )
             files.append((gains, path))
         files.sort(key=lambda kp: kp[0][1])
+    elif args.steps:
+        files = find_named_steps(
+            args.captures_dir, args.steps.split(",")
+        )
     else:
         files = find_sweep_files(args.captures_dir, args.tag)
     if not files:
