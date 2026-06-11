@@ -11,6 +11,12 @@
 //!
 //! Requests execute strictly in submission order (single worker, FIFO
 //! channel), preserving write-then-readback semantics per client call.
+//!
+//! The worker shares SOEM's one raw socket with the DC loop, so its
+//! scheduling matters as much as its existence: see
+//! [`crate::thread_prio::assume_companion_rt_scheduling`] for why the
+//! hardware endpoint must run it as a pinned low-priority SCHED_FIFO
+//! companion rather than SCHED_OTHER.
 
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
@@ -18,7 +24,12 @@ use std::thread::JoinHandle;
 use kalico_protocol::messages::{SdoRead, SdoReadResponse, SdoWrite, SdoWriteResponse};
 
 use crate::sdo::{execute_sdo_read, execute_sdo_write, SdoBus};
-use crate::thread_prio::demote_to_normal_scheduling;
+use crate::thread_prio::{assume_companion_rt_scheduling, demote_to_normal_scheduling};
+
+pub enum WorkerScheduling {
+    RealtimeCompanion { cpu: usize, priority: i32 },
+    Normal,
+}
 
 pub enum MailboxRequest {
     SdoRead {
@@ -62,7 +73,7 @@ pub struct MailboxWorker {
 }
 
 impl MailboxWorker {
-    pub fn spawn<B, L>(mut bus: B, mut write_limits: L) -> Self
+    pub fn spawn<B, L>(mut bus: B, mut write_limits: L, scheduling: WorkerScheduling) -> Self
     where
         B: SdoBus + Send + 'static,
         L: FnMut(u32, u16) -> i32 + Send + 'static,
@@ -72,7 +83,12 @@ impl MailboxWorker {
         let handle = std::thread::Builder::new()
             .name("ec-rt-mailbox".into())
             .spawn(move || {
-                demote_to_normal_scheduling();
+                match scheduling {
+                    WorkerScheduling::RealtimeCompanion { cpu, priority } => {
+                        assume_companion_rt_scheduling(cpu, priority)
+                    }
+                    WorkerScheduling::Normal => demote_to_normal_scheduling(),
+                }
                 while let Ok(req) = req_rx.recv() {
                     let reply = match req {
                         MailboxRequest::SdoRead {

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use kalico_protocol::messages::{SdoRead, SdoWrite};
 
-use super::{MailboxReply, MailboxRequest, MailboxWorker};
+use super::{MailboxReply, MailboxRequest, MailboxWorker, WorkerScheduling};
 use crate::sdo::{DictObject, DictSdoBus, SdoBus};
 
 fn dict() -> DictSdoBus {
@@ -66,6 +66,7 @@ fn submit_never_blocks_while_transaction_is_slow() {
             delay: Duration::from_millis(50),
         },
         |_, _| 0,
+        WorkerScheduling::Normal,
     );
     let start = Instant::now();
     worker.submit(MailboxRequest::SdoWrite {
@@ -118,7 +119,7 @@ fn submit_never_blocks_while_transaction_is_slow() {
 
 #[test]
 fn replies_preserve_submission_order() {
-    let worker = MailboxWorker::spawn(dict(), |_, _| 0);
+    let worker = MailboxWorker::spawn(dict(), |_, _| 0, WorkerScheduling::Normal);
     for cid in 0..16u32 {
         worker.submit(MailboxRequest::SdoRead {
             correlation_id: cid,
@@ -142,10 +143,14 @@ fn replies_preserve_submission_order() {
 fn write_limits_routes_through_callback_with_restore_flag() {
     let calls = Arc::new(AtomicU32::new(0));
     let seen = calls.clone();
-    let worker = MailboxWorker::spawn(dict(), move |ferr, tq| {
-        seen.store(ferr * 10 + u32::from(tq), Ordering::SeqCst);
-        7
-    });
+    let worker = MailboxWorker::spawn(
+        dict(),
+        move |ferr, tq| {
+            seen.store(ferr * 10 + u32::from(tq), Ordering::SeqCst);
+            7
+        },
+        WorkerScheduling::Normal,
+    );
     worker.submit(MailboxRequest::WriteLimits {
         correlation_id: 9,
         ferr_counts: 4,
@@ -178,6 +183,7 @@ fn drop_joins_the_worker_cleanly() {
             delay: Duration::from_millis(20),
         },
         |_, _| 0,
+        WorkerScheduling::Normal,
     );
     worker.submit(MailboxRequest::SdoRead {
         correlation_id: 1,

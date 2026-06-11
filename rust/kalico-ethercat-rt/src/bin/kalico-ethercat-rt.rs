@@ -17,7 +17,7 @@ use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::dynamics::{clamp_torque, DynamicsModel};
 use kalico_ethercat_rt::ffi;
-use kalico_ethercat_rt::mailbox::{MailboxReply, MailboxRequest, MailboxWorker};
+use kalico_ethercat_rt::mailbox::{MailboxReply, MailboxRequest, MailboxWorker, WorkerScheduling};
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::sdo::SdoBus;
 use kalico_ethercat_rt::server::FrameServer;
@@ -36,6 +36,11 @@ use kalico_protocol::messages::{
 };
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+/// Below the DC thread (default 80) so the cycle always preempts mailbox
+/// work, and below Linux threaded-IRQ handlers (50) so NIC frame delivery
+/// preempts SOEM's receive busy-poll.
+const MAILBOX_RT_PRIO: i32 = 40;
 
 extern "C" fn on_sigterm(_: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::Release);
@@ -113,6 +118,9 @@ fn main() {
     let rt_prio: i32 = arg_val(&args, "--rt-prio")
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
+    let mailbox_cpu: usize = arg_val(&args, "--mailbox-cpu")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
     let velocity_ff = args.iter().any(|a| a == "--velocity-ff");
     let torque_clamp_tenths: i16 = arg_val(&args, "--torque-clamp-pct")
         .and_then(|s| s.parse::<f64>().ok())
@@ -256,9 +264,16 @@ fn main() {
     let mut gate = TorqueGate::new();
     let mut capture = Capture::new();
     let mut cycle_index: u64 = 0;
-    let mailbox = MailboxWorker::spawn(FfiSdoBus, |ferr_counts, torque_tenth_pct| unsafe {
-        ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
-    });
+    let mailbox = MailboxWorker::spawn(
+        FfiSdoBus,
+        |ferr_counts, torque_tenth_pct| unsafe {
+            ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
+        },
+        WorkerScheduling::RealtimeCompanion {
+            cpu: mailbox_cpu,
+            priority: MAILBOX_RT_PRIO,
+        },
+    );
     let mut pending_starts: Vec<(u32, String, PendingStart)> = Vec::new();
     let mut pending_stops: Vec<(u32, PendingStop)> = Vec::new();
     let mut prdiv = 0u64;
