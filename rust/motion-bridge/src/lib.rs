@@ -23,6 +23,7 @@ pub mod motion_node;
 pub mod planner;
 #[doc(hidden)]
 pub mod pump;
+pub mod remote_trigger;
 mod router_transport;
 #[doc(hidden)]
 pub mod servo_capture;
