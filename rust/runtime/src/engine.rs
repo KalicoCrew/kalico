@@ -496,6 +496,33 @@ impl Engine {
         -1
     }
 
+    pub fn phase_jog_to(
+        &self,
+        shared: &SharedState,
+        stepper_oid: u8,
+        target_phase: u16,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        crate::phase_handover::jog_to(
+            &self.stepping_axes,
+            shared,
+            stepper_oid,
+            target_phase,
+            max_microsteps_per_sample,
+        )
+    }
+
+    pub fn phase_align_to(&self, stepper_oid: u8, target_phase: u16) -> i32 {
+        crate::phase_handover::align_to(&self.stepping_axes, stepper_oid, target_phase)
+    }
+
+    pub fn phase_state(
+        &self,
+        stepper_oid: u8,
+    ) -> Option<crate::phase_handover::PhaseQuery> {
+        crate::phase_handover::query(&self.stepping_axes, stepper_oid)
+    }
+
     pub fn seed_position(&mut self, xyz: [f32; 3]) {
         use core::sync::atomic::Ordering;
         let motor_positions = [xyz[0], xyz[1], xyz[2], 0.0_f32, 0.0, 0.0, 0.0, 0.0];
