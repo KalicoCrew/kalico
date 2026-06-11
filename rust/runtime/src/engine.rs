@@ -129,6 +129,16 @@ impl Engine {
     }
 }
 
+fn idle_phase_slew_pending(axis: &AxisState) -> bool {
+    if axis.mode.load(Ordering::Acquire) != StepMode::Phase as u8 {
+        return false;
+    }
+    axis.steppers.iter().any(|s| {
+        s.phase_offset_microsteps.load(Ordering::Acquire)
+            != s.phase_offset_target.load(Ordering::Acquire)
+    })
+}
+
 impl Engine {
     pub fn status(&self) -> RuntimeStatus {
         RuntimeStatus::from_u8(self.status.load(Ordering::Acquire))
@@ -297,7 +307,7 @@ impl Engine {
                 };
                 let cps = self.cycles_per_second;
                 let fault = SharedFaultSink { shared };
-                let Some((p_end, v_end)) = crate::motion_core::get_position_and_velocity(
+                match crate::motion_core::get_position_and_velocity(
                     &mut axis.armed,
                     &mut axis.ring,
                     storage,
@@ -306,14 +316,22 @@ impl Engine {
                     cps,
                     i,
                     &fault,
-                ) else {
-                    continue;
-                };
-                active = true;
-                let p_sample_start = axis.p_prev;
-                axis.p_prev = p_end;
-                axis.v_prev = v_end;
-                (p_end, v_end, p_sample_start)
+                ) {
+                    Some((p_end, v_end)) => {
+                        active = true;
+                        let p_sample_start = axis.p_prev;
+                        axis.p_prev = p_end;
+                        axis.v_prev = v_end;
+                        (p_end, v_end, p_sample_start)
+                    }
+                    None => {
+                        if !idle_phase_slew_pending(axis) {
+                            continue;
+                        }
+                        active = true;
+                        (axis.p_prev, 0.0, axis.p_prev)
+                    }
+                }
             };
 
             #[cfg(feature = "motion-module-stepper")]
