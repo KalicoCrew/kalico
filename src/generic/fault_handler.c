@@ -212,6 +212,10 @@ struct diag_counters {
     uint32_t usb_in_dtxfsts;
     uint32_t usb_out_doepctl;
     uint32_t usb_out_doepint;
+
+    uint32_t stepout_late_max_cyc;
+    uint32_t stepout_late_count;
+    uint32_t stepout_late_max_drained;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -532,6 +536,11 @@ diag_take_snapshot(struct diag_snapshot *s)
     diag.usb_in_max_gap_ticks  = 0;
     diag.runtime_drain_max_gap_ticks = 0;
     diag.runtime_status_max_gap_ticks = 0;
+    extern void kalico_stepout_late_reset(void);
+    kalico_stepout_late_reset();
+    diag.stepout_late_max_cyc    = 0;
+    diag.stepout_late_count      = 0;
+    diag.stepout_late_max_drained = 0;
     diag_cache_clean();
     irq_restore(flag);
 }
@@ -906,6 +915,9 @@ fault_handler_report_task(void)
             prior_diag.usb_in_dtxfsts         = diag.usb_in_dtxfsts;
             prior_diag.usb_out_doepctl        = diag.usb_out_doepctl;
             prior_diag.usb_out_doepint        = diag.usb_out_doepint;
+            prior_diag.stepout_late_max_cyc   = diag.stepout_late_max_cyc;
+            prior_diag.stepout_late_count     = diag.stepout_late_count;
+            prior_diag.stepout_late_max_drained = diag.stepout_late_max_drained;
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
                 prior_ring[i].tag       = diag_ring[i].tag;
                 prior_ring[i]._pad0     = diag_ring[i]._pad0;
@@ -1213,6 +1225,13 @@ kalico_diag_emit_prior_crash(void)
                             KALICO_LOG_EVENT_RUNTIME_TIM5_IA, 0,
                             prior_diag.tim5_ia_min_cyc,
                             prior_diag.tim5_ia_max_cyc);
+            {
+                uint32_t packed = (prior_diag.stepout_late_count << 16)
+                                  | (prior_diag.stepout_late_max_drained & 0xFFFFu);
+                kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                                KALICO_LOG_EVENT_RUNTIME_STEPOUT_LATE, 0,
+                                prior_diag.stepout_late_max_cyc, packed);
+            }
 
             uint32_t head = prior_diag.ring_head & DIAG_RING_MASK;
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
@@ -1259,6 +1278,20 @@ kalico_diag_emit_live(void)
     kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
                     KALICO_LOG_EVENT_RUNTIME_TIM5_IA, 0,
                     diag.tim5_ia_min_cyc, diag.tim5_ia_max_cyc);
+    {
+        extern void kalico_stepout_late_get(uint32_t *out_max_late,
+                                            uint32_t *out_late_count,
+                                            uint32_t *out_max_drained);
+        uint32_t late_max = 0, late_count = 0, late_drained = 0;
+        kalico_stepout_late_get(&late_max, &late_count, &late_drained);
+        diag.stepout_late_max_cyc    = late_max;
+        diag.stepout_late_count      = late_count;
+        diag.stepout_late_max_drained = late_drained;
+        uint32_t packed = (late_count << 16) | (late_drained & 0xFFFFu);
+        kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_STEPOUT_LATE, 0,
+                        late_max, packed);
+    }
 
     if (live_snap.worst_fg_stall_ticks) {
         kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,

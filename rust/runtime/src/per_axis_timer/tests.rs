@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used)]
 
-use super::test_hooks::{queue_for_axis, reset, set_now, set_owned_mask, take_emits};
+use super::test_hooks::{
+    queue_for_axis, reset, set_late_threshold, set_now, set_owned_mask, take_emits, take_late_stats,
+};
 use super::{MAX_STEPS_PER_EVENT, STEP_OUTPUT_DISABLE, kalico_step_output_event};
 use crate::step_queue::{StepEntry, push};
 
@@ -166,4 +168,100 @@ fn mixed_due_and_future_across_axes() {
     assert!(emits.contains(&(0u8, 1i32)));
     assert!(emits.contains(&(2u8, -1i32)));
     assert_eq!(next, 6000);
+}
+
+// ---- lateness tracking ----
+
+#[test]
+fn on_time_emission_produces_zero_late_stats() {
+    reset();
+    set_now(1000);
+    set_owned_mask(0b0001);
+    set_late_threshold(500);
+    enqueue(0, 1000, 1);
+    kalico_step_output_event();
+    let (max_late, late_count, max_drained) = take_late_stats();
+    assert_eq!(max_late, 0, "on-time emission must not bump max_late");
+    assert_eq!(late_count, 0, "on-time emission must not bump late_count");
+    assert_eq!(max_drained, 1);
+}
+
+#[test]
+fn late_emission_exceeding_threshold_increments_stats() {
+    reset();
+    set_now(5000);
+    set_owned_mask(0b0001);
+    set_late_threshold(500);
+    enqueue(0, 1000, 1);
+    kalico_step_output_event();
+    let _ = take_emits();
+    let (max_late, late_count, _) = take_late_stats();
+    assert_eq!(late_count, 1);
+    assert_eq!(max_late, 5000u32.wrapping_sub(1000));
+}
+
+#[test]
+fn late_by_exactly_threshold_not_counted() {
+    reset();
+    set_now(1500);
+    set_owned_mask(0b0001);
+    set_late_threshold(500);
+    enqueue(0, 1000, 1);
+    kalico_step_output_event();
+    let _ = take_emits();
+    let (max_late, late_count, _) = take_late_stats();
+    assert_eq!(late_count, 0, "lateness == threshold is not > threshold");
+    assert_eq!(max_late, 0);
+}
+
+#[test]
+fn max_late_tracks_worst_across_multiple_events() {
+    reset();
+    set_owned_mask(0b0001);
+    set_late_threshold(100);
+
+    set_now(2000);
+    enqueue(0, 1500, 1);
+    kalico_step_output_event();
+    let _ = take_emits();
+
+    set_now(3000);
+    enqueue(0, 1000, 1);
+    kalico_step_output_event();
+    let _ = take_emits();
+
+    let (max_late, late_count, _) = take_late_stats();
+    assert_eq!(late_count, 2);
+    assert_eq!(max_late, 3000u32.wrapping_sub(1000));
+}
+
+#[test]
+fn max_drained_tracks_largest_batch() {
+    reset();
+    set_now(9000);
+    set_owned_mask(0b0001);
+    set_late_threshold(500);
+    enqueue(0, 1000, 1);
+    enqueue(0, 2000, 1);
+    enqueue(0, 3000, 1);
+    enqueue(0, 4000, 1);
+    kalico_step_output_event();
+    let _ = take_emits();
+    let (_, _, max_drained) = take_late_stats();
+    assert_eq!(max_drained, 4, "all four entries drain in one event");
+}
+
+#[test]
+fn future_only_entry_produces_zero_late_and_zero_drained() {
+    reset();
+    set_now(1000);
+    set_owned_mask(0b0001);
+    set_late_threshold(500);
+    enqueue(0, 5000, 1);
+    kalico_step_output_event();
+    assert!(take_emits().is_empty());
+    let (max_late, late_count, max_drained) = take_late_stats();
+    assert_eq!(max_late, 0);
+    assert_eq!(late_count, 0);
+    assert_eq!(max_drained, 0, "nothing was drained so max_drained stays 0");
 }

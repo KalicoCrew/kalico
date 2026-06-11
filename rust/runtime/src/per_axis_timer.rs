@@ -1,5 +1,7 @@
 #![allow(unsafe_code)]
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use crate::step_queue::{N_AXIS_STEP_QUEUES, peek as queue_peek, pop as queue_pop};
 
 pub const STEP_OUTPUT_DISABLE: u32 = u32::MAX;
@@ -8,8 +10,73 @@ const DUE_WINDOW_CYCLES: i32 = 0;
 
 pub const MAX_STEPS_PER_EVENT: u32 = 32;
 
+// Lateness tracking — written from the step-output ISR, read by the C
+// diagnostics foreground via kalico_stepout_late_get(). AtomicU32 with Relaxed
+// ordering: the C reader is display-only, no synchronisation required between
+// ISR writes and foreground reads.
+static STEPOUT_MAX_LATE_CYCLES: AtomicU32 = AtomicU32::new(0);
+static STEPOUT_LATE_COUNT: AtomicU32 = AtomicU32::new(0);
+static STEPOUT_MAX_DRAINED: AtomicU32 = AtomicU32::new(0);
+
+fn record_lateness(now: u32, cycle_abs: u32, threshold: u32) {
+    let late_cycles = now.wrapping_sub(cycle_abs);
+    if late_cycles > threshold {
+        STEPOUT_LATE_COUNT.fetch_add(1, Ordering::Relaxed);
+        let prev = STEPOUT_MAX_LATE_CYCLES.load(Ordering::Relaxed);
+        if late_cycles > prev {
+            STEPOUT_MAX_LATE_CYCLES.store(late_cycles, Ordering::Relaxed);
+        }
+    }
+}
+
+fn record_drained(count: u32) {
+    let prev = STEPOUT_MAX_DRAINED.load(Ordering::Relaxed);
+    if count > prev {
+        STEPOUT_MAX_DRAINED.store(count, Ordering::Relaxed);
+    }
+}
+
+// Threshold: ~½ TIM5 sample period in DWT cycles.
+// H7 @ 520 MHz / 40 kHz → 6500 cyc; F446 @ 180 MHz / 40 kHz → 2250 cyc.
+#[cfg(not(any(test, feature = "host")))]
+fn late_threshold_cycles() -> u32 {
+    // SAFETY: runtime_clock_freq is a C const written once at boot before any
+    // ISR fires; it is effectively immutable from that point on.
+    let freq = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(runtime_clock_freq)) };
+    freq / (2 * 40_000)
+}
+
+#[cfg(any(test, feature = "host"))]
+fn late_threshold_cycles() -> u32 {
+    test_hooks::late_threshold()
+}
+
+#[cfg(not(any(test, feature = "host")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn kalico_stepout_late_get(
+    out_max_late: *mut u32,
+    out_late_count: *mut u32,
+    out_max_drained: *mut u32,
+) {
+    // SAFETY: caller (C foreground) passes valid non-null stack pointers.
+    unsafe {
+        *out_max_late = STEPOUT_MAX_LATE_CYCLES.load(Ordering::Relaxed);
+        *out_late_count = STEPOUT_LATE_COUNT.load(Ordering::Relaxed);
+        *out_max_drained = STEPOUT_MAX_DRAINED.load(Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(any(test, feature = "host")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn kalico_stepout_late_reset() {
+    STEPOUT_MAX_LATE_CYCLES.store(0, Ordering::Relaxed);
+    STEPOUT_LATE_COUNT.store(0, Ordering::Relaxed);
+    STEPOUT_MAX_DRAINED.store(0, Ordering::Relaxed);
+}
+
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
+    static runtime_clock_freq: u32;
     fn timer_read_time() -> u32;
     fn runtime_emit_step_pulses(axis_idx: u8, n_steps: i32);
     fn kalico_step_output_owned_mask() -> u8;
@@ -39,6 +106,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     let owned = unsafe { kalico_step_output_owned_mask() };
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_ENTER);
 
+    let threshold = late_threshold_cycles();
     let mut emitted: u32 = 0;
     'outer: loop {
         let mut emitted_this_pass = false;
@@ -61,6 +129,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
             };
             let delta = entry.cycle_abs.wrapping_sub(now) as i32;
             if delta <= DUE_WINDOW_CYCLES {
+                record_lateness(now, entry.cycle_abs, threshold);
                 // SAFETY: sole-consumer discipline as above.
                 let _ = unsafe { queue_pop(q) };
                 // SAFETY: C step emitter guards out-of-range motor indices.
@@ -74,6 +143,8 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
             break;
         }
     }
+
+    record_drained(emitted);
 
     if emitted >= MAX_STEPS_PER_EVENT {
         crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EXIT);
@@ -130,6 +201,7 @@ pub mod test_hooks {
         static QUEUES: RefCell<[StepQueue; N_QUEUES]> =
             RefCell::new(core::array::from_fn(|_| StepQueue::new()));
         static EMITS: RefCell<Vec<(u8, i32)>> = const { RefCell::new(Vec::new()) };
+        static LATE_THRESHOLD: RefCell<u32> = const { RefCell::new(500) };
     }
 
     pub fn set_now(v: u32) {
@@ -144,16 +216,30 @@ pub mod test_hooks {
     pub fn owned_mask() -> u8 {
         OWNED.with(|c| *c.borrow())
     }
+    pub fn set_late_threshold(v: u32) {
+        LATE_THRESHOLD.with(|c| *c.borrow_mut() = v);
+    }
+    pub fn late_threshold() -> u32 {
+        LATE_THRESHOLD.with(|c| *c.borrow())
+    }
     pub fn record_emit(axis: u8, n: i32) {
         EMITS.with(|c| c.borrow_mut().push((axis, n)));
     }
     pub fn take_emits() -> Vec<(u8, i32)> {
         EMITS.with(|c| core::mem::take(&mut *c.borrow_mut()))
     }
+    pub fn take_late_stats() -> (u32, u32, u32) {
+        use core::sync::atomic::Ordering;
+        let max_late = super::STEPOUT_MAX_LATE_CYCLES.swap(0, Ordering::Relaxed);
+        let late_count = super::STEPOUT_LATE_COUNT.swap(0, Ordering::Relaxed);
+        let max_drained = super::STEPOUT_MAX_DRAINED.swap(0, Ordering::Relaxed);
+        (max_late, late_count, max_drained)
+    }
     pub fn reset() {
         set_now(0);
         set_owned_mask(0);
         let _ = take_emits();
+        let _ = take_late_stats();
         QUEUES.with(|c| {
             for q in c.borrow_mut().iter_mut() {
                 q.clear();
