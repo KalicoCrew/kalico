@@ -51,10 +51,12 @@ pub enum MailboxRequest {
 pub enum MailboxReply {
     SdoRead {
         correlation_id: u32,
+        msg: SdoRead,
         resp: SdoReadResponse,
     },
     SdoWrite {
         correlation_id: u32,
+        msg: SdoWrite,
         resp: SdoWriteResponse,
     },
     WriteLimits {
@@ -97,6 +99,7 @@ impl MailboxWorker {
                         } => MailboxReply::SdoRead {
                             correlation_id,
                             resp: execute_sdo_read(&mut bus, &msg),
+                            msg,
                         },
                         MailboxRequest::SdoWrite {
                             correlation_id,
@@ -104,6 +107,7 @@ impl MailboxWorker {
                         } => MailboxReply::SdoWrite {
                             correlation_id,
                             resp: execute_sdo_write(&mut bus, &msg),
+                            msg,
                         },
                         MailboxRequest::WriteLimits {
                             correlation_id,

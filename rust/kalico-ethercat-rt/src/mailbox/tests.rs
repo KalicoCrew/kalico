@@ -93,9 +93,11 @@ fn submit_never_blocks_while_transaction_is_slow() {
     match drain_one(&worker, Duration::from_secs(2)) {
         MailboxReply::SdoWrite {
             correlation_id,
+            msg,
             resp,
         } => {
             assert_eq!(correlation_id, 1);
+            assert_eq!((msg.index, msg.subindex), (0x2001, 0x02));
             assert_eq!(resp.result, 0);
         }
         _ => panic!("expected the write reply first"),
@@ -103,9 +105,11 @@ fn submit_never_blocks_while_transaction_is_slow() {
     match drain_one(&worker, Duration::from_secs(2)) {
         MailboxReply::SdoRead {
             correlation_id,
+            msg,
             resp,
         } => {
             assert_eq!(correlation_id, 2);
+            assert_eq!((msg.index, msg.subindex), (0x2001, 0x02));
             assert_eq!(resp.result, 0);
             assert_eq!(
                 i64::from_le_bytes([resp.data[0], resp.data[1], 0, 0, 0, 0, 0, 0]),

@@ -502,19 +502,27 @@ fn main() {
             match reply {
                 MailboxReply::SdoRead {
                     correlation_id,
+                    msg,
                     resp,
                 } => {
                     if resp.result != 0 {
-                        eprintln!("ec-rt: SdoRead failed result={}", resp.result);
+                        eprintln!(
+                            "ec-rt: SdoRead 0x{:04x}.{} failed result={}",
+                            msg.index, msg.subindex, resp.result
+                        );
                     }
                     server.respond(&sdo_read_response_frame(correlation_id, &resp));
                 }
                 MailboxReply::SdoWrite {
                     correlation_id,
+                    msg,
                     resp,
                 } => {
                     if resp.result != 0 {
-                        eprintln!("ec-rt: SdoWrite failed result={}", resp.result);
+                        eprintln!(
+                            "ec-rt: SdoWrite 0x{:04x}.{} value={} size={} failed result={}",
+                            msg.index, msg.subindex, msg.value, msg.size, resp.result
+                        );
                     }
                     server.respond(&sdo_write_response_frame(correlation_id, &resp));
                 }

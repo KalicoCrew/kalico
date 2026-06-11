@@ -55,6 +55,9 @@ encoder_counts_per_rev: 131072  # A6-EC: 131072
 computed motor velocity as a 60B1h velocity offset each DC cycle. Purely
 kinematic — no fitted profile needed. Wrong values degrade tracking, nothing
 else; following error before/after on identical strokes is the metric.
+Bring-up writes the drive's FF percentage registers to 0, not 100% — the
+A6-EC applies communication FF at (100% + C01.14/C01.17); see
+[`ethercat-bench-bringup.md`](ethercat-bench-bringup.md).
 
 `dynamics_profile` (path, default none): path to a dynamics profile TOML (see
 below). When present, enables 60B2h torque feedforward. Without it the torque
@@ -93,30 +96,73 @@ All 8 fields are required. Validation rules (any failure = hard claim error):
 
 ## Identification workflow
 
-### Step 1 — generate excitation G-code
+The whole loop is driven from the console by the macros in
+`config/servo_calibration.cfg` (include it from `printer.cfg`). One-time
+prerequisite: build the fitter on the host with
+`cargo build --release -p servo-ident` (from `rust/`).
+
+### Step 1 — excite, capture, and fit in one command
+
+```
+SERVO_FIT_DYNAMICS TORQUE_NM=1.27 INERTIA_KGM2=0.000057 ROT_DIST=40
+```
+
+This homes, runs the `SERVO_MEASURE_INERTIA` excitation grid (defaults:
+ACCELS `5000,10000,20000` × SPEEDS `100,400`, 3 iterations each, constant-
+acceleration triangle strokes), captures per-DC-cycle PDO data, and hands the
+capture to `scripts/servo_fit_dynamics.py`, which exports the fitter CSV and
+runs `servo-ident`. The profile is written to
+`~/printer_data/config/servo_dynamics/dynamics_<name>_<timestamp>.toml` — a
+new fit never replaces an existing profile; switching is an explicit config
+edit. `TORQUE_NM`/`INERTIA_KGM2`/`ROT_DIST` are optional; when given, the fit
+also prints the recommended drive load-inertia ratio C00.06.
+
+`_SERVO_STROKES` refuses any (speed, accel) pair where `v²/a` exceeds the
+stroke span — that combination cannot reach the target speed within the
+available travel and would not produce the intended excitation.
+
+### Step 2 — point the config at the profile
+
+```ini
+[servo_x]
+...
+velocity_ff: True
+dynamics_profile: ~/printer_data/config/servo_dynamics/dynamics_ident_<timestamp>.toml
+```
+
+Restart klippy. The endpoint loads and validates the profile at claim time.
+
+### Step 3 — validate tracking
+
+```
+SERVO_MEASURE_TRACKING SPEED=400 ACCEL=20000
+```
+
+Prints per-move following-error peak/rms, overshoot, settle time, and the
+peak FF offsets seen during motion (the velocity figure should match the
+commanded speed). With velocity FF at true unity the cruise following error
+collapses to encoder noise — bench reference: 0.017 mm rms at 400 mm/s,
+versus v/Kp ≈ 1.8 mm without FF.
+
+### Offline / manual path
+
+The macros wrap pieces that also run standalone, host-side:
 
 ```sh
 servo-excite --axis X --min 10 --max 210 \
     --accels 1000,3000,6000 --speeds 100,200,300 --out excite_x.gcode
-```
-
-`servo-excite` generates constant-acceleration triangle strokes at each
-(accel, speed) pair, repeated `--reps` times (default 4). It refuses any
-combination where `v²/a` exceeds the stroke span (`--max` − `--min`) — that
-combination cannot reach the target speed within the available travel and the
-G-code would not produce the intended excitation.
-
-### Step 2 — run under layer-2 telemetry capture
-
-Run the generated G-code through the printer while `SERVO_CAPTURE_START` /
-`SERVO_CAPTURE_STOP` record per-DC-cycle PDO data to a `.scap` file, then
-convert it to the fitter's CSV with the capture analysis script:
-
-```sh
 python3 scripts/servo_capture.py run.scap --csv run.csv
+servo-ident \
+    --capture run.csv \
+    --structure scalar \
+    --axes x \
+    --out dynamics_x.toml \
+    --rated-torque-nm 1.27 \
+    --rotor-inertia-kgm2 0.000057 \
+    --rotation-distance-mm 40
 ```
 
-The export derives `t` from the cycle index and `cycle_ns`, converts
+The CSV export derives `t` from the cycle index and `cycle_ns`, converts
 `target_counts` to mm with the header's `counts_per_mm`, and emits
 `torque_actual` as-is (already 0.1% rated).
 
@@ -127,19 +173,6 @@ The export derives `t` from the cycle index and `cycle_ns`, converts
 
 Velocity and acceleration are derived internally by central differences of the
 target position columns; no ω/α column is needed in the CSV.
-
-### Step 3 — fit a dynamics profile
-
-```sh
-servo-ident \
-    --capture run.csv \
-    --structure scalar \
-    --axes x \
-    --out dynamics_x.toml \
-    --rated-torque-nm 1.27 \
-    --rotor-inertia-kgm2 0.000057 \
-    --rotation-distance-mm 40
-```
 
 `--structure scalar` for a single Cartesian servo; `--structure corexy` for a
 coupled A/B pair (requires `--axes a,b` and both motors' columns in the CSV).
@@ -166,17 +199,6 @@ recommended C00.06 (light direction): 142%
 Cross-check against the drive's F30.10 auto-tune on a Cartesian axis to
 validate the whole pipeline before using it on a CoreXY where F30.10 has no
 ground truth.
-
-### Step 4 — reference profile from config
-
-```ini
-[servo_x]
-...
-dynamics_profile: dynamics_x.toml
-ff_torque_clamp: 30.0
-```
-
-Restart klippy. The endpoint loads and validates the profile at claim time.
 
 ## Runtime behavior
 
