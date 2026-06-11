@@ -559,21 +559,6 @@ class Printer:
         return [cb(*params) for cb in self.event_handlers.get(event, [])]
 
     def _dispatch_disconnect(self):
-        # Per-handler-guarded klippy:disconnect dispatch. Unlike the bare
-        # send_event (which aborts the whole list on the first raising handler),
-        # this guarantees every disconnect handler runs — critically
-        # MotionToolhead._handle_disconnect → bridge.shutdown(), which releases
-        # the pts fd. A sibling handler raising must never starve teardown.
-        # Scoped to this one dispatch on purpose: other send_event callers rely
-        # on exceptions propagating.
-        #
-        # Fired only from the post-run exit path — never on a failed connect.
-        # A connect error (config/protocol/mcu) must leave the printer alive in
-        # its error state so webhooks keeps serving it to moonraker; bridge
-        # resources are reclaimed when the process actually exits. One-shot:
-        # bridge.shutdown() is idempotent, but the broader disconnect handlers
-        # (heaters, fans, webhooks, gcode, mcu._disconnect) are not
-        # contractually so.
         if self._disconnect_dispatched:
             return
         self._disconnect_dispatched = True

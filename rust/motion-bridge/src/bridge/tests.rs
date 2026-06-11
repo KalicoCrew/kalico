@@ -687,27 +687,19 @@ fn register_ethercat_mcu_seeds_nominal_clock_freq() {
     );
 }
 
-/// Partial-state teardown: one serial MCU attached, the (would-be) second
-/// never attached. `shutdown()` must release the one attached MCU's fd —
-/// mirroring klippy's post-run exit dispatch after a connect failed partway.
-/// (A failed connect itself no longer tears anything down: the printer stays
-/// alive in its error state so moonraker can display it; shutdown() runs only
-/// when the process actually exits.)
 #[test]
 fn partial_state_teardown_at_exit() {
     let bridge = PyMotionBridge::new();
     let (master_fd, slave_path) = open_pty();
     let (io_arc, io_weak) = host_io_on_pty(&slave_path);
     insert_mcu(&bridge, 1, serial_mcu_conn("mcu0", &slave_path, io_arc));
-    // MCU handle 2 was never attached (simulated claim failure) — nothing to
-    // insert. shutdown() must still cleanly release handle 1.
 
     bridge.shutdown();
 
     assert!(
         io_weak.upgrade().is_none(),
-        "the one attached MCU's host_io fd must be released even on the \
-         partial/failed-connect teardown path"
+        "the one attached MCU's host_io fd must be released even when the \
+         bridge was only partially attached"
     );
     assert!(mcus_is_empty(&bridge));
 
