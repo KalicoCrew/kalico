@@ -3,6 +3,7 @@ import pytest
 from klippy.bridge_endstop import (
     PROVIDER_ID_FIRST,
     BridgeEndstop,
+    RemoteBridgeEndstop,
     allocate_provider_id,
 )
 
@@ -145,3 +146,48 @@ def test_provider_ids_allocate_sequentially():
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST + 1
     assert allocate_provider_id(printer) == PROVIDER_ID_FIRST + 2
+
+
+class FakeBridge:
+    def __init__(self):
+        self.calls = []
+
+    def arm_remote_trigger(self, mcu_handle, trsync_oid, endstop_id):
+        self.calls.append(("arm", mcu_handle, trsync_oid, endstop_id))
+
+    def disarm_remote_trigger(self, endstop_id):
+        self.calls.append(("disarm", endstop_id))
+
+
+class FakeRemoteMcu:
+    _bridge_handle = 42
+
+
+def _remote_setup():
+    printer = FakePrinter()
+    bridge = FakeBridge()
+    printer.add_object("motion_bridge", bridge)
+    es = RemoteBridgeEndstop(printer, FakeRemoteMcu(), trsync_oid=9)
+    return bridge, es
+
+
+def test_remote_endstop_allocates_provider_id():
+    _, es = _remote_setup()
+    assert es.endstop_id >= PROVIDER_ID_FIRST
+
+
+def test_remote_endstop_arm_and_disarm_delegate_to_bridge():
+    bridge, es = _remote_setup()
+    es.arm(0.001)
+    es.disarm()
+    assert bridge.calls == [
+        ("arm", 42, 9, es.endstop_id),
+        ("disarm", es.endstop_id),
+    ]
+
+
+def test_remote_endstop_default_query_state():
+    _, es = _remote_setup()
+    assert es.is_triggered() is False
+    assert es.query_endstop(0.0) is False
+    assert es.bridge_mcu_handle() == 42

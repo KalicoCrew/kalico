@@ -382,6 +382,14 @@ class Homing:
                     )
                 reactor.pause(reactor.monotonic() + 0.010)
         finally:
+            disarm = getattr(endstop, "disarm", None)
+            if disarm is not None:
+                try:
+                    disarm()
+                except Exception:
+                    logging.exception(
+                        "trip_move: remote trigger disarm failed during unwind"
+                    )
             if provider is not None and hasattr(provider, "trip_move_end"):
                 provider.trip_move_end(entry)
         trip_pos, final_pos, trip_clock = result
