@@ -70,12 +70,6 @@ static void dc_sync(int64_t reftime, int64_t cycletime, int64_t *offset) {
     *offset = -(delta / 100) - (g_integral / 20);
 }
 
-/*
- * RT hardening is mandatory, not best-effort: without SCHED_FIFO on an
- * isolated core the DC loop misses SYNC0 under boot load and the drive
- * latches ErC1.1 (sync loss). A missing capability fails loudly here rather
- * than masquerading as a drive fault at the SAFE-OP->OP transition later.
- */
 static int go_realtime(int cpu, int prio) {
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
         fprintf(stderr, "ec_rt: mlockall failed: %s — grant CAP_IPC_LOCK\n",
@@ -161,10 +155,6 @@ static int remap_volatile_tx_pdo_1a00(void) {
     return rewrite_1a00_entry_table();
 }
 
-/* The fixed RxPDO 1701h is the 12-byte CSP output out_t mirrors. The drive
- * otherwise powers up with a wider RxPDO assigned to 1C12h, whose byte count
- * disagrees with out_t and aborts bringup at EC_RT_ERR_PDO_SIZE. Pin it
- * explicitly, the same group-then-count order as the TxPDO assignment. */
 static int assign_fixed_rx_pdo_0x1701(void) {
     uint8_t  no_pdos  = 0;
     uint8_t  one_pdo  = 1;
