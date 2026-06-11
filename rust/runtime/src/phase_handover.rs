@@ -14,8 +14,7 @@ pub struct PhaseQuery {
 }
 
 pub fn shortest_phase_delta(current_phase: u16, target_phase: u16) -> i32 {
-    let raw =
-        (i32::from(target_phase) - i32::from(current_phase)).rem_euclid(PHASE_PERIOD);
+    let raw = (i32::from(target_phase) - i32::from(current_phase)).rem_euclid(PHASE_PERIOD);
     if raw > PHASE_PERIOD / 2 {
         raw - PHASE_PERIOD
     } else {
@@ -92,8 +91,7 @@ pub fn align_to(axes: &[Option<AxisState>], stepper_oid: u8, target_phase: u16) 
     };
     let current = stepper.phase_offset_microsteps.load(Ordering::Acquire);
     let current_phase = phase_of(axis.last_step_count, current);
-    let new_offset =
-        current.wrapping_add(shortest_phase_delta(current_phase, target_phase));
+    let new_offset = current.wrapping_add(shortest_phase_delta(current_phase, target_phase));
     stepper
         .phase_offset_microsteps
         .store(new_offset, Ordering::Release);

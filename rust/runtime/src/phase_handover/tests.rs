@@ -87,7 +87,9 @@ fn jog_to_moves_offset_target_by_shortest_path_requires_phase_mode() {
     // 1020 -> 4 is +8 through the wrap.
     assert_eq!(stepper.phase_offset_target.load(Ordering::Acquire), 8);
     assert_eq!(
-        shared.max_phase_offset_ramp_per_sample.load(Ordering::Acquire),
+        shared
+            .max_phase_offset_ramp_per_sample
+            .load(Ordering::Acquire),
         1
     );
     // Pulse mode is refused.

@@ -516,10 +516,7 @@ impl Engine {
         crate::phase_handover::align_to(&self.stepping_axes, stepper_oid, target_phase)
     }
 
-    pub fn phase_state(
-        &self,
-        stepper_oid: u8,
-    ) -> Option<crate::phase_handover::PhaseQuery> {
+    pub fn phase_state(&self, stepper_oid: u8) -> Option<crate::phase_handover::PhaseQuery> {
         crate::phase_handover::query(&self.stepping_axes, stepper_oid)
     }
 
