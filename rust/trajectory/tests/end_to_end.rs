@@ -69,7 +69,9 @@ fn shape_batch_straight_line() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -135,7 +137,9 @@ fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input)
@@ -198,7 +202,9 @@ fn shape_batch_two_segments() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -282,7 +288,9 @@ fn shape_batch_with_retraction() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -346,7 +354,9 @@ fn shape_batch_beta_warning() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input);
@@ -383,7 +393,9 @@ fn shape_batch_empty_input() {
         beta_convergence_ratio: 1.02,
         e_limits: default_e_limits(),
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input);

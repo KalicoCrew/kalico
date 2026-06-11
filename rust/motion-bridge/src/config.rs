@@ -39,8 +39,12 @@ impl PlannerLimits {
                 self.max_accel * 2.0,
                 self.max_z_accel * 2.0,
             ],
-            self.square_corner_velocity.powi(2) / (self.max_accel * 0.5),
+            self.max_accel,
         )
+    }
+
+    pub fn junction_deviation_mm(&self) -> f64 {
+        self.square_corner_velocity.powi(2) * (std::f64::consts::SQRT_2 - 1.0) / self.max_accel
     }
 }
 

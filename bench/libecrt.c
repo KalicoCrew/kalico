@@ -417,6 +417,18 @@ int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
     return 0;
 }
 
+int ec_rt_park_cycle(int64_t *toff_ns) {
+    g_out->controlword     = 0;
+    g_out->target_position = g_in->position_actual;
+    return rt_exchange(toff_ns);
+}
+
+void ec_rt_al_status(uint16_t *state, uint16_t *alstatuscode) {
+    ec_readstate();
+    *state        = ec_slave[1].state;
+    *alstatuscode = ec_slave[1].ALstatuscode;
+}
+
 void ec_rt_disable(void) {
     g_enabled = 0;
     for (int i = 0; i < 100; i++) {

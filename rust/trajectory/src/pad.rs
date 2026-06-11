@@ -49,7 +49,7 @@ pub fn pad_segment_axis_with_history(
 ) -> ScalarNurbs<f64> {
     let seg = &fitted[seg_idx];
     let seg_pieces = extract_bezier_pieces(&seg.axes[axis]);
-    let target_degree = seg_pieces[0].degree();
+    let target_degree = seg_pieces.iter().map(|p| p.degree()).max().unwrap_or(0);
 
     let mut left_pieces = collect_left_padding(
         seg_idx,

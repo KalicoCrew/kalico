@@ -1,4 +1,5 @@
 use super::*;
+use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SolverResult, SolverStatus};
 use crate::topp::verify::VerifyReport;
 use crate::{BindingConstraint, GridConfig, GridScheme};
@@ -20,6 +21,7 @@ fn dummy_grid(n: usize, length: f64) -> ArclengthGrid {
         c_triple_prime,
         kappa,
         total_length: length,
+        inter_kappa: vec![vec![(0.25, 0.0), (0.5, 0.0), (0.75, 0.0)]; n.saturating_sub(1)],
     }
 }
 
@@ -40,13 +42,15 @@ fn assembles_samples_and_total_time() {
         worst_violation: 0.0,
         worst_violation_grid: 0,
         feasible: true,
+        worst_jerk_ratio: 0.0,
+        worst_non_jerk_ratio: 0.0,
     };
     let cfg = GridConfig {
         scheme: GridScheme::UniformArclength,
         n: 3,
     };
     let p = assemble(
-        &grid,
+        &grid.s,
         &result,
         &verify,
         cfg,
@@ -56,4 +60,39 @@ fn assembles_samples_and_total_time() {
     assert!((p.samples[1].v - 10.0).abs() < 1e-9);
     assert!(matches!(p.status, SolveStatus::Solved));
     assert!((p.total_time - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn infeasible_solve_reports_infinite_time() {
+    // An infeasible solver answer is garbage primal values that traverse the
+    // path at near-zero speed, which would integrate to an enormous-but-finite
+    // time and read downstream as a real (slow) trajectory. An infeasible solve
+    // must report INFINITY so nothing mistakes it for a schedulable move.
+    let grid = dummy_grid(3, 50.0);
+    let result = SolverResult {
+        b: vec![4e-5, 2e-5, 1e-9],
+        a: vec![0.0, 0.0, 0.0],
+        status: SolverStatus::Infeasible,
+    };
+    let verify = VerifyReport {
+        binding_per_grid: vec![BindingConstraint::None; 3],
+        worst_violation: 1.0,
+        worst_violation_grid: 0,
+        feasible: false,
+        worst_jerk_ratio: 1.0,
+        worst_non_jerk_ratio: 2.0,
+    };
+    let cfg = GridConfig {
+        scheme: GridScheme::UniformArclength,
+        n: 3,
+    };
+    let p = assemble(
+        &grid.s,
+        &result,
+        &verify,
+        cfg,
+        SlpOutcome::Converged { outer_iters: 0 },
+    );
+    assert!(matches!(p.status, SolveStatus::Infeasible { .. }));
+    assert!(p.total_time.is_infinite(), "total_time = {}", p.total_time);
 }

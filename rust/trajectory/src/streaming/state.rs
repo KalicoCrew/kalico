@@ -12,24 +12,13 @@ use crate::fit::FittedSegment;
 use crate::plan_velocity::{plan_velocity, PlanInput, PlanOutput, PlanSegment, PlanStats};
 use crate::AxisShaper;
 use crate::ShapeError;
-use crate::ShapedSegment;
 
-/// Sub-picosecond slack for absolute-time membership checks.
 const TIME_LOOKUP_TOLERANCE: f64 = 1e-12;
 
-/// Boundary slack for the `s_dispatched ∈ (0, 1)` interior check on the cubic
-/// Bézier inverter result. Wider than [`TIME_LOOKUP_TOLERANCE`] because the
-/// Newton iterate has more numerical wander than absolute-time arithmetic.
 const SPLIT_BOUNDARY_TOLERANCE: f64 = 1e-9;
 
-/// Y and Z control points must vanish within this tolerance to classify
-/// a curve as pure-X for the closed-form `s` solve. One picometer is
-/// well inside the planner's position resolution.
 const PURE_AXIS_TOLERANCE: f64 = 1e-12;
 
-/// Middle control points must sit within this distance of the (1/3, 2/3)
-/// lerp of the endpoints to enable the analytic `s = (p − x0) / (x3 − x0)`
-/// shortcut. One nanometer admits every collinear-cubic the planner emits.
 const COLLINEAR_TOLERANCE: f64 = 1e-9;
 
 const NEWTON_DENOMINATOR_FLOOR: f64 = 1e-18;
@@ -38,9 +27,6 @@ const NEWTON_PARAM_TOLERANCE: f64 = 1e-12;
 
 const NEWTON_MAX_ITERS: usize = 12;
 
-/// Residual budget for the Newton inverter's post-convergence position check.
-/// 10× the C¹ refit's L∞ tolerance (5 µm) so a successful Newton converge on a
-/// genuinely-on-curve target lands well inside the budget.
 const NEWTON_RESIDUAL_MM: f64 = 0.05;
 
 const NEWTON_SEED_CLAMP: f64 = 1e-6;
@@ -58,9 +44,9 @@ impl ShaperState {
             t_decel_start: 0.0,
             t_shaped: 0.0,
             t_dispatched: 0.0,
-            pending_dispatch: Vec::new(),
             planned_fitted: Vec::new(),
             planned_meta: Vec::new(),
+            pending_freeze: Vec::new(),
         }
     }
 
@@ -69,23 +55,13 @@ impl ShaperState {
             reseed_axis_queue(axis, home_pos[i]);
         }
         self.uncommitted_moves.clear();
-        self.pending_dispatch.clear();
         self.planned_fitted.clear();
         self.planned_meta.clear();
+        self.pending_freeze.clear();
         self.t_appended = 0.0;
         self.t_decel_start = 0.0;
         self.t_shaped = 0.0;
         self.t_dispatched = 0.0;
-    }
-
-    pub fn append_batch(&mut self, fitted: &FittedSegment) -> Result<(), nurbs::AlgebraError> {
-        let shaped = shape_single_segment(fitted, &self.axes)?;
-        self.pending_dispatch.push(shaped);
-        Ok(())
-    }
-
-    pub fn drain_committed(&mut self) -> Vec<ShapedSegment> {
-        std::mem::take(&mut self.pending_dispatch)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -94,7 +70,26 @@ impl ShaperState {
         new_segment: CubicSegment,
         ctx: &ReplanContext,
     ) -> Result<ReplanReport, ShapeError> {
-        let initial_v = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
+        let max_h = self.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+
+        let t_freeze =
+            if self.t_dispatched > 0.0 && max_h > 0.0 && self.t_dispatched < self.t_appended {
+                (self.t_dispatched + max_h).min(self.t_appended)
+            } else {
+                self.t_dispatched
+            };
+
+        let initial_v_raw = self.read_path_speed_at(t_freeze, ctx.fallback_initial_v);
+        let a_max_path = ctx.limits.a_max.iter().copied().fold(f64::MAX, f64::min);
+        let (initial_a, start_d2_override) = if initial_v_raw > 0.0 {
+            let axis_accels = self.read_axis_accels_at(t_freeze);
+            let path_a = self
+                .read_path_accel_at(t_freeze, 0.0)
+                .clamp(-a_max_path, a_max_path);
+            (path_a, axis_accels)
+        } else {
+            (0.0, None)
+        };
 
         let prior_uncommitted = self.uncommitted_moves.clone();
         let prior_t_appended = self.t_appended;
@@ -102,17 +97,20 @@ impl ShaperState {
         let prior_planned_fitted = self.planned_fitted.clone();
         let prior_planned_meta = self.planned_meta.clone();
 
-        let split_start = Instant::now();
-        let partial_split = self.split_partially_committed_at_t_dispatched();
+        let freeze_zone_active = t_freeze > self.t_dispatched + TIME_LOOKUP_TOLERANCE;
 
-        self.uncommitted_moves
-            .retain(|m| m.t_end > self.t_dispatched);
+        let split_start = Instant::now();
+        let partial_split = self.split_uncommitted_at_freeze(t_freeze);
+
+        self.uncommitted_moves.retain(|m| m.t_end > t_freeze);
+
+        let was_replace_split = matches!(partial_split, Some(PartialCommitSplit::Replace { .. }));
 
         match partial_split {
             Some(PartialCommitSplit::Replace { new_segment }) => {
                 if let Some(front) = self.uncommitted_moves.front_mut() {
                     front.segment = *new_segment;
-                    front.t_start = self.t_dispatched;
+                    front.t_start = t_freeze;
                 }
             }
             Some(PartialCommitSplit::DropFromQueue) => {
@@ -121,10 +119,7 @@ impl ShaperState {
             None => {}
         }
 
-        let pre_plan_t_start = self
-            .uncommitted_moves
-            .back()
-            .map_or(self.t_dispatched, |m| m.t_end);
+        let pre_plan_t_start = self.uncommitted_moves.back().map_or(t_freeze, |m| m.t_end);
         self.uncommitted_moves.push_back(UncommittedMove {
             segment: new_segment,
             t_start: pre_plan_t_start,
@@ -150,6 +145,21 @@ impl ShaperState {
             })
             .collect();
 
+        let boundary_v_cap = plan_segments
+            .first()
+            .map_or(f64::INFINITY, |s| boundary_path_speed_cap(s));
+        let initial_v = initial_v_raw.min(boundary_v_cap);
+
+        const REST_THRESHOLD_MM_S: f64 = 0.1;
+
+        let (initial_v, initial_a, start_d2_override) = if initial_v < REST_THRESHOLD_MM_S {
+            (0.0, 0.0, None)
+        } else if initial_a > 0.0 {
+            (initial_v, 0.0, start_d2_override)
+        } else {
+            (initial_v, initial_a, start_d2_override)
+        };
+
         let plan_input = PlanInput {
             segments: &plan_segments,
             grid_strategy: ctx.grid_strategy,
@@ -160,29 +170,54 @@ impl ShaperState {
             beta_convergence_ratio: ctx.beta_convergence_ratio,
             e_limits: ctx.e_limits,
             initial_v,
+            initial_a,
             terminal_v: 0.0,
             safety_mode: ctx.safety_mode,
+            start_d2_override,
         };
 
         let solve_start = Instant::now();
-        let PlanOutput { fitted, stats } = match plan_velocity(&plan_input) {
-            Ok(out) => out,
-            Err(e) => {
-                self.uncommitted_moves = prior_uncommitted;
-                self.t_appended = prior_t_appended;
-                self.t_decel_start = prior_t_decel_start;
-                self.planned_fitted = prior_planned_fitted;
-                self.planned_meta = prior_planned_meta;
-                return Err(e);
-            }
-        };
+        let (PlanOutput { fitted, stats }, time_offset, fallback_rung) =
+            match plan_velocity(&plan_input) {
+                Ok(out) => (out, t_freeze, 1u8),
+                Err(rung1_err) => {
+                    if let Some(rung2_out) =
+                        try_rung2(was_replace_split, &prior_uncommitted, self, ctx, t_freeze)
+                    {
+                        let (out, offset) = rung2_out;
+                        (out, offset, 2u8)
+                    } else {
+                        match try_rung3(
+                            self,
+                            &prior_uncommitted,
+                            prior_t_appended,
+                            prior_t_decel_start,
+                            &prior_planned_fitted,
+                            &prior_planned_meta,
+                            ctx,
+                        ) {
+                            Ok((out, offset)) => (out, offset, 3u8),
+                            Err(rung3_err) => {
+                                self.uncommitted_moves = prior_uncommitted;
+                                self.t_appended = prior_t_appended;
+                                self.t_decel_start = prior_t_decel_start;
+                                self.planned_fitted = prior_planned_fitted;
+                                self.planned_meta = prior_planned_meta;
+                                return Err(ShapeError::WitnessFallbackFailed {
+                                    rung1: Box::new(rung1_err),
+                                    rung3: Box::new(rung3_err),
+                                });
+                            }
+                        }
+                    }
+                }
+            };
         let solve_us = solve_start.elapsed().as_micros() as u64;
 
         let rebuild_start = Instant::now();
-        let time_offset = self.t_dispatched;
 
         for axis_idx in 0..3 {
-            self.replace_uncommitted_axis_pieces(axis_idx, time_offset, &fitted);
+            self.replace_uncommitted_axis_pieces(axis_idx, time_offset, time_offset, &fitted);
         }
 
         debug_assert_eq!(fitted.len(), self.uncommitted_moves.len());
@@ -198,7 +233,7 @@ impl ShaperState {
 
         self.t_decel_start = find_decel_start_time(&fitted) + time_offset;
 
-        self.planned_fitted = fitted
+        let new_fitted: Vec<FittedSegment> = fitted
             .into_iter()
             .map(|f| FittedSegment {
                 axes: [
@@ -210,7 +245,8 @@ impl ShaperState {
                 t_end: f.t_end + time_offset,
             })
             .collect();
-        self.planned_meta = self
+
+        let new_meta: Vec<EmitSegmentMeta> = self
             .uncommitted_moves
             .iter()
             .map(|m| EmitSegmentMeta {
@@ -218,6 +254,14 @@ impl ShaperState {
                 extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
             })
             .collect();
+
+        self.planned_fitted = new_fitted;
+        self.planned_meta = new_meta;
+
+        if !freeze_zone_active {
+            self.pending_freeze.clear();
+        }
+
         let rebuild_us = rebuild_start.elapsed().as_micros() as u64;
 
         Ok(ReplanReport {
@@ -226,11 +270,71 @@ impl ShaperState {
             rebuild_us,
             window_segments,
             plan: stats,
+            fallback_rung,
         })
     }
 }
 
 impl ShaperState {
+    pub(crate) fn read_path_accel_at(&self, t: f64, fallback: f64) -> f64 {
+        const SPEED_FLOOR: f64 = 1e-9;
+        let Some(seg) = self
+            .planned_fitted
+            .iter()
+            .find(|s| s.t_start <= t && t < s.t_end)
+            .or_else(|| {
+                self.planned_fitted
+                    .last()
+                    .filter(|s| (t - s.t_end).abs() <= TIME_LOOKUP_TOLERANCE)
+            })
+        else {
+            return fallback;
+        };
+        let d = |axis: usize| -> (f64, f64) {
+            if seg.axes[axis].degree() < 1 {
+                return (0.0, 0.0);
+            }
+            let d1 = nurbs::eval::derivative(&seg.axes[axis]);
+            if d1.degree() < 1 {
+                return (nurbs::eval::eval(&d1, t), 0.0);
+            }
+            let d2 = nurbs::eval::derivative(&d1);
+            (nurbs::eval::eval(&d1, t), nurbs::eval::eval(&d2, t))
+        };
+        let (vx, ax) = d(0);
+        let (vy, ay) = d(1);
+        let speed = (vx * vx + vy * vy).sqrt();
+        if speed < SPEED_FLOOR {
+            fallback
+        } else {
+            (vx * ax + vy * ay) / speed
+        }
+    }
+
+    pub(crate) fn read_axis_accels_at(&self, t: f64) -> Option<[f64; 3]> {
+        let seg = self
+            .planned_fitted
+            .iter()
+            .find(|s| s.t_start <= t && t < s.t_end)
+            .or_else(|| {
+                self.planned_fitted
+                    .last()
+                    .filter(|s| (t - s.t_end).abs() <= TIME_LOOKUP_TOLERANCE)
+            })?;
+        let accel = std::array::from_fn(|axis| {
+            if seg.axes[axis].degree() < 2 {
+                return 0.0;
+            }
+            let d1 = nurbs::eval::derivative(&seg.axes[axis]);
+            if d1.degree() < 1 {
+                return 0.0;
+            }
+            let d2 = nurbs::eval::derivative(&d1);
+            nurbs::eval::eval(&d2, t)
+        });
+        Some(accel)
+    }
+
     pub(crate) fn read_path_speed_at(&self, t: f64, fallback: f64) -> f64 {
         let vx = self.axis_velocity_at(0, t);
         let vy = self.axis_velocity_at(1, t);
@@ -266,7 +370,6 @@ impl ShaperState {
         std::array::from_fn(|i| self.axis_position_at(i, self.t_appended).unwrap_or(0.0))
     }
 
-    /// `t_dispatched` MUST advance with `t_appended`: leaving it behind causes -308 PieceStartInPast.
     pub fn advance_idle(&mut self, target_t: f64) {
         if target_t <= self.t_appended + 1e-12 {
             return;
@@ -276,10 +379,6 @@ impl ShaperState {
             "advance_idle requires fully-committed state: t_dispatched {} != t_appended {}",
             self.t_dispatched,
             self.t_appended,
-        );
-        debug_assert!(
-            self.pending_dispatch.is_empty(),
-            "advance_idle requires pending_dispatch drained before advancing",
         );
         let hold_start = self.t_appended;
         let hold_end = target_t;
@@ -299,6 +398,7 @@ impl ShaperState {
         self.uncommitted_moves.clear();
         self.planned_fitted.clear();
         self.planned_meta.clear();
+        self.pending_freeze.clear();
         self.t_appended = hold_end;
         self.t_decel_start = hold_end;
         self.t_dispatched = hold_end;
@@ -324,13 +424,11 @@ impl ShaperState {
         None
     }
 
-    fn split_partially_committed_at_t_dispatched(&self) -> Option<PartialCommitSplit> {
-        let t_d = self.t_dispatched;
-        let (idx, planned) = self
-            .planned_fitted
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.t_start - TIME_LOOKUP_TOLERANCE <= t_d && t_d < f.t_end)?;
+    fn split_uncommitted_at_freeze(&self, t_freeze: f64) -> Option<PartialCommitSplit> {
+        let (idx, planned) =
+            self.planned_fitted.iter().enumerate().find(|(_, f)| {
+                f.t_start - TIME_LOOKUP_TOLERANCE <= t_freeze && t_freeze < f.t_end
+            })?;
 
         let move_ref = self.uncommitted_moves.get(idx)?;
 
@@ -342,31 +440,29 @@ impl ShaperState {
         }
 
         let p_target = [
-            nurbs::eval::eval(&planned.axes[0], t_d),
-            nurbs::eval::eval(&planned.axes[1], t_d),
-            nurbs::eval::eval(&planned.axes[2], t_d),
+            nurbs::eval::eval(&planned.axes[0], t_freeze),
+            nurbs::eval::eval(&planned.axes[1], t_freeze),
+            nurbs::eval::eval(&planned.axes[2], t_freeze),
         ];
 
         let move_span_t = planned.t_end - planned.t_start;
         let s_seed = if move_span_t > TIME_LOOKUP_TOLERANCE {
-            ((t_d - planned.t_start) / move_span_t)
+            ((t_freeze - planned.t_start) / move_span_t)
                 .clamp(NEWTON_SEED_CLAMP, 1.0 - NEWTON_SEED_CLAMP)
         } else {
             0.5
         };
-        let s_dispatched =
-            invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed)?;
+        let s_freeze = invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed)?;
 
-        if s_dispatched <= SPLIT_BOUNDARY_TOLERANCE {
+        if s_freeze <= SPLIT_BOUNDARY_TOLERANCE {
             return None;
         }
-        if s_dispatched >= 1.0 - SPLIT_BOUNDARY_TOLERANCE {
+        if s_freeze >= 1.0 - SPLIT_BOUNDARY_TOLERANCE {
             return Some(PartialCommitSplit::DropFromQueue);
         }
 
-        let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_dispatched);
+        let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_freeze);
 
-        // `extrusion_per_xy_mm` and `feedrate_mm_s` are rates — unchanged on the shorter tail.
         let new_segment = CubicSegment::try_new(
             right,
             move_ref.segment.e_mode,
@@ -387,9 +483,10 @@ impl ShaperState {
         &mut self,
         axis_idx: usize,
         time_offset: f64,
+        axis_cutoff_t: f64,
         fitted: &[FittedSegment],
     ) {
-        let t_keep_cutoff = self.t_dispatched;
+        let t_keep_cutoff = axis_cutoff_t;
 
         let pieces = &mut self.axes[axis_idx].pieces;
         while let Some(back) = pieces.back() {
@@ -399,6 +496,31 @@ impl ShaperState {
                 break;
             }
         }
+
+        if let Some(back) = pieces.back() {
+            if back.u_end < time_offset - TIME_LOOKUP_TOLERANCE {
+                let bridge_start = back.u_end;
+                let bridge_val = back.evaluate(bridge_start);
+                let degree = back.degree().max(1);
+                let mut coeffs = vec![0.0f64; degree + 1];
+                coeffs[0] = bridge_val;
+                pieces.push_back(BezierPiece {
+                    u_start: bridge_start,
+                    u_end: time_offset,
+                    coeffs,
+                });
+            }
+        }
+
+        debug_assert!(
+            pieces
+                .back()
+                .map_or(true, |p| p.u_end >= time_offset - TIME_LOOKUP_TOLERANCE),
+            "axis {} pieces deque ends at {:.12} but new plan starts at {:.12} — gap is unreachable after bridging",
+            axis_idx,
+            pieces.back().map_or(f64::NAN, |p| p.u_end),
+            time_offset,
+        );
 
         for f in fitted {
             let axis_nurbs = &f.axes[axis_idx];
@@ -410,6 +532,134 @@ impl ShaperState {
             pieces.extend(shifted);
         }
     }
+}
+
+fn try_rung2(
+    was_replace_split: bool,
+    prior_uncommitted: &std::collections::VecDeque<UncommittedMove>,
+    state: &mut ShaperState,
+    ctx: &ReplanContext,
+    t_freeze: f64,
+) -> Option<(crate::plan_velocity::PlanOutput, f64)> {
+    if !was_replace_split {
+        return None;
+    }
+
+    state.uncommitted_moves.pop_front();
+    let retry_time_offset = prior_uncommitted[0].t_end.max(t_freeze);
+
+    let retry_initial_v = state.read_path_speed_at(retry_time_offset, ctx.fallback_initial_v);
+
+    let retry_segments: Vec<PlanSegment<'_>> = state
+        .uncommitted_moves
+        .iter()
+        .map(|m| PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &m.segment.xyz,
+                limits: per_segment_limits(&m.segment.xyz, ctx.limits, m.segment.feedrate_mm_s),
+                trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
+            },
+            e_mode: m.segment.e_mode,
+            extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
+            e_independent: m.segment.e_independent.as_ref(),
+            feedrate_mm_s: m.segment.feedrate_mm_s,
+        })
+        .collect();
+
+    let retry_boundary_v_cap = retry_segments
+        .first()
+        .map_or(f64::INFINITY, |s| boundary_path_speed_cap(s));
+    let retry_iv = {
+        const REST_THRESHOLD_MM_S: f64 = 0.1;
+        let raw = retry_initial_v.min(retry_boundary_v_cap);
+        if raw < REST_THRESHOLD_MM_S {
+            0.0
+        } else {
+            raw
+        }
+    };
+
+    let retry_input = PlanInput {
+        segments: &retry_segments,
+        grid_strategy: ctx.grid_strategy,
+        worker_threads: ctx.worker_threads,
+        kernels: ctx.kernels,
+        fit_tolerance_mm: ctx.fit_tolerance_mm,
+        beta_max_iters: ctx.beta_max_iters,
+        beta_convergence_ratio: ctx.beta_convergence_ratio,
+        e_limits: ctx.e_limits,
+        initial_v: retry_iv,
+        initial_a: 0.0,
+        terminal_v: 0.0,
+        safety_mode: ctx.safety_mode,
+        start_d2_override: None,
+    };
+
+    plan_velocity(&retry_input)
+        .ok()
+        .map(|out| (out, retry_time_offset))
+}
+
+fn try_rung3(
+    state: &mut ShaperState,
+    _prior_uncommitted: &std::collections::VecDeque<UncommittedMove>,
+    prior_t_appended: f64,
+    prior_t_decel_start: f64,
+    prior_planned_fitted: &[FittedSegment],
+    prior_planned_meta: &[crate::emit_shaped::EmitSegmentMeta],
+    ctx: &ReplanContext,
+) -> Result<(crate::plan_velocity::PlanOutput, f64), ShapeError> {
+    let new_move = state
+        .uncommitted_moves
+        .back()
+        .expect("uncommitted_moves must be non-empty — new segment was just pushed")
+        .clone();
+
+    state.uncommitted_moves = {
+        let mut single = std::collections::VecDeque::with_capacity(1);
+        single.push_back(UncommittedMove {
+            segment: new_move.segment.clone(),
+            t_start: prior_t_appended,
+            t_end: prior_t_appended,
+        });
+        single
+    };
+
+    state.t_appended = prior_t_appended;
+    state.t_decel_start = prior_t_decel_start;
+    state.planned_fitted = prior_planned_fitted.to_vec();
+    state.planned_meta = prior_planned_meta.to_vec();
+
+    let seg = state.uncommitted_moves.back().unwrap();
+    let rung3_segments = [PlanSegment {
+        temporal: temporal::multi::SegmentInput {
+            curve: &seg.segment.xyz,
+            limits: per_segment_limits(&seg.segment.xyz, ctx.limits, seg.segment.feedrate_mm_s),
+            trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
+        },
+        e_mode: seg.segment.e_mode,
+        extrusion_per_xy_mm: seg.segment.extrusion_per_xy_mm,
+        e_independent: seg.segment.e_independent.as_ref(),
+        feedrate_mm_s: seg.segment.feedrate_mm_s,
+    }];
+
+    let rung3_input = PlanInput {
+        segments: &rung3_segments,
+        grid_strategy: ctx.grid_strategy,
+        worker_threads: ctx.worker_threads,
+        kernels: ctx.kernels,
+        fit_tolerance_mm: ctx.fit_tolerance_mm,
+        beta_max_iters: ctx.beta_max_iters,
+        beta_convergence_ratio: ctx.beta_convergence_ratio,
+        e_limits: ctx.e_limits,
+        initial_v: 0.0,
+        initial_a: 0.0,
+        terminal_v: 0.0,
+        safety_mode: ctx.safety_mode,
+        start_d2_override: None,
+    };
+
+    plan_velocity(&rung3_input).map(|out| (out, prior_t_appended))
 }
 
 enum PartialCommitSplit {
@@ -521,8 +771,7 @@ fn invert_cubic_bezier_xyz_to_param(
             xyz_s[1] - p_target[1],
             xyz_s[2] - p_target[2],
         ];
-        // f(s)   = (xyz − p_target) · xyz'
-        // f'(s)  = xyz' · xyz' + (xyz − p_target) · xyz''
+
         let f = dx[0] * d1[0] + dx[1] * d1[1] + dx[2] * d1[2];
         let f_prime = d1[0] * d1[0]
             + d1[1] * d1[1]
@@ -572,6 +821,27 @@ fn shift_nurbs_in_time(curve: &nurbs::ScalarNurbs<f64>, dt: f64) -> nurbs::Scala
         })
         .collect();
     bezier_pieces_to_nurbs(&pieces)
+}
+
+fn boundary_path_speed_cap(seg: &PlanSegment<'_>) -> f64 {
+    use nurbs::eval::{vector_derivative, vector_eval};
+    let curve = seg.temporal.curve;
+    let u0 = curve.knots()[0];
+    let d1 = vector_derivative(curve);
+    let tan = vector_eval(&d1.as_view(), u0);
+    let mag = (tan[0] * tan[0] + tan[1] * tan[1] + tan[2] * tan[2]).sqrt();
+    if mag < 1e-12 {
+        return f64::INFINITY;
+    }
+    let v_max = seg.temporal.limits.v_max;
+    let mut cap = f64::INFINITY;
+    for ax in 0..3 {
+        let dir = (tan[ax] / mag).abs();
+        if dir > 1e-12 {
+            cap = cap.min(v_max[ax] / dir);
+        }
+    }
+    cap
 }
 
 fn per_segment_limits(
@@ -666,50 +936,4 @@ fn reseed_axis_queue(axis: &mut AxisShaperQueue, home_pos: f64) {
             coeffs: vec![home_pos],
         });
     }
-}
-
-fn shape_single_segment(
-    fitted: &FittedSegment,
-    axes: &[AxisShaperQueue; 4],
-) -> Result<ShapedSegment, nurbs::AlgebraError> {
-    use crate::pad::pad_segment_axis;
-    use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
-    use crate::shaper::shape_axis;
-
-    let t_start = fitted.t_start;
-    let t_end = fitted.t_end;
-
-    let fitted_slice = std::slice::from_ref(fitted);
-
-    let mut shaped_axes: [Option<nurbs::ScalarNurbs<f64>>; 3] = [None, None, None];
-
-    for axis in 0..3 {
-        let q = &axes[axis];
-        let axis_shaped = if let Some(kernel) = q.kernel.as_ref() {
-            let padded = pad_segment_axis(0, axis, fitted_slice, &[], q.h, t_start, t_end);
-            shape_axis(&padded, kernel, t_start, t_end)
-        } else {
-            fitted.axes[axis].clone()
-        };
-
-        let refit = refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|_| {
-            nurbs::AlgebraError::NotImplemented(
-                "streaming::append_batch: refit_to_cubic failed (Phase 1 shim)",
-            )
-        })?;
-        shaped_axes[axis] = Some(refit);
-    }
-
-    Ok(ShapedSegment {
-        axes: [
-            shaped_axes[0].take().unwrap(),
-            shaped_axes[1].take().unwrap(),
-            shaped_axes[2].take().unwrap(),
-        ],
-        e_mode: geometry::segment::EMode::CoupledToXy,
-        extrusion_per_xy_mm: 0.0,
-        e_independent: None,
-        t_start,
-        t_end,
-    })
 }

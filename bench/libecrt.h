@@ -54,6 +54,15 @@ int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
 /* SDO-write 6065h and 6072h. 0 on success; -1/-2 per failing object. */
 int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct);
 
+/* One parked process-data cycle (controlword 0, target tracks actual), paced
+ * to the DC grid. A slave in OP drops to SAFE-OP when cyclic frames stop for
+ * longer than its SM watchdog (~100 ms) — call this in any host-side wait
+ * between bringup and the DC loop. Returns the cycle's working counter. */
+int ec_rt_park_cycle(int64_t *toff_ns);
+
+/* Refresh AL state for slave 1: state (EC_STATE_*) and ALstatuscode. */
+void ec_rt_al_status(uint16_t *state, uint16_t *alstatuscode);
+
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
