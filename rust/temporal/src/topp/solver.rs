@@ -751,20 +751,27 @@ pub(crate) fn max_axis_ratio_chain(
 const SLP9_MAX_OUTER_ITERS: u32 = 30;
 const SLP9_WARN_AT_ITER: u32 = 15;
 const SLP9_EPS_FEAS: f64 = 5e-2;
-const SLP9_RHO_B_INIT: f64 = 0.05;
-const SLP9_RHO_A_INIT: f64 = 0.10;
+const SLP9_RHO_B_INIT: f64 = 0.10;
+const SLP9_RHO_A_INIT: f64 = 0.25;
 const SLP9_RHO_B_MIN: f64 = 0.005;
-const SLP9_RHO_B_MAX: f64 = 0.20;
+const SLP9_RHO_B_MAX: f64 = 0.40;
 const SLP9_RHO_A_MIN: f64 = 0.01;
-const SLP9_RHO_A_MAX: f64 = 0.40;
+const SLP9_RHO_A_MAX: f64 = 1.00;
 const SLP9_MAX_BACKTRACKS: u32 = 3;
 const SLP9_TARGET_DECAY: f64 = 0.85;
 const SLP9_TARGET_MARGIN: f64 = 1e-3;
 const SLP9_CUT_PLACEMENT_FRACTION: f64 = 0.9;
+const SLP9_MAX_RESTORATIONS: u32 = 1;
+const SLP9_DAMP_TARGET_RATIO: f64 = 0.9;
+const SLP9_RESTORE_RHO_B_INIT: f64 = 0.50;
+const SLP9_RESTORE_RHO_A_INIT: f64 = 1.00;
+const SLP9_RESTORE_RHO_B_MAX: f64 = 0.50;
+const SLP9_RESTORE_RHO_A_MAX: f64 = 1.00;
 
 /// Cut builder for a chain grid. Uses per-point stencil weights from
 /// `chain.h_intervals`. Junction dual points receive extra cuts (dual geometry
-/// and limits evaluated at the same stencil triple).
+/// and limits evaluated at the same stencil triple). Cuts are placed for all
+/// violators above `target_floor` and tightened to `target_ratio`.
 pub(crate) fn build_axis_jerk_cuts_chain(
     result: &SolverResult,
     chain: &crate::topp::chain::ChainGrid,
@@ -789,20 +796,25 @@ pub(crate) fn build_axis_jerk_cuts_chain(
             let cppp = geom.c_triple_prime[ax];
             let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
             let ratio = j.abs() / lim.j_max[ax];
-            if ratio > SLP9_CUT_PLACEMENT_FRACTION * target_ratio {
-                cuts.push(SlpCut::AxisJerk(AxisJerkCut {
-                    i,
-                    axis: ax,
-                    idx,
-                    w,
-                    b_bars,
-                    a_bar_i: result.a[i],
-                    cp,
-                    cpp,
-                    cppp,
-                    j_lim_inflated: lim.j_max[ax] * target_ratio,
-                }));
-            }
+            let j_lim = if ratio > SLP9_CUT_PLACEMENT_FRACTION * target_ratio {
+                lim.j_max[ax] * target_ratio
+            } else if ratio > SLP9_EPS_FEAS {
+                lim.j_max[ax]
+            } else {
+                continue;
+            };
+            cuts.push(SlpCut::AxisJerk(AxisJerkCut {
+                i,
+                axis: ax,
+                idx,
+                w,
+                b_bars,
+                a_bar_i: result.a[i],
+                cp,
+                cpp,
+                cppp,
+                j_lim_inflated: j_lim,
+            }));
         }
         // Junction dual: same stencil triple, right-side geometry and limits.
         for jct in chain.junctions.iter().filter(|jct| jct.idx == i) {
@@ -814,20 +826,25 @@ pub(crate) fn build_axis_jerk_cuts_chain(
                 let cppp = jgeom.c_triple_prime[ax];
                 let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
                 let ratio = j.abs() / jlim.j_max[ax];
-                if ratio > SLP9_CUT_PLACEMENT_FRACTION * target_ratio {
-                    cuts.push(SlpCut::AxisJerk(AxisJerkCut {
-                        i,
-                        axis: ax,
-                        idx,
-                        w,
-                        b_bars,
-                        a_bar_i: result.a[i],
-                        cp,
-                        cpp,
-                        cppp,
-                        j_lim_inflated: jlim.j_max[ax] * target_ratio,
-                    }));
-                }
+                let j_lim = if ratio > SLP9_CUT_PLACEMENT_FRACTION * target_ratio {
+                    jlim.j_max[ax] * target_ratio
+                } else if ratio > SLP9_EPS_FEAS {
+                    jlim.j_max[ax]
+                } else {
+                    continue;
+                };
+                cuts.push(SlpCut::AxisJerk(AxisJerkCut {
+                    i,
+                    axis: ax,
+                    idx,
+                    w,
+                    b_bars,
+                    a_bar_i: result.a[i],
+                    cp,
+                    cpp,
+                    cppp,
+                    j_lim_inflated: j_lim,
+                }));
             }
         }
     }
@@ -951,49 +968,42 @@ pub(crate) fn slp_solve_chain(
     ))
 }
 
-#[allow(clippy::too_many_lines)]
-pub(crate) fn slp_solve_with_axis_jerk_chain(
+enum Slp9LoopOutcome {
+    Done(SolverResult, SlpOutcome),
+    TrFloorStall {
+        best_result: SolverResult,
+        best_ratio: f64,
+        outer_iters: u32,
+        accepted_total: u32,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_slp9_loop(
     bundle: &ConstraintBundle,
     chain: &crate::topp::chain::ChainGrid,
+    start: SolverResult,
     tol: f64,
     scale: &SolverScale,
-) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
-    let (path_result, path_outcome) = slp_solve_chain(bundle, tol, scale)?;
-
-    if matches!(
-        path_outcome,
-        SlpOutcome::InnerSolverFailure | SlpOutcome::Diverged { .. } | SlpOutcome::MaxIters { .. }
-    ) {
-        return Ok((path_result, path_outcome));
-    }
-
-    debug_assert_eq!(chain.s.len(), path_result.b.len());
-
-    let mut last_result = path_result.clone();
-    let path_outer_iters = match path_outcome {
-        SlpOutcome::Converged { outer_iters } => outer_iters,
-        _ => 0,
-    };
-
-    let initial_max = max_axis_ratio_chain(&last_result, chain);
-    if initial_max <= 1.0 + SLP9_EPS_FEAS {
-        return Ok((
-            last_result,
-            SlpOutcome::Converged {
-                outer_iters: path_outer_iters,
-            },
-        ));
-    }
-
-    let mut best_result = last_result.clone();
-    let mut best_ratio = initial_max;
-    let mut rho_b = SLP9_RHO_B_INIT;
-    let mut rho_a = SLP9_RHO_A_INIT;
+    path_outer_iters: u32,
+    outer_iters_already: u32,
+    rho_b_init: f64,
+    rho_a_init: f64,
+    rho_b_max: f64,
+    rho_a_max: f64,
+) -> Result<Slp9LoopOutcome, SolverSetupError> {
+    let mut last_result = start.clone();
+    let mut best_result = start;
+    let mut best_ratio = max_axis_ratio_chain(&last_result, chain);
+    let mut rho_b = rho_b_init;
+    let mut rho_a = rho_a_init;
+    let mut accepted_total: u32 = 0;
 
     for outer in 1..=SLP9_MAX_OUTER_ITERS {
-        if outer == SLP9_WARN_AT_ITER {
+        let global_outer = outer_iters_already + outer;
+        if global_outer == SLP9_WARN_AT_ITER {
             eprintln!(
-                "slp9_chain warning: per-axis SLP not converged at iter {outer} \
+                "slp9_chain warning: per-axis SLP not converged at iter {global_outer} \
                  (best ratio = {best_ratio:.4})",
             );
         }
@@ -1002,10 +1012,10 @@ pub(crate) fn slp_solve_with_axis_jerk_chain(
         let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(target_floor);
         let cuts = build_axis_jerk_cuts_chain(&last_result, chain, target_ratio);
         if cuts.is_empty() {
-            return Ok((
+            return Ok(Slp9LoopOutcome::Done(
                 last_result,
                 SlpOutcome::Converged {
-                    outer_iters: path_outer_iters + outer,
+                    outer_iters: path_outer_iters + global_outer,
                 },
             ));
         }
@@ -1056,14 +1066,15 @@ pub(crate) fn slp_solve_with_axis_jerk_chain(
         if let Some(new_result) = accepted {
             last_result = new_result.clone();
             best_result = new_result;
-            rho_b = (rho_b * 1.5).min(SLP9_RHO_B_MAX);
-            rho_a = (rho_a * 1.5).min(SLP9_RHO_A_MAX);
+            rho_b = (rho_b * 1.5).min(rho_b_max);
+            rho_a = (rho_a * 1.5).min(rho_a_max);
+            accepted_total += 1;
 
             if best_ratio <= 1.0 + SLP9_EPS_FEAS {
-                return Ok((
+                return Ok(Slp9LoopOutcome::Done(
                     last_result,
                     SlpOutcome::Converged {
-                        outer_iters: path_outer_iters + outer,
+                        outer_iters: path_outer_iters + global_outer,
                     },
                 ));
             }
@@ -1071,23 +1082,166 @@ pub(crate) fn slp_solve_with_axis_jerk_chain(
             rho_b = (rho_b * 0.5).max(SLP9_RHO_B_MIN);
             rho_a = (rho_a * 0.5).max(SLP9_RHO_A_MIN);
             if rho_b <= SLP9_RHO_B_MIN * 1.0001 && rho_a <= SLP9_RHO_A_MIN * 1.0001 {
-                return Ok((
+                return Ok(Slp9LoopOutcome::TrFloorStall {
                     best_result,
-                    SlpOutcome::Diverged {
-                        last_max_ratio: best_ratio,
-                        outer_iters: path_outer_iters + outer,
-                    },
-                ));
+                    best_ratio,
+                    outer_iters: path_outer_iters + global_outer,
+                    accepted_total,
+                });
             }
         }
     }
 
-    Ok((
+    Ok(Slp9LoopOutcome::Done(
         best_result,
         SlpOutcome::MaxIters {
             last_max_ratio: best_ratio,
         },
     ))
+}
+
+/// Scales all interior `a` values by `scale_factor`, leaving `b` and endpoint
+/// `a` values unchanged. Reduces the `3·c''·a·√b` term in axis-jerk without
+/// disturbing the `c'·s‴` term (which depends only on `b`).
+fn damp_interior_a(result: &SolverResult, scale_factor: f64) -> SolverResult {
+    let n = result.b.len();
+    let b = result.b.clone();
+    let mut a = result.a.clone();
+    for i in 1..n.saturating_sub(1) {
+        a[i] *= scale_factor;
+    }
+    SolverResult {
+        b,
+        a,
+        status: result.status,
+    }
+}
+
+/// Finds the largest `s ≤ 1.0` such that uniformly scaling all interior `a`
+/// values by `s` brings `max_axis_ratio ≤ SLP9_DAMP_TARGET_RATIO`. Analytical
+/// estimate from the linear scaling of the dominant `c''·a·√b` term; refined
+/// by bisection to guarantee the full nonlinear ratio is satisfied.
+fn damp_scale_for_axis_feasibility(
+    result: &SolverResult,
+    chain: &crate::topp::chain::ChainGrid,
+    current_ratio: f64,
+) -> f64 {
+    let target_ratio = SLP9_DAMP_TARGET_RATIO;
+    let s_analytical = target_ratio / current_ratio;
+
+    let mut s = s_analytical.min(1.0);
+    for _ in 0..24 {
+        let damped = damp_interior_a(result, s);
+        let ratio = max_axis_ratio_chain(&damped, chain);
+        if ratio <= target_ratio {
+            return s;
+        }
+        s *= 0.75;
+    }
+    s
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn slp_solve_with_axis_jerk_chain(
+    bundle: &ConstraintBundle,
+    chain: &crate::topp::chain::ChainGrid,
+    tol: f64,
+    scale: &SolverScale,
+) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
+    let (path_result, path_outcome) = slp_solve_chain(bundle, tol, scale)?;
+
+    if matches!(
+        path_outcome,
+        SlpOutcome::InnerSolverFailure | SlpOutcome::Diverged { .. } | SlpOutcome::MaxIters { .. }
+    ) {
+        return Ok((path_result, path_outcome));
+    }
+
+    debug_assert_eq!(chain.s.len(), path_result.b.len());
+
+    let path_outer_iters = match path_outcome {
+        SlpOutcome::Converged { outer_iters } => outer_iters,
+        _ => 0,
+    };
+
+    let initial_max = max_axis_ratio_chain(&path_result, chain);
+    if initial_max <= 1.0 + SLP9_EPS_FEAS {
+        return Ok((
+            path_result,
+            SlpOutcome::Converged {
+                outer_iters: path_outer_iters,
+            },
+        ));
+    }
+
+    let mut current_start = path_result;
+    let mut outer_iters_consumed: u32 = 0;
+    let mut restorations_used: u32 = 0;
+
+    loop {
+        let (rho_b_i, rho_a_i, rho_b_m, rho_a_m) = if restorations_used == 0 {
+            (
+                SLP9_RHO_B_INIT,
+                SLP9_RHO_A_INIT,
+                SLP9_RHO_B_MAX,
+                SLP9_RHO_A_MAX,
+            )
+        } else {
+            (
+                SLP9_RESTORE_RHO_B_INIT,
+                SLP9_RESTORE_RHO_A_INIT,
+                SLP9_RESTORE_RHO_B_MAX,
+                SLP9_RESTORE_RHO_A_MAX,
+            )
+        };
+        let loop_outcome = run_slp9_loop(
+            bundle,
+            chain,
+            current_start.clone(),
+            tol,
+            scale,
+            path_outer_iters,
+            outer_iters_consumed,
+            rho_b_i,
+            rho_a_i,
+            rho_b_m,
+            rho_a_m,
+        )?;
+        match loop_outcome {
+            Slp9LoopOutcome::Done(result, outcome) => return Ok((result, outcome)),
+            Slp9LoopOutcome::TrFloorStall {
+                best_result,
+                best_ratio,
+                outer_iters,
+                accepted_total: _,
+            } => {
+                if restorations_used >= SLP9_MAX_RESTORATIONS {
+                    return Ok((
+                        best_result,
+                        SlpOutcome::Diverged {
+                            last_max_ratio: best_ratio,
+                            outer_iters,
+                        },
+                    ));
+                }
+                let damp_s = damp_scale_for_axis_feasibility(&best_result, chain, best_ratio);
+                let damped = damp_interior_a(&best_result, damp_s);
+                let ratio_after_damp = max_axis_ratio_chain(&damped, chain);
+                if ratio_after_damp > 1.0 {
+                    return Ok((
+                        best_result,
+                        SlpOutcome::Diverged {
+                            last_max_ratio: best_ratio,
+                            outer_iters,
+                        },
+                    ));
+                }
+                current_start = damped;
+                outer_iters_consumed = outer_iters - path_outer_iters;
+                restorations_used += 1;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
