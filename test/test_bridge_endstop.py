@@ -23,7 +23,9 @@ class FakeMcu:
         self.config_cmds = []
         self.config_callbacks = []
         self.query_cmd = FakeCommand()
-        self.state_cmd = FakeCommand({"oid": 0, "armed": 0, "pin_value": 0})
+        self.state_cmd = FakeCommand(
+            {"oid": 0, "armed": 0, "pin_value": 0, "tripped": 0, "trip_clock": 0}
+        )
 
     def create_oid(self):
         oid = self.oids
@@ -110,6 +112,32 @@ def test_arm_zero_period_rejected():
     with pytest.raises(ValueError, match="rest_ticks"):
         endstop.arm(0.0)
     assert mcu.query_cmd.sent == []
+
+
+def test_query_trip_state_not_tripped():
+    mcu = FakeMcu()
+    es = BridgeEndstop(_pin_params(mcu), 7)
+    for cb in mcu.config_callbacks:
+        cb()
+    assert es.query_trip_state() == {"tripped": False, "trip_clock": 0}
+
+
+def test_query_trip_state_tripped_returns_latched_clock():
+    mcu = FakeMcu()
+    es = BridgeEndstop(_pin_params(mcu), 7)
+    for cb in mcu.config_callbacks:
+        cb()
+    mcu.state_cmd.response = {
+        "oid": 0,
+        "armed": 0,
+        "pin_value": 1,
+        "tripped": 1,
+        "trip_clock": 0xDEADBEEF,
+    }
+    assert es.query_trip_state() == {
+        "tripped": True,
+        "trip_clock": 0xDEADBEEF,
+    }
 
 
 def test_provider_ids_allocate_sequentially():

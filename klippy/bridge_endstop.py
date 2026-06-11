@@ -27,13 +27,21 @@ class BridgeEndstop:
         )
         self._state_cmd = self.mcu.lookup_query_command(
             "endstop_query_state oid=%c",
-            "endstop_state oid=%c armed=%c pin_value=%c",
+            "endstop_state oid=%c armed=%c pin_value=%c tripped=%c"
+            " trip_clock=%u",
             oid=self.oid,
         )
 
     def is_triggered(self):
         params = self._state_cmd.send([self.oid])
         return bool(params["pin_value"] ^ self.invert)
+
+    def query_trip_state(self):
+        params = self._state_cmd.send([self.oid])
+        return {
+            "tripped": bool(params["tripped"]),
+            "trip_clock": params["trip_clock"],
+        }
 
     def arm(self, poll_period):
         rest_ticks = self.mcu.seconds_to_clock(poll_period)
