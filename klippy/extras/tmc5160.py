@@ -412,6 +412,7 @@ class TMC5160:
         self._cached_mscnt = None
         self._phase_mode_active = False
         self._phase_state_query = None
+        self._phase_group = None
         if stepper_section is not None and stepper_section.getboolean(
             "phase_stepping", False
         ):
@@ -427,7 +428,7 @@ class TMC5160:
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         self._echeck_helper = cmdhelper.echeck_helper
         if self._phase_stepping:
-            cmdhelper.set_post_enable_callback(self.enter_phase_mode)
+            cmdhelper.set_post_enable_callback(self._enter_phase_mode_single)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
@@ -508,8 +509,16 @@ class TMC5160:
     def set_phase_stepper_oid(self, oid):
         self._phase_stepper_oid = oid
 
+    def set_phase_group(self, tmcs):
+        self._phase_group = tmcs
+
+    def _phase_group_members(self):
+        return self._phase_group or [self]
+
     def phase_stepping_active(self):
-        return self._phase_mode_active
+        return any(
+            t._phase_mode_active for t in self._phase_group_members()
+        )
 
     def _phase_mcu(self):
         return self.mcu_tmc.tmc_spi.spi.get_mcu()
@@ -548,6 +557,11 @@ class TMC5160:
         return self._phase_state_query.send([self._phase_stepper_oid])
 
     def enter_phase_mode(self):
+        for t in self._phase_group_members():
+            if not t._phase_mode_active:
+                t._enter_phase_mode_single()
+
+    def _enter_phase_mode_single(self):
         enable_spi, disable_spi, set_axis_mode, _jog, align = (
             self._lookup_phase_commands()
         )
@@ -609,73 +623,85 @@ class TMC5160:
         )
 
     def exit_phase_mode(self):
-        if not self._phase_mode_active:
+        active = [
+            t for t in self._phase_group_members() if t._phase_mode_active
+        ]
+        if not active:
             raise self.printer.command_error(
                 "exit_phase_mode called but %s is not in phase mode"
                 % (self.name,)
             )
-        _enable_spi, disable_spi, set_axis_mode, jog, _align = (
+        _enable_spi, disable_spi, set_axis_mode, _jog, _align = (
             self._lookup_phase_commands()
         )
-        state = self._query_phase_state()
-        if state["mode"] != 1:
-            structured_log.event(
-                "phase_stepping",
-                "mode_desync",
-                level=logging.ERROR,
-                msg="phase mode bookkeeping desync",
-                stepper=self.name,
-                mcu_mode=state["mode"],
-            )
-            raise self.printer.command_error(
-                "phase mode bookkeeping desync on %s: host=phase mcu=%d"
-                % (self.name, state["mode"])
-            )
-        jog.send(
-            [
-                self._phase_stepper_oid,
-                self._cached_mscnt,
-                self.PHASE_JOG_MAX_PER_SAMPLE,
-            ]
-        )
-        reactor = self.printer.get_reactor()
-        deadline = reactor.monotonic() + self.PHASE_SETTLE_TIMEOUT
-        while True:
-            state = self._query_phase_state()
-            if state["settled"] and state["phase"] == self._cached_mscnt:
-                break
-            if reactor.monotonic() > deadline:
+        for t in active:
+            state = t._query_phase_state()
+            if state["mode"] != 1:
                 structured_log.event(
                     "phase_stepping",
-                    "jog_timeout",
+                    "mode_desync",
                     level=logging.ERROR,
-                    msg="phase handover jog did not settle",
-                    stepper=self.name,
-                    phase=state["phase"],
-                    target=self._cached_mscnt,
+                    msg="phase mode bookkeeping desync",
+                    stepper=t.name,
+                    mcu_mode=state["mode"],
                 )
                 raise self.printer.command_error(
-                    "phase handover jog did not settle on %s "
-                    "(phase=%d target=%d)"
-                    % (self.name, state["phase"], self._cached_mscnt)
+                    "phase mode bookkeeping desync on %s: host=phase mcu=%d"
+                    % (t.name, state["mode"])
                 )
-            reactor.pause(reactor.monotonic() + 0.005)
+        # All jogs are issued while the axis is still in Phase mode — the
+        # mode flips to Pulse only once, after every motor in the group sits
+        # on its cached MSCNT.
+        for t in active:
+            _e, _d, _s, t_jog, _a = t._lookup_phase_commands()
+            t_jog.send(
+                [
+                    t._phase_stepper_oid,
+                    t._cached_mscnt,
+                    self.PHASE_JOG_MAX_PER_SAMPLE,
+                ]
+            )
+        reactor = self.printer.get_reactor()
+        deadline = reactor.monotonic() + self.PHASE_SETTLE_TIMEOUT
+        for t in active:
+            while True:
+                state = t._query_phase_state()
+                if state["settled"] and state["phase"] == t._cached_mscnt:
+                    break
+                if reactor.monotonic() > deadline:
+                    structured_log.event(
+                        "phase_stepping",
+                        "jog_timeout",
+                        level=logging.ERROR,
+                        msg="phase handover jog did not settle",
+                        stepper=t.name,
+                        phase=state["phase"],
+                        target=t._cached_mscnt,
+                    )
+                    raise self.printer.command_error(
+                        "phase handover jog did not settle on %s "
+                        "(phase=%d target=%d)"
+                        % (t.name, state["phase"], t._cached_mscnt)
+                    )
+                reactor.pause(reactor.monotonic() + 0.005)
         disable_spi.send([])
-        gconf_val = self.fields.registers.get("GCONF", 0)
-        gconf_val &= ~(1 << 16)  # clear direct_mode
-        self.mcu_tmc.set_register("GCONF", gconf_val)
-        self.fields.registers["GCONF"] = gconf_val
-        set_axis_mode.send([self._phase_axis_idx, 0])
-        self._echeck_helper.start_checks()
-        self._phase_mode_active = False
-        structured_log.event(
-            "phase_stepping",
-            "exit",
-            msg="phase mode exited (pulse stepping)",
-            stepper=self.name,
-            axis_idx=self._phase_axis_idx,
-            mscnt=self._cached_mscnt,
-        )
+        for t in active:
+            gconf_val = t.fields.registers.get("GCONF", 0)
+            gconf_val &= ~(1 << 16)  # clear direct_mode
+            t.mcu_tmc.set_register("GCONF", gconf_val)
+            t.fields.registers["GCONF"] = gconf_val
+        set_axis_mode.send([active[0]._phase_axis_idx, 0])
+        for t in active:
+            t._echeck_helper.start_checks()
+            t._phase_mode_active = False
+            structured_log.event(
+                "phase_stepping",
+                "exit",
+                msg="phase mode exited (pulse stepping)",
+                stepper=t.name,
+                axis_idx=t._phase_axis_idx,
+                mscnt=t._cached_mscnt,
+            )
 
     def get_phase_config(self):
         if not self._phase_stepping:

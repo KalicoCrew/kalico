@@ -694,6 +694,7 @@ class MotionToolhead(ToolHead):
                 # the on_this_mcu branch, so cross-MCU slots stay != 0).
                 if step_modes[i] != 0 or not slot:
                     continue
+                slot_tmcs = []
                 for stepper_name, stepper_obj in slot:
                     tmc_name = "tmc5160 " + stepper_name
                     try:
@@ -714,8 +715,11 @@ class MotionToolhead(ToolHead):
                         )
                     bus_id, cs_pin_id = tmc.get_phase_config()
                     tmc.set_phase_stepper_oid(stepper_obj.get_oid())
+                    slot_tmcs.append(tmc)
                     phase_configs.append((bus_id, cs_pin_id, i))
                     any_phase_stepping = True
+                for tmc in slot_tmcs:
+                    tmc.set_phase_group(slot_tmcs)
             # Soft cap mirrors firmware-side MAX_STEPPER_OIDS=16 (see
             # rust/runtime/src/state.rs). Reject early with an
             # operator-friendly message rather than letting the bridge
