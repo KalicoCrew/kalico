@@ -201,14 +201,18 @@ def _print_metrics(m, counts_per_mm):
 
 
 def export_ident_csv(path, header, data, counts_per_mm):
+    # The fitter regresses torque against the kinematics that produced it.
+    # With a position loop between command and motor, torque follows actual
+    # motion (6064h), not the commanded target — exporting target_counts
+    # here yields a wrong (even negative) inertia on a soft loop.
     axis = header["drives"][0]["name"]
     cycle_index = data["cycle_index"].astype(np.int64)
     t = (cycle_index - cycle_index[0]) * (header["cycle_ns"] * 1e-9)
-    target_mm = data["target_counts"].astype(np.float64) / counts_per_mm
+    actual_mm = data["position_actual"].astype(np.float64) / counts_per_mm
     torque = data["torque_actual"].astype(np.float64)
     with open(path, "w") as f:
         f.write("t,target_%s,torque_%s\n" % (axis, axis))
-        for row in zip(t, target_mm, torque):
+        for row in zip(t, actual_mm, torque):
             f.write("%.6f,%.9g,%.9g\n" % row)
     print(
         "wrote %d samples for axis %r to %s (feed to servo-ident --capture)"
