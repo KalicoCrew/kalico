@@ -713,6 +713,7 @@ class MotionToolhead(ToolHead):
                             "phase-stepping support" % stepper_name
                         )
                     bus_id, cs_pin_id = tmc.get_phase_config()
+                    tmc.set_phase_stepper_oid(stepper_obj.get_oid())
                     phase_configs.append((bus_id, cs_pin_id, i))
                     any_phase_stepping = True
             # Soft cap mirrors firmware-side MAX_STEPPER_OIDS=16 (see
