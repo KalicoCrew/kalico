@@ -310,6 +310,56 @@ DECL_COMMAND(command_kalico_set_stepper_offset,
              "kalico_set_stepper_offset stepper_idx=%c delta_microsteps=%i"
              " max_microsteps_per_sample=%hu");
 
+void
+command_kalico_phase_jog_to(uint32_t *args)
+{
+    if (!runtime_handle)
+        shutdown("kalico_phase_jog_to before runtime init");
+    uint8_t stepper_oid = args[0];
+    uint16_t target_phase = args[1];
+    uint16_t max_per_sample = args[2];
+    int32_t rc = kalico_runtime_phase_jog_to(
+        runtime_handle, stepper_oid, target_phase, max_per_sample);
+    if (rc != 0)
+        shutdown("kalico_phase_jog_to rejected (bad args or not in phase mode)");
+}
+DECL_COMMAND(command_kalico_phase_jog_to,
+             "kalico_phase_jog_to oid=%c target_phase=%hu"
+             " max_microsteps_per_sample=%hu");
+
+void
+command_kalico_phase_align_to(uint32_t *args)
+{
+    if (!runtime_handle)
+        shutdown("kalico_phase_align_to before runtime init");
+    uint8_t stepper_oid = args[0];
+    uint16_t target_phase = args[1];
+    int32_t rc = kalico_runtime_phase_align_to(
+        runtime_handle, stepper_oid, target_phase);
+    if (rc != 0)
+        shutdown("kalico_phase_align_to rejected (motion in progress or bad args)");
+}
+DECL_COMMAND(command_kalico_phase_align_to,
+             "kalico_phase_align_to oid=%c target_phase=%hu");
+
+void
+command_kalico_get_phase_state(uint32_t *args)
+{
+    if (!runtime_handle)
+        shutdown("kalico_get_phase_state before runtime init");
+    uint8_t stepper_oid = args[0];
+    uint8_t axis_idx = 0, mode = 0, settled = 0;
+    uint16_t phase = 0;
+    int32_t rc = kalico_runtime_get_phase_state(
+        runtime_handle, stepper_oid, &axis_idx, &mode, &phase, &settled);
+    if (rc != 0)
+        shutdown("kalico_get_phase_state unknown stepper oid");
+    sendf("kalico_phase_state oid=%c axis_idx=%c mode=%c phase=%hu settled=%c",
+          stepper_oid, axis_idx, mode, phase, settled);
+}
+DECL_COMMAND(command_kalico_get_phase_state,
+             "kalico_get_phase_state oid=%c");
+
 #define STEP_MIN_EDGE_DWT ((CONFIG_CLOCK_FREQ) / 1000000u)
 
 static uint32_t step_last_edge_dwt[RUNTIME_MOTOR_COUNT];

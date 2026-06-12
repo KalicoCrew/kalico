@@ -129,6 +129,16 @@ impl Engine {
     }
 }
 
+fn idle_phase_slew_pending(axis: &AxisState) -> bool {
+    if axis.mode.load(Ordering::Acquire) != StepMode::Phase as u8 {
+        return false;
+    }
+    axis.steppers.iter().any(|s| {
+        s.phase_offset_microsteps.load(Ordering::Acquire)
+            != s.phase_offset_target.load(Ordering::Acquire)
+    })
+}
+
 impl Engine {
     pub fn status(&self) -> RuntimeStatus {
         RuntimeStatus::from_u8(self.status.load(Ordering::Acquire))
@@ -297,7 +307,7 @@ impl Engine {
                 };
                 let cps = self.cycles_per_second;
                 let fault = SharedFaultSink { shared };
-                let Some((p_end, v_end)) = crate::motion_core::get_position_and_velocity(
+                match crate::motion_core::get_position_and_velocity(
                     &mut axis.armed,
                     &mut axis.ring,
                     storage,
@@ -306,14 +316,22 @@ impl Engine {
                     cps,
                     i,
                     &fault,
-                ) else {
-                    continue;
-                };
-                active = true;
-                let p_sample_start = axis.p_prev;
-                axis.p_prev = p_end;
-                axis.v_prev = v_end;
-                (p_end, v_end, p_sample_start)
+                ) {
+                    Some((p_end, v_end)) => {
+                        active = true;
+                        let p_sample_start = axis.p_prev;
+                        axis.p_prev = p_end;
+                        axis.v_prev = v_end;
+                        (p_end, v_end, p_sample_start)
+                    }
+                    None => {
+                        if !idle_phase_slew_pending(axis) {
+                            continue;
+                        }
+                        active = true;
+                        (axis.p_prev, 0.0, axis.p_prev)
+                    }
+                }
             };
 
             #[cfg(feature = "motion-module-stepper")]
@@ -494,6 +512,30 @@ impl Engine {
         }
         crate::fault_helpers::raise_jog_parameters_invalid(shared);
         -1
+    }
+
+    pub fn phase_jog_to(
+        &self,
+        shared: &SharedState,
+        stepper_oid: u8,
+        target_phase: u16,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        crate::phase_handover::jog_to(
+            &self.stepping_axes,
+            shared,
+            stepper_oid,
+            target_phase,
+            max_microsteps_per_sample,
+        )
+    }
+
+    pub fn phase_align_to(&self, stepper_oid: u8, target_phase: u16) -> i32 {
+        crate::phase_handover::align_to(&self.stepping_axes, stepper_oid, target_phase)
+    }
+
+    pub fn phase_state(&self, stepper_oid: u8) -> Option<crate::phase_handover::PhaseQuery> {
+        crate::phase_handover::query(&self.stepping_axes, stepper_oid)
     }
 
     pub fn seed_position(&mut self, xyz: [f32; 3]) {

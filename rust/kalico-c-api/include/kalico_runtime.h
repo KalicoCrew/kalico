@@ -75,6 +75,13 @@ int32_t kalico_runtime_get_occupancy(struct KalicoRuntime *rt,
                                      uint32_t *out_occupancy,
                                      uintptr_t max_axes);
 
+int32_t kalico_runtime_get_phase_state(struct KalicoRuntime *rt,
+                                       uint8_t stepper_oid,
+                                       uint8_t *out_axis_idx,
+                                       uint8_t *out_mode,
+                                       uint16_t *out_phase,
+                                       uint8_t *out_settled);
+
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 uint8_t kalico_runtime_get_step_mode(struct KalicoRuntime *rt, uint8_t stepper_idx);
@@ -94,6 +101,15 @@ uint32_t kalico_runtime_last_push_x_handle(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
 
 uint64_t kalico_runtime_now_ticks(struct KalicoRuntime *rt);
+
+int32_t kalico_runtime_phase_align_to(struct KalicoRuntime *rt,
+                                      uint8_t stepper_oid,
+                                      uint16_t target_phase);
+
+int32_t kalico_runtime_phase_jog_to(struct KalicoRuntime *rt,
+                                    uint8_t stepper_oid,
+                                    uint16_t target_phase,
+                                    uint16_t max_microsteps_per_sample);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
 

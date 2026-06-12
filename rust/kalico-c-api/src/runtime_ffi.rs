@@ -982,6 +982,91 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_phase_jog_to(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        target_phase: u16,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; &SharedState borrow is independent of &mut IsrState — SharedState is atomics-only.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            (*isr_ptr).engine.phase_jog_to(
+                shared,
+                stepper_oid,
+                target_phase,
+                max_microsteps_per_sample,
+            )
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_phase_align_to(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        target_phase: u16,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; §11.2 raw-pointer projection.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.phase_align_to(stepper_oid, target_phase)
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_phase_state(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        out_axis_idx: *mut u8,
+        out_mode: *mut u8,
+        out_phase: *mut u16,
+        out_settled: *mut u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if out_axis_idx.is_null()
+            || out_mode.is_null()
+            || out_phase.is_null()
+            || out_settled.is_null()
+        {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; §11.2 raw-pointer projection.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let Some(q) = (*isr_ptr).engine.phase_state(stepper_oid) else {
+                return KALICO_ERR_INVALID_ARG;
+            };
+            *out_axis_idx = q.axis_idx;
+            *out_mode = q.mode;
+            *out_phase = q.phase;
+            *out_settled = u8::from(q.settled);
+        }
+        KALICO_OK
+    }
+
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_get_heartbeat(
         rt: *mut KalicoRuntime,
         out_engine_state: *mut u8,
