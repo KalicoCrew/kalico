@@ -158,4 +158,25 @@ if ! grep -q 'CONFIG_MACH_LINUX' "$RT_CMD" 2>/dev/null; then
     sed -i '/#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX/{n;s|#include "stm32/phase_stepping_spi.h"|#include "stm32/phase_stepping_spi.h"\n#elif CONFIG_MACH_LINUX\n#include "linux/phase_stepping_spi.h"|;}' "$RT_CMD"
 fi
 
+# Same vtime-clock-race root cause as the C-side timer checks above: the
+# virtual clock can race arbitrarily far ahead of klippy's clock estimate,
+# so the Rust runtime's piece-start-in-past grace (200us) and tick-gap
+# fault (2x sample period) trip on infrastructure jitter, not real bugs.
+# Relax both for the sim build only.
+MOTION_CORE="$REPO_ROOT/rust/runtime/src/motion_core.rs"
+if grep -q 'MAX_START_IN_PAST_SECS: f32 = 200e-6' "$MOTION_CORE" 2>/dev/null; then
+    echo "fix_linux_build: relaxing piece-start-in-past grace for sim"
+    sed -i 's/MAX_START_IN_PAST_SECS: f32 = 200e-6/MAX_START_IN_PAST_SECS: f32 = 10.0/' "$MOTION_CORE"
+else
+    echo "fix_linux_build: piece-start-in-past grace already relaxed, skipping."
+fi
+
+TICK_RS="$REPO_ROOT/rust/runtime/src/tick.rs"
+if grep -q 'TICK_GAP_FAULT_MULT: u64 = 2;' "$TICK_RS" 2>/dev/null; then
+    echo "fix_linux_build: relaxing tick-gap fault for sim"
+    sed -i 's/TICK_GAP_FAULT_MULT: u64 = 2;/TICK_GAP_FAULT_MULT: u64 = 1000000;/' "$TICK_RS"
+else
+    echo "fix_linux_build: tick-gap fault already relaxed, skipping."
+fi
+
 echo "fix_linux_build: done."

@@ -1,6 +1,7 @@
 import contextlib
 import logging
 
+from klippy import structured_log
 from klippy.bridge_endstop import AXIS_ENDSTOP_IDS, BridgeEndstop
 
 HOMING_POLL_PERIOD = 0.001
@@ -302,13 +303,21 @@ class Homing:
                 entry["provider"], axis, trip_pos, final_pos, trigger_height
             )
             toolhead.set_position(newpos, homing_axes=[axis])
-            logging.info(
-                "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
-                "XYZ"[axis],
-                trigger_height,
-                final_pos[axis] - trip_pos[axis],
-                "XYZ"[axis],
-                newpos[axis],
+            structured_log.event(
+                "homing",
+                "axis_homed",
+                msg="homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f"
+                % (
+                    "XYZ"[axis],
+                    trigger_height,
+                    final_pos[axis] - trip_pos[axis],
+                    "XYZ"[axis],
+                    newpos[axis],
+                ),
+                axis="XYZ"[axis],
+                trigger_height=trigger_height,
+                overshoot=final_pos[axis] - trip_pos[axis],
+                homed_position=newpos[axis],
             )
             if hi.retract_dist:
                 retractpos = list(toolhead.get_position())

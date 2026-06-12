@@ -550,6 +550,30 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_bind_phase_motor(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+        slot_idx: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_INVALID_HANDLE;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: phase_slot_idx/phase_motor_count/step_modes are atomics in
+        // SharedState; shared &SharedState, no &mut. Foreground-only caller.
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            match runtime::state::bind_phase_motor(shared, motor_idx, slot_idx) {
+                Ok(()) => KALICO_OK,
+                Err(_) => KALICO_ERR_INVALID_ARG,
+            }
+        }
+    }
+
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_enqueue_success_lo(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
@@ -646,29 +670,6 @@ pub mod exports {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
             shared.step_modes[stepper_idx as usize].load(Ordering::Acquire)
-        }
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_query_phase_config(
-        rt: *mut KalicoRuntime,
-        motor_idx: u8,
-    ) -> u16 {
-        if rt.is_null() || motor_idx >= 4 {
-            return 0xFFFF;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0xFFFF;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: phase_config is AtomicU16 in SharedState; shared &SharedState, no &mut.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let shared: &SharedState = &*shared_ptr;
-            match shared.phase_config.get(motor_idx as usize) {
-                Some(slot) => slot.load(Ordering::Acquire),
-                None => 0xFFFF,
-            }
         }
     }
 
@@ -795,6 +796,14 @@ pub mod exports {
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.reset();
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            for slot in shared.phase_slot_idx.iter() {
+                slot.store(0xFF, Ordering::Release);
+            }
+            shared.phase_motor_count.store(0, Ordering::Release);
+            for m in shared.step_modes.iter() {
+                m.store(runtime::state::StepMode::StepTime as u8, Ordering::Release);
+            }
         }
         #[cfg(not(any(test, feature = "host")))]
         runtime::step_queue::reset_all_queues();
@@ -970,6 +979,91 @@ pub mod exports {
                 max_microsteps_per_sample,
             )
         }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_phase_jog_to(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        target_phase: u16,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; &SharedState borrow is independent of &mut IsrState — SharedState is atomics-only.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            (*isr_ptr).engine.phase_jog_to(
+                shared,
+                stepper_oid,
+                target_phase,
+                max_microsteps_per_sample,
+            )
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_phase_align_to(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        target_phase: u16,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; §11.2 raw-pointer projection.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.phase_align_to(stepper_oid, target_phase)
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_phase_state(
+        rt: *mut KalicoRuntime,
+        stepper_oid: u8,
+        out_axis_idx: *mut u8,
+        out_mode: *mut u8,
+        out_phase: *mut u16,
+        out_settled: *mut u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if out_axis_idx.is_null()
+            || out_mode.is_null()
+            || out_phase.is_null()
+            || out_settled.is_null()
+        {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only; §11.2 raw-pointer projection.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let Some(q) = (*isr_ptr).engine.phase_state(stepper_oid) else {
+                return KALICO_ERR_INVALID_ARG;
+            };
+            *out_axis_idx = q.axis_idx;
+            *out_mode = q.mode;
+            *out_phase = q.phase;
+            *out_settled = u8::from(q.settled);
+        }
+        KALICO_OK
     }
 
     #[unsafe(no_mangle)]

@@ -525,50 +525,6 @@ pub struct PyMotionBridge {
     shut_down: AtomicBool,
 }
 
-pub(crate) fn build_configure_axes_body(
-    kinematics: u8,
-    present_mask: u8,
-    awd_mask: u8,
-    invert_mask: u8,
-    steps_per_mm: &[f32; 4],
-    step_modes: Option<&[u8; 4]>,
-    phase_configs: Option<&[(u8, u8, u8)]>,
-    phase_capable: u8,
-) -> Vec<u8> {
-    let mut body = Vec::with_capacity(26 + 3 * 16);
-    body.push(kinematics);
-    body.push(present_mask);
-    body.push(awd_mask);
-    body.push(invert_mask);
-    for v in steps_per_mm {
-        body.extend_from_slice(&v.to_le_bytes());
-    }
-    if let Some(sm) = step_modes {
-        body.push(phase_capable);
-        for &m in sm.iter() {
-            body.push(m);
-        }
-    }
-    if let Some(pc) = phase_configs {
-        assert!(
-            step_modes.is_some(),
-            "phase_configs requires step_modes (variable-length format extends 25-byte)"
-        );
-        assert!(
-            pc.len() <= 16,
-            "phase_configs.len()={} exceeds MAX_STEPPER_OIDS=16",
-            pc.len(),
-        );
-        body.push(pc.len() as u8);
-        for &(bus_id, cs_pin_id, slot_idx) in pc.iter() {
-            body.push(bus_id);
-            body.push(cs_pin_id);
-            body.push(slot_idx);
-        }
-    }
-    body
-}
-
 pub(crate) fn axis_ring_depth(total_pieces: u32, num_axes: u32) -> u32 {
     (total_pieces / num_axes.max(1)).max(1)
 }
@@ -1994,7 +1950,7 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    #[pyo3(signature = (mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s = 5.0))]
+    #[pyo3(signature = (mcu_handle, motor_idx, bus_id, cs_pin_id, slot_idx, timeout_s = 5.0))]
     fn register_phase_motor(
         &self,
         py: Python<'_>,
@@ -2002,6 +1958,7 @@ impl PyMotionBridge {
         motor_idx: u8,
         bus_id: u8,
         cs_pin_id: u8,
+        slot_idx: u8,
         timeout_s: f64,
     ) -> PyResult<()> {
         let io = {
@@ -2026,7 +1983,7 @@ impl PyMotionBridge {
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
         let msg = format!(
             "runtime_register_phase_motor motor_idx={motor_idx} \
-             bus_id={bus_id} cs_pin_id={cs_pin_id}"
+             bus_id={bus_id} cs_pin_id={cs_pin_id} slot_idx={slot_idx}"
         );
         let params = py.detach(|| -> PyResult<_> {
             use kalico_host_rt::transport::Transport;
@@ -3927,9 +3884,6 @@ impl PyMotionBridge {
             .insert(raw, ETHERCAT_CLOCK_FREQ_HZ);
     }
 }
-
-#[cfg(test)]
-mod build_configure_axes_body_tests;
 
 #[cfg(test)]
 mod tests;

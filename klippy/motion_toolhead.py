@@ -689,11 +689,20 @@ class MotionToolhead(ToolHead):
             # TMC5160's XDIRECT register is written. Empty = no phase stepping.
             phase_configs = []
             any_phase_stepping = False
+            # On corexy kinematics the A and B motors (slots 0 and 1) move
+            # together for any X or Y motion, so a homing trip on either
+            # axis must switch ALL of them out of phase mode — one merged
+            # handover group. Cartesian axes move independently: one group
+            # per slot.
+            xy_coupled = self.kinematics_name in ("corexy", "hybrid_corexy")
+            phase_groups = {}
             for i, slot in enumerate(slot_steppers):
                 # step_modes[i] != 0 is the load-bearing guard (set to 0 only in
                 # the on_this_mcu branch, so cross-MCU slots stay != 0).
                 if step_modes[i] != 0 or not slot:
                     continue
+                group_key = "xy" if (xy_coupled and i in (0, 1)) else i
+                slot_tmcs = phase_groups.setdefault(group_key, [])
                 for stepper_name, stepper_obj in slot:
                     tmc_name = "tmc5160 " + stepper_name
                     try:
@@ -713,8 +722,13 @@ class MotionToolhead(ToolHead):
                             "phase-stepping support" % stepper_name
                         )
                     bus_id, cs_pin_id = tmc.get_phase_config()
+                    tmc.set_phase_stepper_oid(stepper_obj.get_oid())
+                    slot_tmcs.append(tmc)
                     phase_configs.append((bus_id, cs_pin_id, i))
                     any_phase_stepping = True
+            for group in phase_groups.values():
+                for tmc in group:
+                    tmc.set_phase_group(group)
             # Soft cap mirrors firmware-side MAX_STEPPER_OIDS=16 (see
             # rust/runtime/src/state.rs). Reject early with an
             # operator-friendly message rather than letting the bridge
@@ -757,44 +771,6 @@ class MotionToolhead(ToolHead):
                         "large runtime profile for the chip family) and "
                         "reflash." % (slot_name, name, mcu_caps)
                     )
-            if any_phase_stepping:
-                # Two-stage registration: shared SPI cfg once per bus_id, then a
-                # CS GPIO per motor (multiple drivers on one bus each need their
-                # own CS). motor_idx MUST match the phase_configs list position,
-                # since the configure_axes blob is parsed in the same order.
-                seen_buses = set()
-                for bus_id, _cs_pin_id, _slot_idx in phase_configs:
-                    if bus_id == 0xFF:
-                        continue
-                    if bus_id in seen_buses:
-                        continue
-                    seen_buses.add(bus_id)
-                    logging.info(
-                        "register_phase_bus mcu=%s bus_id=%d", name, bus_id
-                    )
-                    self.bridge.register_phase_bus(
-                        mcu_handle,
-                        bus_id,
-                        rate=2_000_000,
-                    )
-                for motor_idx, (bus_id, cs_pin_id, _slot_idx) in enumerate(
-                    phase_configs,
-                ):
-                    if bus_id == 0xFF:
-                        continue
-                    logging.info(
-                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d",
-                        name,
-                        motor_idx,
-                        bus_id,
-                        cs_pin_id,
-                    )
-                    self.bridge.register_phase_motor(
-                        mcu_handle,
-                        motor_idx,
-                        bus_id,
-                        cs_pin_id,
-                    )
             # One kalico_configure_axis per axis carries a 4-byte-per-stepper
             # blob { stepper_oid: u8, dir_invert: u8, tmc_cs_oid: u8, flags: u8 }.
             # dir_invert (from `dir_pin: !PIN`) is forwarded because bridge mode
@@ -830,11 +806,52 @@ class MotionToolhead(ToolHead):
                     name,
                 )
 
+            if any_phase_stepping:
+                # Two-stage registration: shared SPI cfg once per bus_id, then a
+                # CS GPIO per motor (multiple drivers on one bus each need their
+                # own CS). motor_idx MUST match the phase_configs list position.
+                seen_buses = set()
+                for bus_id, _cs_pin_id, _slot_idx in phase_configs:
+                    if bus_id == 0xFF:
+                        continue
+                    if bus_id in seen_buses:
+                        continue
+                    seen_buses.add(bus_id)
+                    logging.info(
+                        "register_phase_bus mcu=%s bus_id=%d", name, bus_id
+                    )
+                    self.bridge.register_phase_bus(
+                        mcu_handle,
+                        bus_id,
+                        rate=2_000_000,
+                    )
+                for motor_idx, (bus_id, cs_pin_id, slot_idx) in enumerate(
+                    phase_configs,
+                ):
+                    if bus_id == 0xFF:
+                        continue
+                    logging.info(
+                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d "
+                        "slot=%d",
+                        name,
+                        motor_idx,
+                        bus_id,
+                        cs_pin_id,
+                        slot_idx,
+                    )
+                    self.bridge.register_phase_motor(
+                        mcu_handle,
+                        motor_idx,
+                        bus_id,
+                        cs_pin_id,
+                        slot_idx,
+                    )
             axis_bindings = defaultdict(list)
             for motor_idx, sname, oid, inv in bind_list:
                 axis_bindings[motor_idx].append((oid, inv))
 
-            MODE_PULSE = 0
+            MODE_PULSE = 0  # wire encoding: 0=Pulse, 1=Phase
+            MODE_PHASE = 1  # (host step_modes list: 0=Modulated, 1=StepTime)
             TMC_CS_OID_NONE = 0xFF
             FLAGS_DEFAULT = 0
 
@@ -873,10 +890,13 @@ class MotionToolhead(ToolHead):
                 ring_depth = self.bridge.ring_depth_for_axis(
                     mcu_handle, axis_idx
                 )
+                axis_mode = (
+                    MODE_PHASE if step_modes[axis_idx] == 0 else MODE_PULSE
+                )
                 configure_axis_cmd.send(
                     [
                         axis_idx,
-                        MODE_PULSE,
+                        axis_mode,
                         microstep_bits,
                         extrusion_bits,
                         len(bindings),
