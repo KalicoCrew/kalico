@@ -12,6 +12,8 @@ fn sample(n: i32) -> DriveSample {
         torque_actual: 42,
         statusword: 0x0627,
         error_code: 0,
+        velocity_offset: n + 3,
+        torque_offset: -7,
     }
 }
 
@@ -55,6 +57,8 @@ fn record_encodes_to_fixed_little_endian_layout() {
             torque_actual: -300,
             statusword: 0x0627,
             error_code: 0x7380,
+            velocity_offset: -654321,
+            torque_offset: 250,
         },
     };
     let b = encode_record(&r);
@@ -68,6 +72,8 @@ fn record_encodes_to_fixed_little_endian_layout() {
     assert_eq!(&b[25..27], &(-300i16).to_le_bytes());
     assert_eq!(&b[27..29], &0x0627u16.to_le_bytes());
     assert_eq!(&b[29..31], &0x7380u16.to_le_bytes());
+    assert_eq!(&b[31..35], &(-654321i32).to_le_bytes());
+    assert_eq!(&b[35..37], &250i16.to_le_bytes());
 }
 
 #[test]
@@ -79,7 +85,7 @@ fn header_is_one_json_line_describing_the_record() {
     for needle in [
         "\"version\":1",
         "\"cycle_ns\":1000000",
-        "\"record_size\":31",
+        "\"record_size\":37",
         "\"started_utc\":\"2026-06-10T12:00:00Z\"",
         "\"started_mono_ns\":7",
         "\"name\":\"x\"",
@@ -93,6 +99,8 @@ fn header_is_one_json_line_describing_the_record() {
         "{\"name\":\"torque_actual\",\"dtype\":\"i16\",\"offset\":25}",
         "{\"name\":\"statusword\",\"dtype\":\"u16\",\"offset\":27}",
         "{\"name\":\"error_code\",\"dtype\":\"u16\",\"offset\":29}",
+        "{\"name\":\"velocity_offset\",\"dtype\":\"i32\",\"offset\":31}",
+        "{\"name\":\"torque_offset\",\"dtype\":\"i16\",\"offset\":35}",
     ] {
         assert!(h.contains(needle), "header missing {needle}: {h}");
     }
@@ -231,4 +239,51 @@ fn writer_death_latches_file_error() {
     assert!(!path.exists(), "failed capture must not keep .scap name");
     assert!(failed.exists(), "failed capture must be renamed");
     std::fs::remove_file(&failed).unwrap();
+}
+
+#[test]
+fn stop_async_returns_while_writer_is_still_finalizing() {
+    let path = tmp_path("async");
+    let _ = std::fs::remove_file(&path);
+    let (gate_tx, gate_rx) = sync_channel::<()>(1);
+    let mut cap = Capture::new();
+    assert_eq!(cap.start_gated(cfg(&path), gate_rx), 0);
+    for i in 0..20u64 {
+        cap.push(record(i));
+    }
+
+    let started = std::time::Instant::now();
+    let pending = cap.stop_async();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(20),
+        "stop_async must not wait for the writer"
+    );
+    assert!(
+        pending.try_take().is_none(),
+        "outcome must not exist while the writer is gated"
+    );
+    assert!(!cap.is_active(), "capture slot frees immediately");
+
+    gate_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let out = loop {
+        if let Some(out) = pending.try_take() {
+            break out;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "finalizer never completed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(out.result, 0);
+    assert_eq!(out.samples, 20);
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn stop_async_without_start_resolves_not_active_immediately() {
+    let mut cap = Capture::new();
+    let out = cap.stop_async().try_take().expect("immediate outcome");
+    assert_eq!(out.result, ERR_CAPTURE_NOT_ACTIVE);
 }

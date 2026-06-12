@@ -49,6 +49,9 @@ class FakeRailConfig:
     def getint(self, option, default=_UNSET, minval=None, maxval=None):
         return self._lookup(option, default)
 
+    def getboolean(self, option, default=_UNSET):
+        return self._lookup(option, default)
+
     def _lookup(self, option, default):
         if option in self._options:
             return self._options[option]

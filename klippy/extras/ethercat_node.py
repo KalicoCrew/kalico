@@ -64,7 +64,7 @@ class EtherCatNode:
                 return rail
         raise self.printer.config_error(
             "ethercat_node %s: no [servo_*] section with node=%s — "
-            "cannot derive counts_per_mm" % (self.name, self.name)
+            "cannot locate the servo rail" % (self.name, self.name)
         )
 
     def _claim(self):
@@ -72,6 +72,7 @@ class EtherCatNode:
             return
         rail = self._find_rail()
         self._counts_per_mm = rail.get_counts_per_mm()
+        velocity_ff, dynamics_profile, ff_torque_clamp = rail.get_ff_config()
         following_error_counts, max_torque_tenth_pct = (
             rail.get_session_drive_limits()
         )
@@ -83,6 +84,9 @@ class EtherCatNode:
                 self.interface,
                 self.endpoint,
                 self._counts_per_mm,
+                velocity_ff,
+                dynamics_profile,
+                ff_torque_clamp,
                 following_error_counts,
                 max_torque_tenth_pct,
             )
@@ -90,13 +94,17 @@ class EtherCatNode:
             raise self.printer.config_error(str(e))
         logging.info(
             "ethercat_node %s: claimed handle=%s socket=%s interface=%s "
-            "endpoint=%s counts_per_mm=%s",
+            "endpoint=%s counts_per_mm=%s velocity_ff=%s "
+            "dynamics_profile=%s ff_torque_clamp=%s",
             self.name,
             self.bridge_handle,
             self.socket_path,
             self.interface,
             self.endpoint,
             self._counts_per_mm,
+            velocity_ff,
+            dynamics_profile,
+            ff_torque_clamp,
         )
         self._push_drive_params(rail)
         reactor = self.printer.get_reactor()

@@ -359,6 +359,7 @@ fn main() {
                     ENGINE_STATE_FAULT,
                     0,
                     &[ring.retired_count()],
+                    0,
                 ));
                 std::process::exit(1);
             }
@@ -382,7 +383,12 @@ fn main() {
                         eprintln!(
                             "ec-rt-stub: drive fault simulated after {sampled_pieces} pieces"
                         );
-                        server.respond(&status_heartbeat_frame(0, 0x8611, &[ring.retired_count()]));
+                        server.respond(&status_heartbeat_frame(
+                            0,
+                            0x8611,
+                            &[ring.retired_count()],
+                            0,
+                        ));
                         last_sent_retired = ring.retired_count();
                         heartbeat_sent = true;
                     }
@@ -412,6 +418,8 @@ fn main() {
                     torque_actual: 100,
                     statusword: 0x0627,
                     error_code: 0,
+                    velocity_offset: 0,
+                    torque_offset: 0,
                 },
             });
         }
@@ -425,7 +433,12 @@ fn main() {
                         gate.on_drive_fault();
                         ring.reset();
                         eprintln!("ec-rt-stub: drive fault simulated after {sampled_pieces} pieces (ring fault path)");
-                        server.respond(&status_heartbeat_frame(0, 0x8611, &[ring.retired_count()]));
+                        server.respond(&status_heartbeat_frame(
+                            0,
+                            0x8611,
+                            &[ring.retired_count()],
+                            0,
+                        ));
                         last_sent_retired = ring.retired_count();
                         heartbeat_sent = true;
                         continue 'session;
@@ -442,6 +455,7 @@ fn main() {
                 ENGINE_STATE_FAULT,
                 (fault_val & 0xFFFF) as u16,
                 &[current_retired],
+                0,
             ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
@@ -451,7 +465,12 @@ fn main() {
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-            server.respond(&status_heartbeat_frame(engine_state, 0, &[current_retired]));
+            server.respond(&status_heartbeat_frame(
+                engine_state,
+                0,
+                &[current_retired],
+                0,
+            ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
             if current_retired != 0 {

@@ -83,13 +83,15 @@ fn status_heartbeat_roundtrip_empty() {
         engine_state: 0,
         fault_code: 0,
         retired_counts: vec![],
+        ff_saturation_count: 0,
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 4);
+    assert_eq!(buf.len(), 8);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.retired_counts.len(), 0);
+    assert_eq!(decoded.ff_saturation_count, 0);
 }
 
 #[test]
@@ -98,15 +100,33 @@ fn status_heartbeat_roundtrip_with_axes() {
         engine_state: 1,
         fault_code: 0,
         retired_counts: vec![42, 42, 10, 5],
+        ff_saturation_count: 7,
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 20);
+    assert_eq!(buf.len(), 24);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.engine_state, 1);
     assert_eq!(decoded.fault_code, 0);
     assert_eq!(decoded.retired_counts, vec![42, 42, 10, 5]);
+    assert_eq!(decoded.ff_saturation_count, 7);
+}
+
+#[test]
+fn status_heartbeat_short_frame_missing_ff_saturation_is_decode_error() {
+    let msg = StatusHeartbeat {
+        engine_state: 2,
+        fault_code: 0,
+        retired_counts: vec![99],
+        ff_saturation_count: 5,
+    };
+    let full = msg.encoded_to_vec();
+    let truncated = &full[..full.len() - 1];
+    assert!(
+        StatusHeartbeat::decode(truncated).is_err(),
+        "short frame must fail to decode"
+    );
 }
 
 #[test]

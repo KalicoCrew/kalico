@@ -2,10 +2,13 @@ pub mod capture;
 pub mod claim;
 pub mod clock;
 pub mod curves;
+pub mod dynamics;
 #[cfg(feature = "hw")]
 pub mod ffi;
+pub mod mailbox;
 pub mod scale;
 pub mod sdo;
 pub mod server;
+pub mod thread_prio;
 pub mod torque;
 pub mod wire;

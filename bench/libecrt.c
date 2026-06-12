@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "libecrt.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
@@ -9,11 +10,10 @@
 #include "ethercat.h"
 
 /*
- * out_t mirrors the drive's fixed RxPDO 0x1701:
- *   controlword      6040  uint16
- *   target_position  607A  int32
- *   touch_probe_fn   60B8  uint16
- *   phys_outputs     60FE:01 uint32
+ * out_t mirrors the variable RxPDO 0x1600 written by
+ * remap_volatile_rx_pdo_1600() below (velocity_offset 60B1h is speed FF
+ * when C01.13=5; torque_offset 60B2h is torque FF when C01.16=5).
+ *
  * in_t mirrors the variable TxPDO 0x1A00 written by
  * remap_volatile_tx_pdo_1a00() below.
  */
@@ -23,6 +23,8 @@ typedef struct {
     int32_t  target_position;
     uint16_t touch_probe_fn;
     uint32_t phys_outputs;
+    int32_t  velocity_offset;
+    int16_t  torque_offset;
 } out_t;
 typedef struct {
     uint16_t error_code;
@@ -37,6 +39,9 @@ typedef struct {
     int32_t  position_demand;
 } in_t;
 #pragma pack(pop)
+_Static_assert(sizeof(out_t) == 18,
+               "rewrite_1600_entry_table() maps 18 bytes; out_t must match "
+               "field-for-field, in order");
 _Static_assert(sizeof(in_t) == 32,
                "rewrite_1a00_entry_table() maps 32 bytes; in_t must match "
                "field-for-field, in order");
@@ -105,6 +110,13 @@ static int go_realtime(int cpu, int prio) {
 #define TXPDO_DIGITAL_INPUTS  COE_ENTRY(0x60FD, 0x00, 32)
 #define TXPDO_POSITION_DEMAND COE_ENTRY(0x6062, 0x00, 32)
 
+#define RXPDO_CONTROLWORD     COE_ENTRY(0x6040, 0x00, 16)
+#define RXPDO_TARGET_POSITION COE_ENTRY(0x607A, 0x00, 32)
+#define RXPDO_TOUCH_PROBE_FN  COE_ENTRY(0x60B8, 0x00, 16)
+#define RXPDO_PHYS_OUTPUTS    COE_ENTRY(0x60FE, 0x01, 32)
+#define RXPDO_VELOCITY_OFFSET COE_ENTRY(0x60B1, 0x00, 32)
+#define RXPDO_TORQUE_OFFSET   COE_ENTRY(0x60B2, 0x00, 16)
+
 static int remap_write(uint16_t index, uint8_t sub, const void *buf, int size) {
     uint32_t abort = 0;
     if (ec_rt_sdo_write(index, sub, buf, size, &abort) != 0) {
@@ -155,24 +167,77 @@ static int remap_volatile_tx_pdo_1a00(void) {
     return rewrite_1a00_entry_table();
 }
 
-static int assign_fixed_rx_pdo_0x1701(void) {
-    uint8_t  no_pdos  = 0;
-    uint8_t  one_pdo  = 1;
-    uint16_t pdo_1701 = 0x1701;
-    if (remap_write(0x1C12, 0x00, &no_pdos,  sizeof(no_pdos))  != 0) return -1;
-    if (remap_write(0x1C12, 0x01, &pdo_1701, sizeof(pdo_1701)) != 0) return -1;
-    return remap_write(0x1C12, 0x00, &one_pdo, sizeof(one_pdo));
+/* If the deadline has gone stale (a blocking SDO transaction or a wait
+ * between exchanges overran the cycle), re-anchor to now instead of letting
+ * clock_nanosleep return immediately cycle after cycle: that catch-up burst
+ * sends frames far outside the drive's SYNC0 window and reads as sync loss
+ * (AL 0x001A / ErC1.1). One late-but-paced frame is recoverable; a burst of
+ * misaligned ones is not. */
+static void reanchor_if_stale(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t behind_ns = (now.tv_sec - g_ts.tv_sec) * 1000000000LL
+                      + (now.tv_nsec - g_ts.tv_nsec);
+    if (behind_ns > g_cycle_ns) g_ts = now;
 }
 
 static int rt_exchange(int64_t *toff) {
     int64_t off = 0;
     add_ts(&g_ts, g_cycle_ns + (toff ? *toff : 0));
+    reanchor_if_stale();
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &g_ts, NULL);
     ec_send_processdata();
     int wkc = ec_receive_processdata(EC_TIMEOUTRET);
     dc_sync(ec_DCtime, g_cycle_ns, &off);
     if (toff) *toff = off;
     return wkc;
+}
+
+static int point_group_1c12_at_pdo_0x1600(void) {
+    uint8_t  no_pdos  = 0;
+    uint8_t  one_pdo  = 1;
+    uint16_t pdo_1600 = 0x1600;
+    if (remap_write(0x1C12, 0x00, &no_pdos,  sizeof(no_pdos))  != 0) return -1;
+    if (remap_write(0x1C12, 0x01, &pdo_1600, sizeof(pdo_1600)) != 0) return -1;
+    return remap_write(0x1C12, 0x00, &one_pdo, sizeof(one_pdo));
+}
+
+static int rewrite_1600_entry_table(void) {
+    static const uint32_t entries[] = {
+        RXPDO_CONTROLWORD,
+        RXPDO_TARGET_POSITION,
+        RXPDO_TOUCH_PROBE_FN,
+        RXPDO_PHYS_OUTPUTS,
+        RXPDO_VELOCITY_OFFSET,
+        RXPDO_TORQUE_OFFSET,
+    };
+    uint8_t no_entries  = 0;
+    uint8_t all_entries = sizeof(entries) / sizeof(entries[0]);
+    if (remap_write(0x1600, 0x00, &no_entries, sizeof(no_entries)) != 0) return -1;
+    for (uint8_t i = 0; i < all_entries; i++) {
+        if (remap_write(0x1600, (uint8_t)(i + 1), &entries[i], sizeof(entries[i])) != 0)
+            return -1;
+    }
+    return remap_write(0x1600, 0x00, &all_entries, sizeof(all_entries));
+}
+
+/* The fixed RxPDO 1701h cannot carry the CiA402 feedforward offsets 60B1h /
+ * 60B2h; only the variable 1600h can, and the drive holds that mapping in
+ * RAM only. Group before objects is the A6-EC manual's required write order. */
+static int remap_volatile_rx_pdo_1600(void) {
+    if (point_group_1c12_at_pdo_0x1600() != 0) return -1;
+    return rewrite_1600_entry_table();
+}
+
+/* FF sources to "communication" (60B1h/60B2h).
+ * C01.13 -> 0x2001:14h, C01.14 -> 0x2001:15h, C01.16 -> 0x2001:17h,
+ * C01.17 -> 0x2001:18h (group C01 = index 2001h, subindex = hex param + 1). */
+static int route_feedforward_to_communication(void) {
+    uint16_t src = 5, pct = 0; /* 0% additional feedforward */
+    if (remap_write(0x2001, 0x14, &src, sizeof(src)) != 0) return -1;
+    if (remap_write(0x2001, 0x15, &pct, sizeof(pct)) != 0) return -1;
+    if (remap_write(0x2001, 0x17, &src, sizeof(src)) != 0) return -1;
+    return remap_write(0x2001, 0x18, &pct, sizeof(pct));
 }
 
 static int await_slave_state(uint16_t wanted, const char *name, int err) {
@@ -196,7 +261,34 @@ static int restore_power_on_equivalent_state(void) {
     return await_slave_state(EC_STATE_PRE_OP, "PRE-OP", EC_RT_ERR_PREOP_TIMEOUT);
 }
 
-int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
+/* A dead session latches ErC1.1 (sync loss, AL 0x001A) on the drive. The
+ * CiA402 fault reset (6040h bit 7 rising edge) works over SDO in PRE-OP,
+ * where sync monitoring is inactive — the alarm cannot re-raise mid-clear
+ * the way it can during the post-OP park loop on a still-settling DC clock. */
+static void clear_latched_alarm_in_preop(void) {
+    uint16_t err = 0;
+    int sz = sizeof(err);
+    if (ec_SDOread(1, 0x603F, 0x00, FALSE, &sz, &err, EC_TIMEOUTRXM) <= 0 || err == 0)
+        return;
+    fprintf(stderr, "ec_rt: clearing latched drive alarm 0x%04x in PRE-OP\n", err);
+    uint16_t cw = 0x0000;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    cw = 0x0080;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    cw = 0x0000;
+    ec_SDOwrite(1, 0x6040, 0x00, FALSE, sizeof(cw), &cw, EC_TIMEOUTRXM);
+    sz = sizeof(err);
+    if (ec_SDOread(1, 0x603F, 0x00, FALSE, &sz, &err, EC_TIMEOUTRXM) > 0 && err != 0)
+        fprintf(stderr, "ec_rt: drive alarm 0x%04x survived PRE-OP fault reset; "
+                "the post-OP park loop will keep pulsing\n", err);
+}
+
+/* Phase 1: up to PRE-OP with PDO maps, mode, sync types, and FF routing
+ * written. The caller does its session SDO work (drive limits, params)
+ * after this returns — in PRE-OP the drive expects no process data, so
+ * blocking mailbox transactions cannot trip the sync-loss monitor the way
+ * they do once OP starts. */
+int ec_rt_bringup_preop(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
     g_enabled  = 0;
@@ -209,8 +301,10 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     int reset_rc = restore_power_on_equivalent_state();
     if (reset_rc != 0) { ec_close(); return reset_rc; }
 
+    clear_latched_alarm_in_preop();
+
     if (remap_volatile_tx_pdo_1a00() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
-    if (assign_fixed_rx_pdo_0x1701() != 0) { ec_close(); return EC_RT_ERR_RXPDO_ASSIGN; }
+    if (remap_volatile_rx_pdo_1600() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
 
     /* Write order matters: mode, both sync types, then cycle times. The
      * drive requires SYNC0 active before SAFE-OP (else AL 0x0030 / Er74.1). */
@@ -229,6 +323,23 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_SDOwrite(1, 0x6066, 0x00, FALSE, sizeof(ferr_timeout_ms),
                 &ferr_timeout_ms, EC_TIMEOUTRXM);
 
+    /* The A6-EC rejects writes to 0x10F1:02 (sync error counter limit stays
+     * at 8: +3 per missed SM event, -1 per good cycle), so ~3 consecutive
+     * late frames latch ErC1.1 and there is no drive-side tolerance to buy.
+     * The master must never stall: no file I/O, SDO mailbox waits, or thread
+     * spawns on the DC thread. */
+
+    if (route_feedforward_to_communication() != 0) {
+        ec_close();
+        return EC_RT_ERR_FF_ROUTING;
+    }
+    return 0;
+}
+
+/* Phase 2: DC config, SAFE-OP, stabilize, OP, CiA402 park. From the moment
+ * SYNC0 starts here, the caller must never pause process data — every wait
+ * goes through ec_rt_cycle. */
+int ec_rt_bringup_finish(void) {
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
     ec_config_map(&IOmap);
@@ -253,6 +364,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     g_out->target_position = 0;
     g_out->touch_probe_fn  = 0;
     g_out->phys_outputs    = 0;
+    g_out->velocity_offset = 0;
+    g_out->torque_offset   = 0;
 
     clock_gettime(CLOCK_MONOTONIC, &g_ts);
     int64_t toff = 0;
@@ -345,6 +458,9 @@ int32_t  ec_rt_get_position_actual(void)        { return g_in->position_actual; 
 uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
+void ec_rt_set_velocity_offset(int32_t counts_per_s) { g_out->velocity_offset = counts_per_s; }
+void ec_rt_set_torque_offset(int16_t tenths_pct)     { g_out->torque_offset  = tenths_pct; }
+int16_t ec_rt_get_torque_actual(void)                { return g_in->torque_actual; }
 
 void ec_rt_get_telemetry(ec_telemetry_t *out) {
     out->error_code      = g_in->error_code;
@@ -354,6 +470,8 @@ void ec_rt_get_telemetry(ec_telemetry_t *out) {
     out->following_error = g_in->following_error;
     out->position_demand = g_in->position_demand;
     out->target_position = g_out->target_position;
+    out->velocity_offset = g_out->velocity_offset;
+    out->torque_offset   = g_out->torque_offset;
 }
 
 int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
@@ -418,6 +536,11 @@ int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
 }
 
 int ec_rt_park_cycle(int64_t *toff_ns) {
+    if (!g_out || !g_in) {
+        fprintf(stderr,
+                "ec_rt: park_cycle before bringup_finish — PDO map not bound\n");
+        abort();
+    }
     g_out->controlword     = 0;
     g_out->target_position = g_in->position_actual;
     return rt_exchange(toff_ns);
@@ -434,6 +557,8 @@ void ec_rt_disable(void) {
     for (int i = 0; i < 100; i++) {
         g_out->controlword = 0x0006;
         g_out->target_position = g_in->position_actual;
+        g_out->velocity_offset = 0;
+        g_out->torque_offset   = 0;
         int64_t t = 0;
         rt_exchange(&t);
     }
@@ -446,7 +571,14 @@ void ec_rt_dump_al_state(void) {
             ec_slave[1].state, ec_slave[1].ALstatuscode, ec_group[0].docheckstate);
 }
 
+/* Leave OP before touching SYNC0: killing the DC pulse while the drive is
+ * still in OP trips its sync-loss monitor and latches ErC1.1, which the next
+ * bringup then has to clear (and a power cycle has to clear if that fails).
+ * In PRE-OP no process data is expected, so SYNC0 can stop silently. */
 void ec_rt_shutdown(void) {
+    ec_slave[0].state = EC_STATE_PRE_OP;
+    ec_writestate(0);
+    ec_statecheck(0, EC_STATE_PRE_OP, EC_TIMEOUTSTATE);
     ec_dcsync0(1, FALSE, 0, 0);
     ec_slave[0].state = EC_STATE_INIT;
     ec_writestate(0);

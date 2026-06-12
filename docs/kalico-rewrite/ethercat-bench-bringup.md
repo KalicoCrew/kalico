@@ -92,6 +92,10 @@ rotation_distance: 40         # mm of axis travel per motor revolution (your mec
 encoder_counts_per_rev: 131072  # required; drive encoder counts per motor rev (A6-EC: 131072)
 position_min: 0
 position_max: 300
+# Feedforward (optional; see servo-feedforward.md):
+#velocity_ff: True              # stream 60B1h velocity feedforward
+#dynamics_profile: dynamics_x.toml  # enables 60B2h torque feedforward
+#ff_torque_clamp: 30.0          # torque-offset clamp, % of rated
 # Homing (optional). With these set, G28 homes the servo axis against a GPIO
 # endstop on any bridge MCU; without endstop_pin the axis has no endstop and
 # G28 on it fails loudly.
@@ -108,6 +112,17 @@ position_max: 300
 #following_error: 10
 #max_torque: 150
 ```
+
+Bring-up now performs the **variable PDO remap** (1600h/1A00h via SDO in
+PRE-OP; exit rc -6 on failure) and the **FF-routing SDO writes** (C01.13/16 =
+5, C01.14/17 = 0; exit rc -10 on failure) before the DC stabilize loop.
+The percentage registers stay 0 because with source = 5 the drive applies
+60B1h/60B2h at (100% + C01.14/C01.17) — bench-measured 2026-06-12: pct=1000
+doubled the applied feedforward (cruise lead of exactly v/Kp), pct=0 gave
+unity (cruise rms 55 counts at 400 mm/s).
+Both are rewritten on every claim — they are not EEPROM-retained. See
+[`servo-feedforward.md`](servo-feedforward.md) for the FF config keys and
+identification workflow.
 
 `counts_per_mm = encoder_counts_per_rev / rotation_distance` — the `CountMap` gain
 the endpoint uses to convert host millimetres to drive counts. klippy derives it at
@@ -292,17 +307,23 @@ is not reaching it. (Endpoints sampled in their first ~200 ms read `SCHED_OTHER`
 because `go_realtime()` runs just after `main()` startup; sample the
 steady-state pid.)
 
-## Fixed RxPDO assignment (rc=-7)
+## Variable RxPDO 0x1600 remap (rc=-6 / rc=-7)
 
-`out_t` mirrors the drive's fixed 12-byte RxPDO **`0x1701`** (`6040` controlword,
-`607A` target position, `60B8` touch-probe function, `60FE:01` forced-DO). The
-drive can power up with a *wider* RxPDO assigned to `0x1C12` (e.g. 18 bytes),
-whose byte count disagrees with `out_t` and aborts bringup at
-`EC_RT_ERR_PDO_SIZE` (`rc=-7`, `ec_rt: PDO size mismatch — mapped out=18 …`).
-Bringup now **forces** `0x1C12 → 0x1701` before mapping (mirroring the existing
-`0x1C13 → 0x1A00` TxPDO assignment), so a clean map no longer depends on the
-drive's retained state. A failure to write that assignment is `rc=-13`
-(`EC_RT_ERR_RXPDO_ASSIGN`).
+`out_t` is the 18-byte variable RxPDO **`0x1600`** (`6040` controlword, `607A`
+target position, `60B8` touch-probe function, `60FE:01` forced-DO, plus the two
+feedforward offsets `60B1` velocity and `60B2` torque). The fixed `0x1701` the
+bench used before carried only the first four — it physically can't hold the FF
+offsets — so feedforward requires the variable map.
+
+The drive can power up with a *different* RxPDO assigned to `0x1C12`, whose byte
+count disagrees with `out_t` and aborts bringup at `EC_RT_ERR_PDO_SIZE` (`rc=-7`,
+`ec_rt: PDO size mismatch — mapped out=… …`). Bringup now **forces** `0x1C12 →
+0x1600` and rewrites the whole `0x1600` entry table before mapping (mirroring the
+existing `0x1C13 → 0x1A00` TxPDO remap), so a clean 18-byte map no longer depends
+on the drive's retained state. A failure to write that remap is `rc=-6`
+(`EC_RT_ERR_PDO_REMAP`), the same code as the `0x1A00` TxPDO remap. See
+[`servo-feedforward.md`](servo-feedforward.md) for the FF routing (C01 group →
+60B1h/60B2h) that the FF entries feed.
 
 ## Fault-response reference
 - **`PieceStartInPast`** (a piece adopted >2 ms late = 2× the 1 ms DC period): the walker faults, the endpoint latches it (allocation-free atomic) and reports `engine_state=Fault` to the host. Primary response is host-coordinated shutdown (mirrors the MCU model); the hw binary additionally disables the drive as a local backstop. It does **not** silently hold the last position.

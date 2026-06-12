@@ -243,11 +243,13 @@ pub fn status_heartbeat_frame(
     engine_state: u8,
     fault_code: u16,
     retired_counts: &[u32],
+    ff_saturation_count: u32,
 ) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
         fault_code,
         retired_counts: retired_counts.to_vec(),
+        ff_saturation_count,
     };
     let body = hb.encoded_to_vec();
     let payload = {

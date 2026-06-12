@@ -140,6 +140,9 @@ class MotionBridgeWrapper:
         interface,
         endpoint,
         counts_per_mm,
+        velocity_ff,
+        dynamics_profile,
+        torque_clamp_pct,
         following_error_counts=None,
         max_torque_tenth_pct=None,
     ):
@@ -149,6 +152,9 @@ class MotionBridgeWrapper:
             interface,
             endpoint,
             counts_per_mm,
+            velocity_ff,
+            dynamics_profile,
+            torque_clamp_pct,
             following_error_counts,
             max_torque_tenth_pct,
         )

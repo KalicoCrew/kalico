@@ -1,5 +1,6 @@
-//! Callers must ensure no concurrent access and that `ec_rt_bringup` has
-//! succeeded before calling any other function.
+//! Callers must ensure no concurrent access. `ec_rt_bringup_preop` must
+//! succeed before SDO access; `ec_rt_bringup_finish` must succeed before
+//! anything that touches process data (cycle, targets, offsets, telemetry).
 #![allow(unsafe_code)]
 
 use std::os::raw::{c_char, c_int};
@@ -14,20 +15,24 @@ pub struct EcTelemetry {
     pub following_error: i32,
     pub position_demand: i32,
     pub target_position: i32,
+    pub velocity_offset: i32,
+    pub torque_offset: i16,
 }
 
 const _: () = assert!(
-    core::mem::size_of::<EcTelemetry>() == 24,
+    core::mem::size_of::<EcTelemetry>() == 32,
     "EcTelemetry layout must match ec_telemetry_t in bench/libecrt.h"
 );
 
 extern "C" {
-    pub fn ec_rt_bringup(
+    pub fn ec_rt_bringup_preop(
         ifname: *const c_char,
         cycle_ns: i64,
         rt_cpu: c_int,
         rt_prio: c_int,
     ) -> c_int;
+
+    pub fn ec_rt_bringup_finish() -> c_int;
 
     pub fn ec_rt_enable() -> c_int;
 
@@ -48,6 +53,12 @@ extern "C" {
     pub fn ec_rt_get_error_code() -> u16;
 
     pub fn ec_rt_get_following_error() -> i32;
+
+    pub fn ec_rt_set_velocity_offset(counts_per_s: i32);
+
+    pub fn ec_rt_set_torque_offset(tenths_pct: i16);
+
+    pub fn ec_rt_get_torque_actual() -> i16;
 
     pub fn ec_rt_read_limits(
         ferr_counts: *mut u32,

@@ -7,10 +7,15 @@ time-series dashboard.
 """
 
 import argparse
+import glob
 import json
+import os
+import re
 import sys
 
 import numpy as np
+
+CAPTURE_TS_RE = re.compile(r"_(\d{8}_\d{6})\.scap$")
 
 DTYPE_MAP = {
     "u8": "u1",
@@ -21,6 +26,14 @@ DTYPE_MAP = {
 }
 FLAG_MOTION_ACTIVE = 1 << 1
 SETTLE_HOLD_MS = 50
+
+
+def resolve_newest_capture(captures_dir, name):
+    pattern = os.path.join(os.path.expanduser(captures_dir), name + "_*.scap")
+    matches = [p for p in glob.glob(pattern) if CAPTURE_TS_RE.search(p)]
+    if not matches:
+        raise SystemExit("no capture named %r in %s" % (name, captures_dir))
+    return max(matches)
 
 
 def load_capture(path):
@@ -116,7 +129,7 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
             }
         )
     torque = np.abs(data["torque_actual"].astype(np.int64))
-    return {
+    metrics = {
         "samples": len(data),
         "moves": moves,
         "torque_saturation_pct": float(
@@ -126,6 +139,17 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
             np.max(np.abs(recomputed - ferr.astype(np.int64)))
         ),
     }
+    if "velocity_offset" in (data.dtype.names or ()):
+        moving = (data["flags"] & FLAG_MOTION_ACTIVE) != 0
+        metrics["ff_velocity_offset_max"] = int(
+            np.max(np.abs(data["velocity_offset"][moving]))
+            if moving.any()
+            else 0
+        )
+        metrics["ff_torque_offset_max"] = int(
+            np.max(np.abs(data["torque_offset"][moving])) if moving.any() else 0
+        )
+    return metrics
 
 
 def welch_psd(x, fs, nperseg=1024):
@@ -177,6 +201,16 @@ def _print_metrics(m, counts_per_mm):
         "drive-vs-recomputed following error: max delta %d counts"
         % (m["ferr_crosscheck_max"],)
     )
+    if "ff_velocity_offset_max" in m:
+        print(
+            "FF offsets during motion: velocity max %d counts/s (%.1f mm/s), "
+            "torque max %d (0.1%% rated)"
+            % (
+                m["ff_velocity_offset_max"],
+                m["ff_velocity_offset_max"] / counts_per_mm,
+                m["ff_torque_offset_max"],
+            )
+        )
     for mv in m["moves"]:
         settle = (
             "%.1f ms" % mv["settle_ms"]
@@ -200,9 +234,37 @@ def _print_metrics(m, counts_per_mm):
         )
 
 
+def export_ident_csv(path, header, data, counts_per_mm):
+    # The fitter regresses torque against the kinematics that produced it.
+    # With a position loop between command and motor, torque follows actual
+    # motion (6064h), not the commanded target — exporting target_counts
+    # here yields a wrong (even negative) inertia on a soft loop.
+    axis = header["drives"][0]["name"]
+    cycle_index = data["cycle_index"].astype(np.int64)
+    t = (cycle_index - cycle_index[0]) * (header["cycle_ns"] * 1e-9)
+    actual_mm = data["position_actual"].astype(np.float64) / counts_per_mm
+    torque = data["torque_actual"].astype(np.float64)
+    with open(path, "w") as f:
+        f.write("t,target_%s,torque_%s\n" % (axis, axis))
+        for row in zip(t, actual_mm, torque):
+            f.write("%.6f,%.9g,%.9g\n" % row)
+    print(
+        "wrote %d samples for axis %r to %s (feed to servo-ident --capture)"
+        % (len(t), axis, path)
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("capture", help="path to a .scap capture file")
+    p.add_argument("capture", nargs="?", help="path to a .scap capture file")
+    p.add_argument(
+        "--name",
+        help="capture base name; analyzes the newest matching capture "
+        "in --captures-dir instead of an explicit path",
+    )
+    p.add_argument(
+        "--captures-dir", default="~/printer_data/logs/servo_captures"
+    )
     p.add_argument(
         "--settle-band",
         type=int,
@@ -225,11 +287,28 @@ def main(argv=None):
         action="store_true",
         help="show a time-series dashboard (requires matplotlib)",
     )
+    p.add_argument(
+        "--csv",
+        metavar="PATH",
+        help="export t/target/torque in servo-ident's CSV contract "
+        "(t in s, target in mm, torque in 0.1%% rated) and exit",
+    )
     args = p.parse_args(argv)
+    if (args.capture is None) == (args.name is None):
+        raise SystemExit("pass a .scap path or --name, not both or neither")
+    capture_path = args.capture or resolve_newest_capture(
+        args.captures_dir, args.name
+    )
 
-    header, data = load_capture(args.capture)
+    header, data = load_capture(capture_path)
     fs = 1e9 / header["cycle_ns"]
     counts_per_mm = header["drives"][0]["counts_per_mm"]
+
+    if args.csv:
+        export_ident_csv(args.csv, header, data, counts_per_mm)
+        return 0
+
+    print("file: %s" % (capture_path,))
     m = compute_metrics(data, args.settle_band, args.torque_limit, fs=fs)
     _print_metrics(m, counts_per_mm)
 

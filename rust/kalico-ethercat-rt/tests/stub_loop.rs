@@ -207,7 +207,12 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
             let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
             if should_emit {
                 let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-                server.respond(&status_heartbeat_frame(engine_state, 0, &[current_retired]));
+                server.respond(&status_heartbeat_frame(
+                    engine_state,
+                    0,
+                    &[current_retired],
+                    0,
+                ));
                 last_sent_retired = current_retired;
                 heartbeat_sent = true;
             }

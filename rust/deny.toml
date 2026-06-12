@@ -16,13 +16,6 @@ ignore = [
     # is pinned at 1.85 (rust-toolchain.toml), so we stay on 0.3.45 and ignore.
     # Drop this entry when the toolchain pin moves to >= 1.88.
     { id = "RUSTSEC-2026-0009", reason = "time used for formatting only; RFC-2822 parse path unreachable; fix requires rustc 1.88 > pinned 1.85" },
-    # pyo3 BoundListIterator/BoundTupleIterator OOB read in nth/nth_back.
-    # Unreachable here: the workspace never calls Iterator::nth/nth_back on
-    # pyo3 list/tuple iterators (plain `for` iteration and indexed get_item
-    # only). The fixed release is pyo3 0.29, a multi-version API migration
-    # for the motion-bridge cdylib — tracked as its own upgrade.
-    # Drop this entry when pyo3 moves to >= 0.29.
-    { id = "RUSTSEC-2026-0176", reason = "nth/nth_back never called on pyo3 sequence iterators; fix requires pyo3 0.29 migration" },
 ]
 
 [licenses]

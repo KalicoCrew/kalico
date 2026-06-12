@@ -650,6 +650,7 @@ pub struct StatusHeartbeat {
     pub engine_state: u8,
     pub fault_code: u16,
     pub retired_counts: Vec<u32>,
+    pub ff_saturation_count: u32,
 }
 
 impl Encode for StatusHeartbeat {
@@ -661,6 +662,7 @@ impl Encode for StatusHeartbeat {
         for &count in &self.retired_counts {
             put_u32(out, count);
         }
+        put_u32(out, self.ff_saturation_count);
     }
 }
 
@@ -686,10 +688,12 @@ impl Decode for StatusHeartbeat {
         for _ in 0..num_axes {
             retired_counts.push(get_u32(c)?);
         }
+        let ff_saturation_count = get_u32(c)?;
         Ok(Self {
             engine_state,
             fault_code,
             retired_counts,
+            ff_saturation_count,
         })
     }
 }

@@ -1,21 +1,25 @@
 //! Usage: kalico-ethercat-rt <ifname> [--socket PATH] [--cycle-us N]
 //!        [--counts-per-mm F] [--rt-cpu N] [--rt-prio N]
+//!        [--velocity-ff] [--dynamics-profile PATH] [--torque-clamp-pct F]
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use kalico_ethercat_rt::capture::{
-    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+    Capture, CaptureConfig, CaptureRecord, DriveSample, PendingStart, PendingStop,
+    FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
 };
 use kalico_ethercat_rt::claim::{
     eval_wkc, single_slave_reply, wait_for_claim, wait_for_claim_pumping, WkcDecision,
 };
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
+use kalico_ethercat_rt::dynamics::{clamp_torque, DynamicsModel};
 use kalico_ethercat_rt::ffi;
+use kalico_ethercat_rt::mailbox::{MailboxReply, MailboxRequest, MailboxWorker, WorkerScheduling};
 use kalico_ethercat_rt::scale::CountMap;
-use kalico_ethercat_rt::sdo::{execute_sdo_read, execute_sdo_write, SdoBus};
+use kalico_ethercat_rt::sdo::SdoBus;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
     CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
@@ -32,6 +36,11 @@ use kalico_protocol::messages::{
 };
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+/// Below the DC thread (default 80) so the cycle always preempts mailbox
+/// work, and below Linux threaded-IRQ handlers (50) so NIC frame delivery
+/// preempts SOEM's receive busy-poll.
+const MAILBOX_RT_PRIO: i32 = 40;
 
 extern "C" fn on_sigterm(_: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::Release);
@@ -109,6 +118,38 @@ fn main() {
     let rt_prio: i32 = arg_val(&args, "--rt-prio")
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
+    let mailbox_cpu: usize = arg_val(&args, "--mailbox-cpu")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    let velocity_ff = args.iter().any(|a| a == "--velocity-ff");
+    let torque_clamp_tenths: i16 = arg_val(&args, "--torque-clamp-pct")
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|pct| {
+            if !(pct > 0.0 && pct <= 400.0) {
+                eprintln!("ec-rt: --torque-clamp-pct {pct} outside (0, 400]");
+                std::process::exit(1);
+            }
+            (pct * 10.0) as i16
+        })
+        .unwrap_or(300);
+    let dynamics = arg_val(&args, "--dynamics-profile").map(|path| {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("ec-rt: dynamics profile {path}: {e}");
+            std::process::exit(1);
+        });
+        let model = DynamicsModel::from_toml_str(&text).unwrap_or_else(|e| {
+            eprintln!("ec-rt: dynamics profile {path} invalid: {e:?}");
+            std::process::exit(1);
+        });
+        if model.n != NUM_AXES {
+            eprintln!(
+                "ec-rt: dynamics profile {path} has {} axes, endpoint drives {NUM_AXES}",
+                model.n
+            );
+            std::process::exit(1);
+        }
+        model
+    });
     let cycle_ns = cycle_us * 1000;
     let telemetry_period = u64::try_from(cycle_us)
         .map(|u| (500_000u64 / u).max(1))
@@ -120,10 +161,12 @@ fn main() {
     let mut heartbeat_sent = false;
 
     let mut server = FrameServer::bind(&socket).expect("bind socket");
-    eprintln!("ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}");
+    eprintln!(
+        "ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm} \
+         velocity_ff={velocity_ff} dynamics={} clamp={torque_clamp_tenths}",
+        dynamics.is_some()
+    );
 
-    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
-    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = on_sigterm as *const () as libc::sighandler_t;
@@ -131,12 +174,10 @@ fn main() {
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
 
-    let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
-    let rc = unsafe { ffi::ec_rt_bringup(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
-    if rc != 0 {
+    fn bringup_fail(server: &mut FrameServer, rc: i32) -> ! {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
         let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
+        if let Some(cid) = wait_for_claim(server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
             let reply = single_slave_reply(
                 1,
                 SlaveState::Offline,
@@ -149,14 +190,12 @@ fn main() {
         }
         std::process::exit(1);
     }
-    eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
-    let park_pump = |cycles: usize| {
-        let mut toff = 0i64;
-        for _ in 0..cycles {
-            unsafe { ffi::ec_rt_park_cycle(&mut toff) };
-        }
-    };
+    let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
+    let rc = unsafe { ffi::ec_rt_bringup_preop(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
+    if rc != 0 {
+        bringup_fail(&mut server, rc);
+    }
 
     let run_limits: (u32, u16) = {
         let mut ferr = 0u32;
@@ -165,13 +204,9 @@ fn main() {
         let rc = unsafe { ffi::ec_rt_read_limits(&mut ferr, &mut tmo, &mut tq) };
         if rc != 0 {
             eprintln!("ec-rt: SDO read of protection limits failed rc={rc} — aborting bringup");
-            unsafe {
-                ffi::ec_rt_disable();
-                ffi::ec_rt_shutdown();
-            }
+            unsafe { ffi::ec_rt_shutdown() };
             std::process::exit(1);
         }
-        park_pump(4);
         eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
         let cli_ferr: Option<u32> =
             arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
@@ -182,13 +217,9 @@ fn main() {
             let rc = unsafe { ffi::ec_rt_write_limits(run.0, run.1) };
             if rc != 0 {
                 eprintln!("ec-rt: SDO write of session limits failed rc={rc} — aborting bringup");
-                unsafe {
-                    ffi::ec_rt_disable();
-                    ffi::ec_rt_shutdown();
-                }
+                unsafe { ffi::ec_rt_shutdown() };
                 std::process::exit(1);
             }
-            park_pump(4);
             eprintln!(
                 "ec-rt: session limits applied: 6065h={} 6072h={}",
                 run.0, run.1
@@ -196,6 +227,12 @@ fn main() {
         }
         run
     };
+
+    let rc = unsafe { ffi::ec_rt_bringup_finish() };
+    if rc != 0 {
+        bringup_fail(&mut server, rc);
+    }
+    eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
     match wait_for_claim_pumping(
         &mut server,
@@ -227,8 +264,20 @@ fn main() {
     let mut gate = TorqueGate::new();
     let mut capture = Capture::new();
     let mut cycle_index: u64 = 0;
-    let mut sdo_bus = FfiSdoBus;
+    let mailbox = MailboxWorker::spawn(
+        FfiSdoBus,
+        |ferr_counts, torque_tenth_pct| unsafe {
+            ffi::ec_rt_write_limits(ferr_counts, torque_tenth_pct)
+        },
+        WorkerScheduling::RealtimeCompanion {
+            cpu: mailbox_cpu,
+            priority: MAILBOX_RT_PRIO,
+        },
+    );
+    let mut pending_starts: Vec<(u32, String, PendingStart)> = Vec::new();
+    let mut pending_stops: Vec<(u32, PendingStop)> = Vec::new();
     let mut prdiv = 0u64;
+    let mut ff_saturation = 0u32;
     let mut wkc_consecutive = 0u8;
     let mut latched_drive_err: u16 = 0;
     'dc: loop {
@@ -347,7 +396,7 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let rc = capture.start(CaptureConfig {
+                    let pending = capture.start_async(CaptureConfig {
                         path: msg.path.clone(),
                         started_utc: msg.started_utc.clone(),
                         drive_name: msg.drive_name.clone(),
@@ -355,22 +404,10 @@ fn main() {
                         counts_per_mm,
                         started_mono_ns: monotonic_ns(),
                     });
-                    eprintln!("ec-rt: StartCapture path={} rc={rc}", msg.path);
-                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                    pending_starts.push((correlation_id, msg.path, pending));
                 }
                 Command::StopCapture { correlation_id } => {
-                    let out = capture.stop();
-                    eprintln!(
-                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
-                        out.result, out.samples, out.overflow_cycle
-                    );
-                    server.respond(&stop_capture_response_frame(
-                        correlation_id,
-                        out.result,
-                        out.samples,
-                        out.overflow_cycle
-                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
-                    ));
+                    pending_stops.push((correlation_id, capture.stop_async()));
                 }
                 Command::ResumeStream { correlation_id } => {
                     server.respond(&resume_stream_response_frame(correlation_id, 0));
@@ -386,47 +423,88 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let rc = unsafe {
-                        ffi::ec_rt_write_limits(
-                            msg.following_error_counts,
-                            msg.max_torque_tenth_pct,
-                        )
-                    };
-                    if rc != 0 {
-                        eprintln!(
-                            "ec-rt: SetDriveLimits SDO write failed rc={rc} \
-                             ferr={} tq={}",
-                            msg.following_error_counts, msg.max_torque_tenth_pct
-                        );
-                    } else {
-                        eprintln!(
-                            "ec-rt: SetDriveLimits applied ferr={} tq={}",
-                            msg.following_error_counts, msg.max_torque_tenth_pct
-                        );
-                    }
-                    server.respond(&set_drive_limits_response_frame(correlation_id, rc));
+                    mailbox.submit(MailboxRequest::WriteLimits {
+                        correlation_id,
+                        ferr_counts: msg.following_error_counts,
+                        torque_tenth_pct: msg.max_torque_tenth_pct,
+                        restore: false,
+                    });
                 }
                 Command::RestoreDriveLimits { correlation_id } => {
-                    let rc = unsafe { ffi::ec_rt_write_limits(run_limits.0, run_limits.1) };
-                    if rc != 0 {
-                        eprintln!(
-                            "ec-rt: RestoreDriveLimits SDO write failed rc={rc} \
-                             ferr={} tq={}",
-                            run_limits.0, run_limits.1
-                        );
-                    } else {
-                        eprintln!(
-                            "ec-rt: RestoreDriveLimits applied ferr={} tq={}",
-                            run_limits.0, run_limits.1
-                        );
-                    }
-                    server.respond(&restore_drive_limits_response_frame(correlation_id, rc));
+                    mailbox.submit(MailboxRequest::WriteLimits {
+                        correlation_id,
+                        ferr_counts: run_limits.0,
+                        torque_tenth_pct: run_limits.1,
+                        restore: true,
+                    });
                 }
                 Command::SdoRead {
                     correlation_id,
                     msg,
                 } => {
-                    let resp = execute_sdo_read(&mut sdo_bus, &msg);
+                    mailbox.submit(MailboxRequest::SdoRead {
+                        correlation_id,
+                        msg,
+                    });
+                }
+                Command::SdoWrite {
+                    correlation_id,
+                    msg,
+                } => {
+                    mailbox.submit(MailboxRequest::SdoWrite {
+                        correlation_id,
+                        msg,
+                    });
+                }
+                Command::Unknown { kind_raw, .. } => {
+                    eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
+                }
+            }
+        }
+
+        let mut start_idx = 0;
+        while start_idx < pending_starts.len() {
+            match pending_starts[start_idx].2.try_take() {
+                Some(rc) => {
+                    let (correlation_id, path, pending) = pending_starts.remove(start_idx);
+                    if rc != 0 && pending.claimed() {
+                        capture.clear_failed_start();
+                    }
+                    eprintln!("ec-rt: StartCapture path={path} rc={rc}");
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                None => start_idx += 1,
+            }
+        }
+
+        let mut stop_idx = 0;
+        while stop_idx < pending_stops.len() {
+            match pending_stops[stop_idx].1.try_take() {
+                Some(out) => {
+                    let (correlation_id, _) = pending_stops.remove(stop_idx);
+                    eprintln!(
+                        "ec-rt: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
+                None => stop_idx += 1,
+            }
+        }
+
+        while let Some(reply) = mailbox.try_recv() {
+            match reply {
+                MailboxReply::SdoRead {
+                    correlation_id,
+                    msg,
+                    resp,
+                } => {
                     if resp.result != 0 {
                         eprintln!(
                             "ec-rt: SdoRead 0x{:04x}.{} failed result={}",
@@ -435,11 +513,11 @@ fn main() {
                     }
                     server.respond(&sdo_read_response_frame(correlation_id, &resp));
                 }
-                Command::SdoWrite {
+                MailboxReply::SdoWrite {
                     correlation_id,
                     msg,
+                    resp,
                 } => {
-                    let resp = execute_sdo_write(&mut sdo_bus, &msg);
                     if resp.result != 0 {
                         eprintln!(
                             "ec-rt: SdoWrite 0x{:04x}.{} value={} size={} failed result={}",
@@ -448,8 +526,32 @@ fn main() {
                     }
                     server.respond(&sdo_write_response_frame(correlation_id, &resp));
                 }
-                Command::Unknown { kind_raw, .. } => {
-                    eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
+                MailboxReply::WriteLimits {
+                    correlation_id,
+                    rc,
+                    ferr_counts,
+                    torque_tenth_pct,
+                    restore,
+                } => {
+                    let what = if restore {
+                        "RestoreDriveLimits"
+                    } else {
+                        "SetDriveLimits"
+                    };
+                    if rc != 0 {
+                        eprintln!(
+                            "ec-rt: {what} SDO write failed rc={rc} \
+                             ferr={ferr_counts} tq={torque_tenth_pct}"
+                        );
+                    } else {
+                        eprintln!("ec-rt: {what} applied ferr={ferr_counts} tq={torque_tenth_pct}");
+                    }
+                    let frame = if restore {
+                        restore_drive_limits_response_frame(correlation_id, rc)
+                    } else {
+                        set_drive_limits_response_frame(correlation_id, rc)
+                    };
+                    server.respond(&frame);
                 }
             }
         }
@@ -472,6 +574,7 @@ fn main() {
                     ENGINE_STATE_FAULT,
                     0,
                     &[ring.retired_count()],
+                    ff_saturation,
                 ));
                 unsafe {
                     ffi::ec_rt_disable();
@@ -483,16 +586,52 @@ fn main() {
 
         let mut motion_active = false;
         if gate.state() == TorqueState::Enabled {
-            if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
+            if let Some((pos_mm, vel_mm_s, acc_mm_s2)) = ring.sample(now) {
                 let map = cmap.get_or_insert_with(|| {
                     let actual = unsafe { ffi::ec_rt_get_position_actual() };
                     CountMap::new(counts_per_mm, actual, f64::from(pos_mm))
                 });
                 let counts = map.target_counts(f64::from(pos_mm));
-                unsafe { ffi::ec_rt_set_target_position(counts) };
+                let vel_offset = if velocity_ff {
+                    (f64::from(vel_mm_s) * counts_per_mm).round() as i32
+                } else {
+                    0
+                };
+                let torque_offset = match &dynamics {
+                    Some(model) => {
+                        let raw = model.torque_ff(0, &[acc_mm_s2], &[vel_mm_s]);
+                        if !raw.is_finite() {
+                            eprintln!(
+                                "ec-rt: FAULT non-finite torque FF (acc={acc_mm_s2} vel={vel_mm_s}) — disabling"
+                            );
+                            server.respond(&status_heartbeat_frame(
+                                ENGINE_STATE_FAULT,
+                                0,
+                                &[ring.retired_count()],
+                                ff_saturation,
+                            ));
+                            unsafe {
+                                ffi::ec_rt_disable();
+                                ffi::ec_rt_shutdown();
+                            }
+                            std::process::exit(1);
+                        }
+                        clamp_torque(raw, torque_clamp_tenths, &mut ff_saturation)
+                    }
+                    None => 0,
+                };
+                unsafe {
+                    ffi::ec_rt_set_target_position(counts);
+                    ffi::ec_rt_set_velocity_offset(vel_offset);
+                    ffi::ec_rt_set_torque_offset(torque_offset);
+                }
                 motion_active = true;
             } else {
                 cmap = None;
+                unsafe {
+                    ffi::ec_rt_set_velocity_offset(0);
+                    ffi::ec_rt_set_torque_offset(0);
+                }
             }
         }
 
@@ -507,6 +646,7 @@ fn main() {
                 ENGINE_STATE_FAULT,
                 (fault_val & 0xFFFF) as u16,
                 &[current_retired],
+                ff_saturation,
             ));
 
             #[cfg(feature = "hw")]
@@ -542,6 +682,7 @@ fn main() {
                 0,
                 drive_err,
                 &[ring.retired_count()],
+                ff_saturation,
             ));
             last_sent_retired = ring.retired_count();
             heartbeat_sent = true;
@@ -569,6 +710,8 @@ fn main() {
                     torque_actual: t.torque_actual,
                     statusword: t.statusword,
                     error_code: t.error_code,
+                    velocity_offset: t.velocity_offset,
+                    torque_offset: t.torque_offset,
                 },
             });
         }
@@ -604,7 +747,12 @@ fn main() {
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-            server.respond(&status_heartbeat_frame(engine_state, 0, &[current_retired]));
+            server.respond(&status_heartbeat_frame(
+                engine_state,
+                0,
+                &[current_retired],
+                ff_saturation,
+            ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
             if current_retired != 0 {
@@ -615,16 +763,17 @@ fn main() {
         prdiv += 1;
         if prdiv >= telemetry_period {
             prdiv = 0;
-            let (sw, pos, ferr) = unsafe {
+            let (sw, pos, ferr, tq_act) = unsafe {
                 (
                     ffi::ec_rt_get_statusword(),
                     ffi::ec_rt_get_position_actual(),
                     ffi::ec_rt_get_following_error(),
+                    ffi::ec_rt_get_torque_actual(),
                 )
             };
             eprintln!(
                 "ec-rt: wkc={wkc} sw=0x{sw:04x} err=0x{drive_err:04x} pos={pos} ferr={ferr} toff={toff} \
-                 ring_len={} retired={}",
+                 ring_len={} retired={} tq_act={tq_act} ff_sat={ff_saturation}",
                 ring.is_empty() as u8 ^ 1,
                 current_retired,
             );
@@ -633,6 +782,7 @@ fn main() {
                     0,
                     latched_drive_err,
                     &[current_retired],
+                    ff_saturation,
                 ));
             }
         }

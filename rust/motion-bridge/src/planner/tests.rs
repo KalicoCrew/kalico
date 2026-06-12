@@ -402,6 +402,53 @@ fn quiescence_keeps_timeline_monotone_next_move_does_not_rewind() {
 }
 
 #[test]
+fn move_after_idle_resumes_with_dispatch_lead() {
+    let (dispatch, log) = capturing_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+    let m1_max_t_end = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(0.0_f64, f64::max);
+    assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
+
+    let idle_extra = 0.3;
+    std::thread::sleep(Duration::from_secs_f64(idle_extra));
+
+    log.lock().unwrap().clear();
+    let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
+    h.submit_move(m2).unwrap();
+    h.flush().unwrap();
+    let m2_min_t_start = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(s, _)| s)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        m2_min_t_start.is_finite(),
+        "move 2 produced no dispatched segments"
+    );
+
+    // flush() returns at wall time sync + m1_end + LEAD, then we idle a bit
+    // more; the resume must anchor at elapsed-since-sync at receipt PLUS a
+    // full dispatch lead, or the replan solve eats the cushion and seg0
+    // reaches the MCU already in the past (-308 PieceStartInPast on jog).
+    let min_expected = m1_max_t_end + LEAD + idle_extra + LEAD - 0.1;
+    assert!(
+        m2_min_t_start >= min_expected,
+        "move after idle anchored too early: started {m2_min_t_start:.3}, \
+         expected >= {min_expected:.3} (m1 ended {m1_max_t_end:.3})"
+    );
+
+    h.shutdown();
+}
+
+#[test]
 fn z_only_move_no_prior_xy_motion() {
     use crate::classify::classify_and_build;
 

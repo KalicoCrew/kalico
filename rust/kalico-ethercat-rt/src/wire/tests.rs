@@ -92,7 +92,7 @@ fn decode_command_yields_claim_handshake_variant() {
 
 #[test]
 fn status_heartbeat_frame_on_events_channel() {
-    let frame = status_heartbeat_frame(1, 0, &[42u32, 0u32]);
+    let frame = status_heartbeat_frame(1, 0, &[42u32, 0u32], 0);
     let (chan, payload) = decode_frame(&frame).unwrap();
     assert_eq!(chan, CHANNEL_EVENTS);
     let (hdr, body) = decode_message_header(payload).unwrap();
@@ -303,7 +303,7 @@ fn drive_limits_response_frames_round_trip() {
 
 #[test]
 fn status_heartbeat_frame_carries_fault_code() {
-    let frame = status_heartbeat_frame(1, 0x8611, &[5u32]);
+    let frame = status_heartbeat_frame(1, 0x8611, &[5u32], 0);
     let (_, payload) = decode_frame(&frame).unwrap();
     let (_, body) = decode_message_header(payload).unwrap();
     let hb = StatusHeartbeat::decode(body).unwrap();

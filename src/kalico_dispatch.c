@@ -420,6 +420,11 @@ send_status_heartbeat(void)
         payload[off++] = (uint8_t)((v >> 16) & 0xFF);
         payload[off++] = (uint8_t)((v >> 24) & 0xFF);
     }
+    uint32_t ff_saturation_count = 0;
+    payload[off++] = (uint8_t)(ff_saturation_count & 0xFF);
+    payload[off++] = (uint8_t)((ff_saturation_count >> 8) & 0xFF);
+    payload[off++] = (uint8_t)((ff_saturation_count >> 16) & 0xFF);
+    payload[off++] = (uint8_t)((ff_saturation_count >> 24) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL, payload, (uint16_t)off);
 }
 

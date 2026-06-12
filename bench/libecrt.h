@@ -14,11 +14,17 @@
 #define EC_RT_ERR_RT_MLOCK        (-10)
 #define EC_RT_ERR_RT_AFFINITY     (-11)
 #define EC_RT_ERR_RT_SCHED        (-12)
-#define EC_RT_ERR_RXPDO_ASSIGN    (-13)
+#define EC_RT_ERR_FF_ROUTING      (-13)
 
-/* Brings slave 1 to OPERATIONAL and parks it at CiA402 Ready-to-Switch-On
- * (no torque); ec_rt_enable() applies torque. 0 or an EC_RT_ERR_* above. */
-int  ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio);
+/* Two-phase bring-up. Phase 1 stops at PRE-OP (PDO maps, CSP mode, sync
+ * types, FF routing written); the caller does its session SDO work there,
+ * where the drive expects no process data. Phase 2 starts SYNC0, reaches
+ * OPERATIONAL, and parks at CiA402 Ready-to-Switch-On (no torque);
+ * ec_rt_enable() applies torque. From phase 2 on, every wait between
+ * exchanges must go through ec_rt_cycle — pausing process data in OP trips
+ * the drive's sync-loss monitor (ErC1.1). 0 or an EC_RT_ERR_* above. */
+int  ec_rt_bringup_preop(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio);
+int  ec_rt_bringup_finish(void);
 
 int  ec_rt_enable(void);
 
@@ -35,6 +41,12 @@ uint16_t ec_rt_get_statusword(void);
 uint16_t ec_rt_get_error_code(void);
 int32_t  ec_rt_get_following_error(void);
 
+/* Stage CiA402 offsets for the next cycle's send (zeroed at bring-up and
+ * on disable). Velocity in encoder counts/s, torque in 0.1% of rated. */
+void ec_rt_set_velocity_offset(int32_t counts_per_s);
+void ec_rt_set_torque_offset(int16_t tenths_pct);
+int16_t ec_rt_get_torque_actual(void);
+
 typedef struct {
     uint16_t error_code;
     uint16_t statusword;
@@ -43,6 +55,8 @@ typedef struct {
     int32_t  following_error;
     int32_t  position_demand;
     int32_t  target_position;
+    int32_t  velocity_offset;
+    int16_t  torque_offset;
 } ec_telemetry_t;
 
 void ec_rt_get_telemetry(ec_telemetry_t *out);

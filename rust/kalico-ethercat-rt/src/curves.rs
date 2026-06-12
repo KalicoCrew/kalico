@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use runtime::fault_sink::FaultSink;
-use runtime::motion_core::{get_position_and_velocity, ArmedPiece};
+use runtime::motion_core::{eval_accel, get_position_and_velocity, ArmedPiece};
 use runtime::piece_ring::{PieceEntry, RingDescriptor};
 
 pub const CLOCK_FREQ_HZ: f32 = 1_000_000_000.0;
@@ -91,7 +91,7 @@ impl AxisRing {
         pushed
     }
 
-    pub fn sample(&mut self, now_ns: u64) -> Option<(f32, f32)> {
+    pub fn sample(&mut self, now_ns: u64) -> Option<(f32, f32, f32)> {
         let AxisRing {
             ref mut armed,
             ref mut desc,
@@ -100,7 +100,7 @@ impl AxisRing {
             ..
         } = *self;
         let sink = EtherCatFaultSink { reg: fault };
-        get_position_and_velocity(
+        let (pos, vel) = get_position_and_velocity(
             armed,
             desc,
             storage,
@@ -109,7 +109,12 @@ impl AxisRing {
             CLOCK_FREQ_HZ,
             EC_AXIS_IDX,
             &sink,
-        )
+        )?;
+        let p = armed
+            .as_ref()
+            .expect("sample yielded a value with no armed piece");
+        let acc = eval_accel(&p.vel_coeffs, p.piece_start_cycles, now_ns, CLOCK_FREQ_HZ);
+        Some((pos, vel, acc))
     }
 
     pub fn take_fault(&self) -> Option<u32> {

@@ -55,6 +55,11 @@ class ServoRail(BaseRail):
         self.encoder_counts_per_rev = config.getint(
             "encoder_counts_per_rev", minval=1
         )
+        self.velocity_ff = config.getboolean("velocity_ff", False)
+        self.dynamics_profile = config.get("dynamics_profile", None)
+        self.ff_torque_clamp = config.getfloat(
+            "ff_torque_clamp", 30.0, above=0.0, maxval=400.0
+        )
         self._parse_position_range(config)
         self.endstop_pin = config.get("endstop_pin", None)
         if self.endstop_pin is None:
@@ -128,6 +133,9 @@ class ServoRail(BaseRail):
 
     def get_counts_per_mm(self):
         return self.encoder_counts_per_rev / self.rotation_distance
+
+    def get_ff_config(self):
+        return (self.velocity_ff, self.dynamics_profile, self.ff_torque_clamp)
 
     def get_sdo_params(self):
         return self.sdo_params

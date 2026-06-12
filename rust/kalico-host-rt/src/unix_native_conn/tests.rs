@@ -94,6 +94,7 @@ fn make_heartbeat_frame(retired_counts: &[u32]) -> Vec<u8> {
         engine_state: 1,
         fault_code: 0,
         retired_counts: retired_counts.to_vec(),
+        ff_saturation_count: 0,
     };
     let body = hb.encoded_to_vec();
     let mut payload =
@@ -172,6 +173,7 @@ fn make_heartbeat_frame_full(engine_state: u8, fault_code: u16, retired_counts: 
         engine_state,
         fault_code,
         retired_counts: retired_counts.to_vec(),
+        ff_saturation_count: 0,
     };
     let body = hb.encoded_to_vec();
     let mut payload =
