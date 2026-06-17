@@ -6,10 +6,41 @@
 from . import output_pin, pulse_counter
 
 
+class FanFloorRegistry:
+    # Tracks the last user-requested fan speed alongside zero or more named
+    # speed "floors" registered by other modules (e.g. `[heater_fan]` in
+    # delegate mode). The effective speed returned is always
+    # `max(user_speed, max(floors))`.
+    def __init__(self):
+        self._user_speed = 0.0
+        self._floors = {}
+
+    def register_floor(self, source_id):
+        if source_id in self._floors:
+            raise ValueError("fan floor %r already registered" % (source_id,))
+        self._floors[source_id] = 0.0
+
+    def update_floor(self, source_id, speed):
+        if source_id not in self._floors:
+            raise KeyError("fan floor %r not registered" % (source_id,))
+        self._floors[source_id] = speed
+        return self._effective()
+
+    def set_user_speed(self, speed):
+        self._user_speed = speed
+        return self._effective()
+
+    def _effective(self):
+        if not self._floors:
+            return self._user_speed
+        return max(self._user_speed, max(self._floors.values()))
+
+
 class Fan:
     def __init__(self, config, default_shutdown_speed=0.0):
         self.printer = config.get_printer()
         self.last_fan_value = self.last_req_value = 0.0
+        self._floor_registry = FanFloorRegistry()
         self.last_pwm_value = 0.0
         # Read config
         self.kick_start_time = config.getfloat(
@@ -116,23 +147,34 @@ class Fan:
             and (not self.last_fan_value or value - self.last_fan_value > 0.5)
         ):
             # Run fan at full speed for specified kick_start_time
-            self.last_req_value = value
-
             self.last_fan_value = 1.0
             self.last_pwm_value = self.max_power
 
             self.mcu_fan.set_pwm(print_time, self.max_power)
 
             return "delay", self.kick_start_time
-        self.last_fan_value = self.last_req_value = value
+        self.last_fan_value = value
         self.last_pwm_value = pwm_value
         self.mcu_fan.set_pwm(print_time, pwm_value)
 
     def set_speed(self, value, print_time=None):
-        self.gcrq.send_async_request(value, print_time)
+        # last_req_value reflects the caller's commanded value so get_status
+        # reports user intent, not post-floor effective speed.
+        self.last_req_value = value
+        effective = self._floor_registry.set_user_speed(value)
+        self.gcrq.send_async_request(effective, print_time)
 
     def set_speed_from_command(self, value):
-        self.gcrq.queue_gcode_request(value)
+        self.last_req_value = value
+        effective = self._floor_registry.set_user_speed(value)
+        self.gcrq.queue_gcode_request(effective)
+
+    def register_floor(self, source_id):
+        self._floor_registry.register_floor(source_id)
+
+    def update_floor(self, source_id, speed, print_time=None):
+        effective = self._floor_registry.update_floor(source_id, speed)
+        self.gcrq.send_async_request(effective, print_time)
 
     def _handle_request_restart(self, print_time):
         self.set_speed(0.0, print_time)

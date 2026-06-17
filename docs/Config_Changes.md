@@ -8,6 +8,14 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260422: The `[heater_fan]` section adds a new option `fan:` that
+references an existing fan config section (e.g. `fan` for `[fan]`, or
+`fan_generic my_fan` for `[fan_generic my_fan]`) to delegate to instead
+of driving a PWM pin. In this delegate mode the heater_fan does not own
+a pin; it imposes a speed floor on the referenced fan while the heater
+is active. The referenced fan still responds to M106/M107 or
+SET_FAN_SPEED above the floor. `fan:` and `pin:` are mutually exclusive.
+
 20260121: Kalico now uses automatic monthly release tags in the format
 `vYYYY.MM.NN` (e.g., `v2026.01.00`). Users can configure Moonraker to track
 stable monthly releases instead of the latest commits. See
