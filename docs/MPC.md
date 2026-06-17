@@ -89,6 +89,72 @@ These can be specified in the config but should not need to be changed from the 
 
 ## PTC Heater Power
 
+For configuring PTC heaters to use a dynamic heating power, you can provide a temperature coefficient.
+
+This takes the form of a base wattage (`heater_power` at a given `heater_power_ambient` temperature), and a temperature coefficient.
+
+- `heater_voltage:` 
+  _Default Value: 24.0 (Volts)_
+
+- `heater_power:`
+  _(watts)_
+  The measured wattage at ambient temperature
+
+- `heater_power_ambient:` 
+  _(deg C)_
+  The temperature at which the base power was measured, usually 23°
+  
+- `heater_temperature_coefficient:`
+  _(The calculated coefficient of change)_
+
+### Measuring and Calculating a Temperature Coefficient
+
+A temperature coefficient can be calculated using two measurements of resistance and temperature.
+
+Measure the resistance and ambient temperature of your heater. Then heat to a known second temperature, allow the temeperature to settle for a few minutes, and measure the resistance again. 
+
+You now have `Ta` _(Temperature Ambient)_, `Ra` _(Resistance Ambient)_, `T` _(second Temperature)_, and `R` _(second Resistance)_. An accurate voltage measurement is helpful as well.
+
+The formula \( P = \frac{V^2}{R_{a}} \) gives the heater power at ambient temperature.
+
+The formula \( \frac{(R_{2} - R_{a}) - 1}{T_{2} - T_{a}} \) finds the temperature coefficient.
+
+|                     |                                                             | 
+| ------------------- | ----------------------------------------------------------- |
+| Voltage             | <input type="number" id="ptc_V" value="24">                 |
+| Ambient Temperature | <input type="number" id="ptc_Ta" value="23">                |
+| Ambient Resistance  | <input type="number" id="ptc_Ra">                           |
+| Second Temperature  | <input type="number" id="ptc_T2">                           |
+| Second Resistance   | <input type="number" id="ptc_R2">                           |
+|                     | <button type="button" id="ptc_calculate">Calculate</button> |
+
+<textarea id="ptc_results" onfocus="this.select(); navigator.clipboard.writeText(this.value)" readonly rows=4 cols=41></textarea>
+<script>
+  const floatToString = v => v.toFixed(6).replace(/\.0*$/, '');
+
+  document.getElementById('ptc_calculate').addEventListener('click', function() {
+    const values = {
+      voltage: parseFloat(document.getElementById('ptc_V').value),
+      Ta: parseFloat(document.getElementById('ptc_Ta').value),
+      Ra: parseFloat(document.getElementById('ptc_Ra').value),
+      T2: parseFloat(document.getElementById('ptc_T2').value),
+      R2: parseFloat(document.getElementById('ptc_R2').value),
+    }
+
+    const heater_power = values.voltage * values.voltage / values.Ra;
+    const t_coeff = ((values.R2 - values.Ra) - 1) / (values.T2 - values.Ta);
+
+    document.getElementById('ptc_results').value = [
+      `heater_voltage: ${floatToString(values.voltage)}`,
+      `heater_power: ${floatToString(heater_power)}`,
+      `heater_power_ambient: ${floatToString(values.Ta)}`,
+      `heater_temperature_coefficient: ${floatToString(t_coeff)}`,
+    ].join('\n');
+  })
+</script>
+
+### Using PTC Heaters without a temperature coefficient
+
 The `heater power:` for PTC style heaters is recommended to be set at the normal print temperature for the printer. Some common PTC heaters are given below for reference. If your heater is not listed the manufacturer should be able to provide a temperature and power curve.
 
 | Heater Temp (C) | Rapido 2 (W) | Rapido 1 (W) | Dragon Ace old (W) | Dragon Ace new (W) | Revo 40 (W) |Revo 60 (W) |
