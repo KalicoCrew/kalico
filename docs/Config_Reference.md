@@ -63,7 +63,11 @@ serial:
 #is_non_critical: False
 #   Setting this to True will allow the mcu to be disconnected and
 #   reconnected at will without errors. Helpful for USB-accelerometer boards
-#   and USB/CAN-probes
+#   and USB-probes
+#is_child_mcu: False
+#   Setting this to True will allow the mcu to loose communication during firmware restart.
+#   This is helpful when it is connected through a usb hub on another mcu which keeps power
+#   during firmware restart but not communication
 ```
 
 ### [mcu my_extra_mcu]
