@@ -10110,6 +10110,7 @@ run_current:
 #driver_SEDN: 0
 #driver_SEIMIN: 0
 #driver_SFILT: 0
+#driver_SG4_THRS: 0
 #driver_SG4_ANGLE_OFFSET: 1
 #   Set the given register during the configuration of the TMC2240
 #   chip. This may be used to set custom motor parameters. The
@@ -10122,8 +10123,8 @@ run_current:
 #   is &quot;active low&quot; and is thus normally prefaced with &quot;^!&quot;. Setting
 #   this creates a &quot;tmc2240_stepper_x:virtual_endstop&quot; virtual pin
 #   which may be used as the stepper&#39;s endstop_pin. Doing this enables
-#   &quot;sensorless homing&quot;. (Be sure to also set driver_SGT to an
-#   appropriate sensitivity value.) The default is to not enable
+#   &quot;sensorless homing&quot;. (Be sure to also set driver_SGT OR driver_SG4_THRS
+#   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
 </code></pre></div>
 
