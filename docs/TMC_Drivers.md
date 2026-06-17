@@ -394,6 +394,155 @@ gcode:
     G1 X5 F1200
 ```
 
+## Clog Detection
+
+Clog detection allows the printer to automatically identify a blocked nozzle
+during printing. When a nozzle clogs, the extruder motor begins to stall under
+the increased pressure. The TMC driver's DIAG pin asserts in hardware when a
+stall is detected. Kalico reads this signal and, if the load cell also reports
+elevated force on the nozzle at the same moment, triggers a configurable GCode
+response.
+
+See the [clog_detect config reference](Config_Reference.md#clog_detect) and
+[GCode commands](G-Codes.md#clog_detect) for configuration details.
+
+### Prerequisites
+
+1. A load cell probe configured as `[load_cell_probe]` (or `[load_cell]`).
+2. A StallGuard-capable TMC stepper driver on the extruder - **tmc2209**,
+   **tmc2208**, **tmc2240**, **tmc5160**, or **tmc2130**.
+3. The DIAG pin of the TMC driver connected to the micro-controller and
+   configured as `diag_pin` in the extruder's TMC section.
+   Not all independent toolhead boards do this, so it is worth checking for 
+   it against the hardware schematic.
+
+### StallGuard version and StealthChop
+
+**TMC2209 and TMC2208** use StallGuard4, which is designed to operate in
+**StealthChop mode**. For these drivers, `stealthchop_threshold` should be set
+to a high value (e.g. `99999`) so StealthChop remains active during extrusion.
+In StealthChop, the `sg_result` register gives a clear differential - higher
+values during normal extrusion, lower values during a stall.
+
+Setting `stealthchop_threshold: 0` forces SpreadCycle and causes `sg_result` to
+saturate at a low value regardless of load, removing the differential and
+preventing the DIAG pin from asserting correctly. Therefore, it is recommended to
+enable StealthChop, rather than disable it.
+
+**TMC5160, TMC2130, and TMC2660** use StallGuard2, which only operates in
+SpreadCycle. For these drivers, StealthChop should instead be disabled
+(`stealthchop_threshold: 0`).
+
+**TMC2240** uses its dedicated StallGuard4 registers (`SG4_RESULT`, `SG4_THRS`)
+and follows the same guidance as TMC2209.
+
+### Configure printer.cfg for clog detection
+
+The `diag_pin` must be set in the extruder's TMC section.
+
+An example TMC2209 configuration:
+
+```
+[tmc2209 extruder]
+uart_pin: PC11
+tx_pin: PC10
+diag_pin: PC13                # MCU pin connected to TMC DIAG pin
+driver_SGTHRS: 255            # Start here - 255 is most sensitive, 0 is least
+stealthchop_threshold: 99999  # Keep StealthChop on for TMC2209/2208
+coolstep_threshold: 1         # Activate StallGuard at any extrusion speed
+run_current: 0.5
+...
+
+[clog_detect]
+load_cell: load_cell_probe
+extruder: extruder
+force: 4000
+clog_detected_gcode:
+    RESPOND TYPE=error MSG="Clog detected!"
+```
+
+An example TMC5160 configuration:
+
+```
+[tmc5160 extruder]
+spi_pin: ...
+diag1_pin: ^!PA1         # Pin connected to TMC DIAG1 pin
+driver_SGT: -64          # -64 is most sensitive value, 63 is least
+stealthchop_threshold: 0 # StallGuard2 requires SpreadCycle
+run_current: 0.8
+...
+
+[clog_detect]
+load_cell: load_cell_probe
+extruder: extruder
+force: 4000
+clog_detected_gcode:
+    RESPOND TYPE=error MSG="Clog detected!"
+```
+
+### Tuning the StallGuard threshold
+
+The goal is to find a `driver_SGTHRS` value where `sg_result` is clearly above
+the stall threshold during normal extrusion, and clearly below it during a clog.
+
+#### Find the normal extrusion baseline
+
+Home the printer, heat the nozzle to printing temperature, and extrude at a
+typical printing speed. While extruding, query the driver:
+
+```
+DUMP_TMC STEPPER=extruder
+```
+
+Note the `sg_result` value. This is your **normal baseline** - for a TMC2209 in
+StealthChop it will typically be in the range of 100-150.
+
+#### Find the clog sg_result
+
+Simulate a partial clog by extruding at 10-20°C below normal printing temperature,
+or by briefly impeding the filament path. Run `DUMP_TMC STEPPER=extruder` again
+during the extrusion and note the reduced `sg_result`. This is your
+**clog value** - it should be noticeably lower than the normal baseline.
+
+You can also adjust the threshold on the fly without restarting:
+
+```
+SET_TMC_FIELD STEPPER=extruder FIELD=SGTHRS VALUE=60
+```
+
+#### Choose the threshold
+
+Set `driver_SGTHRS` so that `2 * SGTHRS` falls between the normal and clog
+values, closer to the normal baseline to avoid false positives:
+
+```
+recommended = (normal_baseline + clog_value) / 4
+```
+
+For example, with a normal baseline of 142 and a clog value of 16:
+
+```
+recommended = (142 + 16) / 4 = 40
+```
+
+A value of 40–65 would be appropriate. Lower values reduce false positives;
+higher values improve sensitivity to mild clogs.
+
+Update `driver_SGTHRS` in the config once a reliable value is found.
+
+#### Verify with the load cell
+
+The `force` threshold in `[clog_detect]` acts as a second gate. Even if the
+extruder stalls briefly for a non-clog reason (e.g. during a retraction), the
+load cell must also report elevated nozzle force before detection fires. This
+significantly reduces false positives. The default of 4000g is a good starting
+point - adjust downward (e.g. 3000g) if partial clogs are not being caught.
+
+Note that if motor current, extrusion speed, or hardware is changed, the tuning
+process should be repeated.
+
+---
+
 ## Querying and diagnosing driver settings
 
 The `[DUMP_TMC command](G-Codes.md#dump_tmc) is a useful tool when
