@@ -1452,6 +1452,13 @@ tapping to enhance the cleaning effect.
 
 To use the command position the toolhead where you want to start the cleanup. E.g. near the edge of the print area. `PATTERN_X` and `PATTERN_Y` control the number of grid points in each axis. Positive values extend the grid along the positive direction of the axis, negative values do the reverse. E.g. if you position the toolhead near the front left corner of the print area, and you want to keep the cleanup mess out of the print are, you should use `PATTERN_Y=-4` to extend the pattern towards the front of the bed, away from the print area.
 
+#### SET_NOZZLE_DIAMETER
+`SET_NOZZLE_DIAMETER [EXTRUDER=<config_name>] DIAMETER=<diameter>`:
+Set a new value for the nozzle diameter of the specified extruder
+(as defined in an [extruder](Config_Reference.md#extruder) config section).
+If EXTRUDER is not specified, it defaults to the active hotend.
+Changed settings are not retained on Klipper reset.
+
 ### [probe_eddy_current]
 
 The following commands are available when a
