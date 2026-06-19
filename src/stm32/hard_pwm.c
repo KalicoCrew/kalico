@@ -51,6 +51,7 @@ static const struct gpio_pwm_info pwm_regs[] = {
     {TIM2, GPIO('A', 1), 2, GPIO_FUNCTION(2)},
     {TIM2, GPIO('A', 2), 3, GPIO_FUNCTION(2)},
     {TIM2, GPIO('A', 3), 4, GPIO_FUNCTION(2)},
+    {TIM15, GPIO('A', 3), 2, GPIO_FUNCTION(0)},
     {TIM14, GPIO('A', 4), 1, GPIO_FUNCTION(4)},
     {TIM3, GPIO('A', 6), 1, GPIO_FUNCTION(1)},
     {TIM3, GPIO('A', 7), 2, GPIO_FUNCTION(1)},
@@ -322,60 +323,68 @@ static struct gpio_pwm
 gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
     int is_clock_out)
 {
-    // Find pin in pwm_regs table
-    const struct gpio_pwm_info* p = pwm_regs;
-    for (;; p++) {
-        if (p >= &pwm_regs[ARRAY_SIZE(pwm_regs)])
-            shutdown("Not a valid PWM pin");
-        if (p->pin == pin)
-            break;
-    }
-    gpio_peripheral(p->pin, p->function, 0);
-
-    // Map cycle_time to pwm clock divisor
-    uint32_t pclk = get_pclock_frequency((uint32_t)p->timer);
-    uint32_t pclock_div = CONFIG_CLOCK_FREQ / pclk;
-    if (pclock_div > 1)
-        pclock_div /= 2; // Timers run at twice the normal pclock frequency
-    uint32_t pcycle_time = cycle_time / pclock_div;
-
-    // Convert requested cycle time (cycle_time/CLOCK_FREQ) to actual
-    // cycle time (hwpwm_ticks*prescaler*pclock_div/CLOCK_FREQ).
-    uint32_t hwpwm_ticks, prescaler;
-    if (!is_clock_out) {
-        // In normal mode, allow the pulse frequency (cycle_time) to change
-        // in order to maintain the requested duty ratio (val/MAX_PWM).
-        hwpwm_ticks = MAX_PWM;
-        prescaler = pcycle_time / MAX_PWM;
-        if (prescaler > UINT16_MAX + 1)
-            prescaler = UINT16_MAX + 1;
-        else if (prescaler < 1)
+    // Find a valid mapping for this pin. If multiple mappings exist,
+    // prefer the first one that is either unused or already compatible.
+    const struct gpio_pwm_info *p;
+    uint8_t pin_found = 0;
+    uint32_t hwpwm_ticks = 0, prescaler = 0, pwm_val = 0;
+    for (p = pwm_regs; p < &pwm_regs[ARRAY_SIZE(pwm_regs)]; p++) {
+        if (p->pin != pin)
+            continue;
+        pin_found = 1;
+        // Map cycle_time to pwm clock divisor
+        uint32_t pclk = get_pclock_frequency((uint32_t)p->timer);
+        uint32_t pclock_div = CONFIG_CLOCK_FREQ / pclk;
+        if (pclock_div > 1)
+            pclock_div /= 2; // Timers run at twice the normal pclock frequency
+        uint32_t pcycle_time = cycle_time / pclock_div;
+        // Convert requested cycle time (cycle_time/CLOCK_FREQ) to actual
+        // cycle time (hwpwm_ticks*prescaler*pclock_div/CLOCK_FREQ).
+        if (!is_clock_out) {
+            // In normal mode, allow the pulse frequency (cycle_time) to change
+            // in order to maintain the requested duty ratio (val/MAX_PWM).
+            hwpwm_ticks = MAX_PWM;
+            prescaler = pcycle_time / MAX_PWM;
+            pwm_val = val;
+            if (prescaler > UINT16_MAX + 1)
+                prescaler = UINT16_MAX + 1;
+            else if (prescaler < 1)
+                prescaler = 1;
+        } else {
+            // In clock output mode, allow the pulse width enable duration
+            // (val) to change in order to maintain the requested frequency.
+            pwm_val = val / pclock_div;
+            hwpwm_ticks = pcycle_time;
             prescaler = 1;
-    } else {
-        // In clock output mode, allow the pulse width enable duration
-        // (val) to change in order to maintain the requested frequency.
-        val = val / pclock_div;
-        hwpwm_ticks = pcycle_time;
-        prescaler = 1;
-        while (hwpwm_ticks > UINT16_MAX) {
-            val /= 2;
-            hwpwm_ticks /= 2;
-            prescaler *= 2;
+            while (hwpwm_ticks > UINT16_MAX) {
+                pwm_val /= 2;
+                hwpwm_ticks /= 2;
+                prescaler *= 2;
+            }
+        }
+        // Pick this pin config if timer is free, or already running with
+        // matching timing so this channel can share the same timer base.
+        if (!(p->timer->CR1 & TIM_CR1_CEN)
+            || (p->timer->PSC == (uint16_t)(prescaler - 1)
+                && p->timer->ARR == (uint16_t)(hwpwm_ticks - 1))) {
+            break;
         }
     }
+    // Never found a matching pin
+    if (!pin_found)
+        shutdown("Not a valid PWM pin");
+    // Never found a free pin configuration
+    if (p >= &pwm_regs[ARRAY_SIZE(pwm_regs)])
+        shutdown("PWM already programmed at different speed");
+
+    gpio_peripheral(p->pin, p->function, 0);
 
     // Enable requested pwm hardware block
     if (!is_enabled_pclock((uint32_t) p->timer)) {
         enable_pclock((uint32_t) p->timer);
     }
-    if (p->timer->CR1 & TIM_CR1_CEN) {
-        if (p->timer->PSC != (uint16_t) (prescaler - 1)) {
-            shutdown("PWM already programmed at different speed");
-        }
-        if (p->timer->ARR != (uint16_t) (hwpwm_ticks - 1)) {
-            shutdown("PWM already programmed with different pulse duration");
-        }
-    } else {
+    // dont alter the timer if it already has an identical configuration
+    if (!(p->timer->CR1 & TIM_CR1_CEN)) {
         p->timer->PSC = prescaler - 1;
         p->timer->ARR = hwpwm_ticks - 1;
         p->timer->EGR |= TIM_EGR_UG;
@@ -390,7 +399,7 @@ gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
             p->timer->CCMR1 &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_CC1S);
             p->timer->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 |
                                 TIM_CCMR1_OC1PE | TIM_CCMR1_OC1FE);
-            gpio_pwm_write(channel, val);
+            gpio_pwm_write(channel, pwm_val);
             p->timer->CCER |= TIM_CCER_CC1E;
             break;
         }
@@ -400,7 +409,7 @@ gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
             p->timer->CCMR1 &= ~(TIM_CCMR1_OC2M | TIM_CCMR1_CC2S);
             p->timer->CCMR1 |= (TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2 |
                                 TIM_CCMR1_OC2PE | TIM_CCMR1_OC2FE);
-            gpio_pwm_write(channel, val);
+            gpio_pwm_write(channel, pwm_val);
             p->timer->CCER |= TIM_CCER_CC2E;
             break;
         }
@@ -410,7 +419,7 @@ gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
             p->timer->CCMR2 &= ~(TIM_CCMR2_OC3M | TIM_CCMR2_CC3S);
             p->timer->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 |
                                 TIM_CCMR2_OC3PE | TIM_CCMR2_OC3FE);
-            gpio_pwm_write(channel, val);
+            gpio_pwm_write(channel, pwm_val);
             p->timer->CCER |= TIM_CCER_CC3E;
             break;
         }
@@ -420,7 +429,7 @@ gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
             p->timer->CCMR2 &= ~(TIM_CCMR2_OC4M | TIM_CCMR2_CC4S);
             p->timer->CCMR2 |= (TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2 |
                                 TIM_CCMR2_OC4PE | TIM_CCMR2_OC4FE);
-            gpio_pwm_write(channel, val);
+            gpio_pwm_write(channel, pwm_val);
             p->timer->CCER |= TIM_CCER_CC4E;
             break;
         }
