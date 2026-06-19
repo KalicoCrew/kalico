@@ -3,8 +3,10 @@
 # Copyright (C) 2025  Gareth Farrington <gareth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 from klippy import mcu
 from klippy.configfile import ConfigWrapper
@@ -88,6 +90,35 @@ class ParamHelper:
         for value in values:
             self._validate_float(description, error, value, above, below)
 
+    @staticmethod
+    def _get_gcmd_boolean(gcmd: GCodeCommand):
+        def get_boolean(name, default: Optional[bool] = False):
+            raw_value: str = gcmd.get(name, parser=str, default=default)
+            if raw_value is None and default is None:
+                return None
+            if raw_value is not None:
+                raw_value = str(raw_value)
+            if (
+                raw_value is None
+                or raw_value.upper() == "FALSE"
+                or raw_value == "0"
+            ):
+                return False
+            elif raw_value.upper() == "TRUE" or raw_value == "1":
+                return True
+            else:
+                raise gcmd.error(
+                    f"Value `{raw_value}` is not a valid boolean for {name}"
+                )
+
+        return get_boolean
+
+    def _get_boolean(
+        self, config: ConfigWrapper, gcmd: GCodeCommand
+    ) -> Optional[bool]:
+        get = self._get_gcmd_boolean(gcmd) if gcmd else config.getboolean
+        return get(self._get_name(gcmd), default=self.value)
+
     def _get_int(self, config, gcmd, minval, maxval):
         get = gcmd.get_int if gcmd else config.getint
         return get(
@@ -146,12 +177,18 @@ class ParamHelper:
     ):
         if config is None and gcmd is None:
             return self.value
-        if self._type_name == "int":
+        if self._type_name == "boolean":
+            return self._get_boolean(config, gcmd)
+        elif self._type_name == "int":
             return self._get_int(config, gcmd, minval, maxval)
         elif self._type_name == "float":
             return self._get_float(config, gcmd, minval, maxval, above, below)
         else:
             return self._get_float_list(config, gcmd, above, below)
+
+
+def booleanParamHelper(config, name, default=False):
+    return ParamHelper(config, name, "boolean", default)
 
 
 def intParamHelper(config, name, default=None, minval=None, maxval=None):
@@ -353,8 +390,8 @@ class LoadCellProbeConfigHelper:
             config, "drift_safety_limit", minval=0, default=1000
         )
         # pullback move
-        self._disable_pullback_move = config.getboolean(
-            "disable_pullback_move", False
+        self._disable_pullback_move = booleanParamHelper(
+            config, "disable_pullback_move", False
         )
         self._pullback_distance_param = floatParamHelper(
             config, "pullback_distance", minval=0.01, maxval=2.0, default=0.2
@@ -388,8 +425,8 @@ class LoadCellProbeConfigHelper:
     def get_pullback_distance(self, gcmd=None) -> float:
         return self._pullback_distance_param.get(gcmd)
 
-    def is_pullback_move_disabled(self) -> bool:
-        return self._disable_pullback_move
+    def is_pullback_move_disabled(self, gcmd=None) -> bool:
+        return self._disable_pullback_move.get(gcmd)
 
     def get_rest_time(self) -> float:
         return self._rest_time
@@ -780,7 +817,7 @@ class TappingMove:
             self, pos, speed, gcmd
         )
         # when pullback is disabled, skip the pullback move and tap analysis
-        if self._config_helper.is_pullback_move_disabled():
+        if self._config_helper.is_pullback_move_disabled(gcmd):
             collector.stop_collecting()
             self._is_last_result_valid = True
             return epos, self._is_last_result_valid
