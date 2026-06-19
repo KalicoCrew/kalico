@@ -186,7 +186,7 @@ class ForceMove:
             z,
             ",".join((axes[i] for i in clear_axes)),
         )
-        toolhead.set_position([x, y, z, curpos[3]], homing_axes=(0, 1, 2))
+        toolhead.set_position([x, y, z], homing_axes=(0, 1, 2))
         toolhead.get_kinematics().clear_homing_state(clear_axes)
 
 

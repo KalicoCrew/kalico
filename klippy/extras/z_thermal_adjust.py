@@ -124,12 +124,12 @@ class ZThermalAdjuster:
 
         # Apply Z adjustment
         new_z = pos[2] + self.z_adjust_mm
-        return [pos[0], pos[1], new_z, pos[3]]
+        return [pos[0], pos[1], new_z] + pos[3:]
 
     def calc_unadjust(self, pos):
         "Remove Z adjustment"
         unadjusted_z = pos[2] - self.z_adjust_mm
-        return [pos[0], pos[1], unadjusted_z, pos[3]]
+        return [pos[0], pos[1], unadjusted_z] + pos[3:]
 
     def get_position(self):
         position = self.calc_unadjust(self.next_transform.get_position())
