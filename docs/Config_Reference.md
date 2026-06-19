@@ -1494,13 +1494,37 @@ information.
 #horizontal_move_z: 5
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
-#screw_thread: CW-M3
+#screw_thread:
 #   The type of screw used for bed leveling, M3, M4, or M5, and the
 #   rotation direction of the knob that is used to level the bed.
-#   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5, CW-M8, CCW-M8.
-#   Default value is CW-M3 which most printers use. A clockwise
-#   rotation of the knob decreases the gap between the nozzle and the
+#   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5,
+#   CW-M6, CCW-M6, CW-M8, CCW-M8.
+#   A clockwise rotation of the knob decreases the gap between the nozzle and the
 #   bed. Conversely, a counter-clockwise rotation increases the gap.
+#   This option cannot be used together with 'screw_pitch' or
+#   'screw_direction'. Either this option must be specified, or both
+#   'screw_pitch' and 'screw_direction' must be specified.
+#screw_pitch:
+#   The thread pitch (in mm) of the bed leveling screw. This allows
+#   the use of any screw size, not just those predefined in
+#   'screw_thread'. This option cannot be used together with 'screw_thread'.
+#   It must be specified together with 'screw_direction' if 'screw_thread'
+#   is not used.
+#   Calculation: screw_pitch is the displacement of the print bed for one full
+#   rotation of the Z-axis screw. For most metric screws, this corresponds
+#   to the thread pitch itself (e.g., M3x0.5 -> 0.5, M4x0.7 -> 0.7,
+#   M5x0.8 -> 0.8).
+#   Relation to adjustment output: the required turns are calculated as
+#   abs(z_error) / screw_pitch, then displayed as full turns and minutes
+#   (01:20 = 1 turn + 20/60 turns).
+#   NOTE: in an ideal case, the value of 'screw_pitch' should be equal to the 'rotation_distance' of the Z axis.
+#   However, since the sampling point does not overlap with the screw, a slightly different 'screw_pitch'
+#   value may be needed to achieve accurate calibration.
+#screw_direction:
+#   The rotation direction of the knob used to level the bed. Accepted values:
+#   CW, CCW. Rotating in this direction reduces the gap between the nozzle and the bed.
+#   This option cannot be used together with 'screw_thread'. It must be specified
+#   together with 'screw_pitch' if 'screw_thread' is not used.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
 #   default is False.
