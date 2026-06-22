@@ -509,15 +509,14 @@ class Printer:
             (or is interrupted, or printer shuts down)
         """
         gcode = self.lookup_object("gcode")
-        counter = gcode.get_interrupt_counter()
+        interrupt_token = gcode.get_interrupt_token()
         eventtime = self.reactor.monotonic()
         while condition_cb(eventtime):
-            if self.is_shutdown() or counter != gcode.get_interrupt_counter():
-                if error_on_cancel:
-                    raise klippy_ex.WaitInterruption("Command interrupted")
-                else:
-                    return
-            eventtime = self.reactor.pause(eventtime + interval)
+            if interrupt_token.wait_until(
+                eventtime + interval, error_on_interrupt=error_on_cancel
+            ):
+                return
+            eventtime = self.reactor.monotonic()
 
 
 ######################################################################
