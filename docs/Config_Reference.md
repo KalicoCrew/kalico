@@ -6101,7 +6101,10 @@ sensor_type:
 #drift_filter_cutoff_frequency: 0.8
 #   Enable optional continuous taring while homing & probing to reject drift.
 #   The value is a frequency, in Hz, below which drift will be ignored. This
-#   option requires the SciPy library. Default: None
+#   option requires the SciPy library. Can be automatically calibrated using 
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. 
+#   See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration).
+#   Default: None
 #drift_filter_delay: 2
 #   The delay, or 'order', of the drift filter. This controls the number of
 #   samples required to make a trigger detection. Can be 1 or 2, the default
@@ -6135,8 +6138,10 @@ sensor_type:
 #   The distance in mm to slowly raise the probe to perform precise Z=0
 #   measurments. This move occurs immediately after the probe detects contact.
 #   The distance needs to be approximatly 2x the distance required for the probe
-#   to break contact with the bed. Valid range is 0.01 to 2.0 mm.
-#   The default is 0.2 mm.
+#   to break contact with the bed. Can be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=PULLBACK_DISTANCE`.
+#   See [Pullback Distance Calibration](Load_Cell.md#pullback-distance-calibration).
+#   Valid range is 0.01 to 2.0 mm. The default is 0.2 mm.
 #pullback_speed:
 #   The speed in mm/s for the pullback move after probe trigger. Valid range is
 #   0.1 to 1.0 mm/s. The default is set to 1 micron (0.001mm) per sensor sample.
@@ -6150,7 +6155,9 @@ sensor_type:
 #   The average angle of the decompression line for clean taps. The further the
 #   measured decompression angle is from this angle, the worse its tap quality score.
 #   There is no default, this must be measured. It is a number in degrees
-#   between 0 and 90.
+#   between 0 and 90. Can be automatically calibrated using
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DECOMPRESSION_ANGLE`.
+#   See [Decompression Angle Calibration](Load_Cell.md#decompression-angle-calibration).
 #max_approach_force: 50
 #max_departure_force: 25
 #max_baseline_force_delta: 25

@@ -1090,6 +1090,74 @@ corresponding settings from the
 - `MIN_TAP_QUALITY=<percent>`
 - `DECOMPRESSION_ANGLE=<angle>`
 
+### LOAD_CELL_PROBE_CALIBRATE
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=<calibration_type> [<parameters>]`: 
+Run automated calibration routines for load cell probe parameters. All calibrations
+probe a bed mesh and save results for the current session (use `SAVE_CONFIG` to persist).
+
+Available calibration types:
+- `DRIFT_FILTER`: Calibrate drift_filter_cutoff_frequency
+- `PULLBACK_DISTANCE`: Calibrate pullback_distance
+- `DECOMPRESSION_ANGLE`: Calibrate decompression_angle
+
+All calibrations accept [BED_MESH_CALIBRATE](#bed_mesh_calibrate) parameters for 
+controlling mesh point generation (PROFILE, MESH_MIN, MESH_MAX, PROBE_COUNT, ALGORITHM, etc.).
+See [Load Cell Calibration](Load_Cell.md#calibration) for detailed usage and examples.
+
+#### DRIFT_FILTER Calibration
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER [MAXIMUM_Z_POSITION=<pos>] 
+[MAX_Z_VELOCITY=<vel>] [APPROACH_SPEED=<speed>] [SEGMENT_DURATION=<duration>] 
+[SLOPE_PERCENTILE=<pct>] [MAX_ACCEPTABLE_SLOPE=<slope>] 
+[MAX_CUTOFF_FREQUENCY=<freq>] [CUTOFF_INCREMENT=<inc>] [<bed_mesh_parameters>]`
+
+Calibrates the drift filter cutoff frequency by measuring force drift during slow Z 
+descents at each mesh point. The drift filter removes slow force changes caused by 
+bowden tube movement, keeping the signal centered on zero.
+
+- **MAXIMUM_Z_POSITION**: Starting height for drift measurement. If not specified, 
+  defaults to the `maximum_z_position` from printer config.
+- **MAX_Z_VELOCITY**: Maximum speed for Z moves between points. If not specified, 
+  defaults to the `max_z_velocity` from printer config.
+- **APPROACH_SPEED**: Descent speed in mm/s during measurement (slower collects more 
+  data). The default is 10.0. Maximum value is 50.0.
+- **SEGMENT_DURATION**: Time window in seconds for drift analysis. The default is 5.0.
+- **SLOPE_PERCENTILE**: Which percentile of slopes must meet criteria (higher is 
+  stricter). The default is 99.0 (valid range: 0-100).
+- **MAX_ACCEPTABLE_SLOPE**: Maximum acceptable drift rate in grams/second. The 
+  default is 1.0.
+- **MAX_CUTOFF_FREQUENCY**: Upper limit for filter frequency in Hz. The default is 20.0.
+- **CUTOFF_INCREMENT**: Step size in Hz when searching for optimal frequency. The 
+  default is 0.1.
+
+See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration)
+
+#### PULLBACK_DISTANCE Calibration  
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=PULLBACK_DISTANCE [PULLBACK_DISTANCE=<dist>]
+[<bed_mesh_parameters>]`
+
+Optimizes the `pullback_distance` parameter by measuring actual decompression distances during 
+normal probing across the bed. Computes a safe minimum using statistical analysis:
+`(mean + 3σ) × 2.0`.
+
+- **PULLBACK_DISTANCE**: Temporary pullback distance in mm to use during calibration 
+  testing. The default is 1.0 (valid range: 0.5-2.0).
+
+See [Pullback Distance Calibration](Load_Cell.md#pullback-distance-calibration)
+
+#### DECOMPRESSION_ANGLE Calibration
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DECOMPRESSION_ANGLE [<bed_mesh_parameters>]`
+
+Enables and calibrates the tap quality checking system. Measures the pullback angle 
+across clean probes to establish a baseline.
+
+No calibration-specific parameters.
+
+**Prerequisites**: Run DRIFT_FILTER and PULLBACK_DISTANCE calibrations first. Ensure 
+nozzle is completely clean.
+
+See [Tap Quality Calibration](Load_Cell.md#tap-quality-calibration) for choosing 
+thresholds and interpreting results.
+
 ### [manual_probe]
 
 The manual_probe module is automatically loaded.
