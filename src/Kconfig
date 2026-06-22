@@ -283,7 +283,7 @@ config WANT_THERMOCOUPLE
     bool "Support thermocouple MAX sensors"
     depends on WANT_SPI
 config WANT_HX71X
-    bool "Support HX711 and HX717 ADC chips"
+    bool "Support HX711, HX717 & HX71708 ADC chips"
     depends on HAVE_GPIO
 config WANT_ADS1220
     bool "Support ADS 1220 ADC chip"
