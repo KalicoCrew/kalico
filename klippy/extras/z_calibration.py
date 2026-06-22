@@ -107,6 +107,14 @@ class ZCalibrationHelper:
                     "No nozzle position"
                     " configured for %s" % (self.config.get_name())
                 )
+            # TODO: Is it allowed to use the calculated home position? I have never used this feature
+            if safe_z_home.home_x_pos is None or safe_z_home.home_y_pos is None:
+                raise self.printer.config_error(
+                    "No nozzle position"
+                    f" configured for {self.config.get_name()} and unable to get it from"
+                    " safe_z_home, because home_xy_position is not set"
+                )
+
             self.nozzle_site = [
                 safe_z_home.home_x_pos,
                 safe_z_home.home_y_pos,
