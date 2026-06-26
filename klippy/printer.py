@@ -20,6 +20,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Generator, Optional, Union
 
+import klippy.exceptions as klippy_ex
 from klippy.configfile import ConfigWrapper
 
 from . import (
@@ -79,9 +80,8 @@ config, and restart the host software.
 Printer is shutdown
 """
 
-
-class WaitInterruption(gcode.CommandError):
-    pass
+# legacy export, use exceptions.WaitInterruption
+WaitInterruption = klippy_ex.WaitInterruption
 
 
 class SubsystemComponentCollection:
@@ -156,7 +156,10 @@ class PrinterModule:
 
 class Printer:
     config_error = configfile.error
-    command_error = gcode.CommandError
+    # legacy export, use exceptions.CommandError
+    command_error = klippy_ex.CommandError
+    # legacy export, use exceptions.WaitInterruption
+    wait_interrupted = WaitInterruption
 
     def __init__(self, main_reactor, bglogger, start_args):
         if sys.version_info[0] < 3:
@@ -499,8 +502,6 @@ class Printer:
             self.run_result = result
         self.reactor.end()
 
-    wait_interrupted = WaitInterruption
-
     def wait_while(self, condition_cb, error_on_cancel=True, interval=1.0):
         """
         receives a callback
@@ -513,7 +514,7 @@ class Printer:
         while condition_cb(eventtime):
             if self.is_shutdown() or counter != gcode.get_interrupt_counter():
                 if error_on_cancel:
-                    raise WaitInterruption("Command interrupted")
+                    raise klippy_ex.WaitInterruption("Command interrupted")
                 else:
                     return
             eventtime = self.reactor.pause(eventtime + interval)

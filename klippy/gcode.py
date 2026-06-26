@@ -9,18 +9,20 @@ import os
 import re
 import shlex
 
+import klippy.exceptions as klippy_ex
+
 from . import mathutil
 
-
-class CommandError(Exception):
-    pass
+# legacy export, use exceptions.CommandError
+CommandError = klippy_ex.CommandError
 
 
 Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
 
 
 class GCodeCommand:
-    error = CommandError
+    # legacy export, use exceptions.CommandError
+    error = klippy_ex.CommandError
 
     def __init__(self, gcode, command, commandline, params, need_ack):
         self._command = command
@@ -84,33 +86,33 @@ class GCodeCommand:
         value = self._params.get(name)
         if value is None:
             if default is self.sentinel:
-                raise self.error(
+                raise klippy_ex.CommandError(
                     "Error on '%s': missing %s" % (self._commandline, name)
                 )
             return default
         try:
             value = parser(value)
         except:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': unable to parse %s" % (self._commandline, value)
             )
         if minval is not None and value < minval:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must have minimum of %s"
                 % (self._commandline, name, minval)
             )
         if maxval is not None and value > maxval:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must have maximum of %s"
                 % (self._commandline, name, maxval)
             )
         if above is not None and value <= above:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must be above %s"
                 % (self._commandline, name, above)
             )
         if below is not None and value >= below:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must be below %s"
                 % (self._commandline, name, below)
             )
@@ -316,7 +318,7 @@ class GCodeDispatch:
             handler = self.gcode_handlers.get(cmd, self.cmd_default)
             try:
                 handler(gcmd)
-            except self.error as e:
+            except klippy_ex.CommandError as e:
                 self._respond_error(str(e))
                 self.printer.send_event("gcode:command_error")
                 if not need_ack:
@@ -384,7 +386,7 @@ class GCodeDispatch:
             eparams = [earg.split("=", 1) for earg in s]
             eparams = {k.upper(): v for k, v in eparams}
         except ValueError as e:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Malformed command '%s'" % (gcmd.get_commandline(),)
             )
         # Update gcmd with new parameters
