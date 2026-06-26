@@ -3,13 +3,19 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import importlib
 import logging
 import math
+from typing import Optional
 
 from . import chelper
+from .exceptions import WaitInterruption
 from .extras.danger_options import get_danger_options
+from .gcode import GCodeDispatch, InterruptToken
 from .kinematics import extruder
+from .reactor import ReactorCompletion, SelectReactor
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -255,11 +261,38 @@ class DripModeEndSignal(Exception):
     pass
 
 
+class DripMoveCompletion:
+    def __init__(
+        self,
+        reactor: SelectReactor,
+        drip_completion: ReactorCompletion,
+        interrupt_token: Optional[InterruptToken] = None,
+    ):
+        self.drip_completion = drip_completion
+        self.interrupt_token = interrupt_token
+        self.wait_completion = drip_completion
+        if interrupt_token:
+            self.wait_completion = reactor.completion_any(
+                [drip_completion, interrupt_token]
+            )
+
+    def check(self):
+        if self.interrupt_token and self.interrupt_token.test():
+            self.interrupt_token.check_interrupted()
+        if self.drip_completion.test():
+            raise DripModeEndSignal()
+
+    def wait(self, waketime):
+        self.wait_completion.wait(waketime)
+        self.check()
+
+
 # Main code to track events (and their timing) on the printer toolhead
 class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
+        self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.all_mcus = [
             m for n, m in self.printer.lookup_objects(module="mcu")
         ]
@@ -541,7 +574,9 @@ class ToolHead:
             if not self.can_pause:
                 self.need_check_pause = self.reactor.NEVER
                 return
-            eventtime = self.reactor.pause(eventtime + min(1.0, pause_time))
+            interrupt_token = self.gcode.get_interrupt_token()
+            interrupt_token.wait_until(eventtime + min(1.0, pause_time))
+            eventtime = self.reactor.monotonic()
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
         if not self.special_queuing_state:
@@ -616,6 +651,7 @@ class ToolHead:
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
+        self.gcode.get_interrupt_token().check_interrupted()
         if move.is_kinematic_move:
             self.kin.check_move(move)
         if move.axes_d[3]:
@@ -647,7 +683,9 @@ class ToolHead:
         ):
             if not self.can_pause:
                 break
-            eventtime = self.reactor.pause(eventtime + 0.100)
+            interrupt_token = self.gcode.get_interrupt_token()
+            interrupt_token.wait_until(eventtime + 0.100)
+            eventtime = self.reactor.monotonic()
 
     def set_extruder(self, extruder, extrude_pos):
         self.extruder = extruder
@@ -660,8 +698,7 @@ class ToolHead:
     def _update_drip_move_time(self, next_print_time):
         flush_delay = DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + self.kin_flush_delay
         while self.print_time < next_print_time:
-            if self.drip_completion.test():
-                raise DripModeEndSignal()
+            self.drip_completion.check()
             curtime = self.reactor.monotonic()
             est_print_time = self.mcu.estimated_print_time(curtime)
             wait_time = self.print_time - est_print_time - flush_delay
@@ -685,7 +722,10 @@ class ToolHead:
         self.do_kick_flush_timer = False
         self.lookahead.set_flush_time(BUFFER_TIME_HIGH)
         self.check_stall_time = 0.0
-        self.drip_completion = drip_completion
+        interrupt_token = self.gcode.get_interrupt_token()
+        self.drip_completion = DripMoveCompletion(
+            self.reactor, drip_completion, interrupt_token
+        )
         # Submit move
         try:
             self.move(newpos, speed)
@@ -696,12 +736,16 @@ class ToolHead:
         # Transmit move in "drip" mode
         try:
             self.lookahead.flush()
-        except DripModeEndSignal as e:
+        except (DripModeEndSignal, WaitInterruption) as e:
             self.lookahead.reset()
             self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
-        # Exit "Drip" state
-        self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
-        self.flush_step_generation()
+            # re-raise interruption into caller
+            if isinstance(e, WaitInterruption):
+                raise
+        finally:
+            # Exit "Drip" state
+            self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
+            self.flush_step_generation()
 
     # Misc commands
     def stats(self, eventtime):
