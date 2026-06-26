@@ -203,6 +203,31 @@ class SelectReactor:
     def completion(self):
         return ReactorCompletion(self)
 
+    def completion_any(self, child_completions):
+        if len(child_completions) == 1:
+            return child_completions[0]
+        any_completion = self.completion()
+        waiting_greenlets = set()
+
+        def complete_once(child_completion):
+            if any_completion.test():
+                return
+            g = greenlet.getcurrent()
+            waiting_greenlets.add(g)
+            result = child_completion.wait()
+            # complete only once, don't overwrite the completion value
+            if any_completion.test():
+                return
+            any_completion.complete(result)
+            # wake remaining tasks to allow them to return
+            for waiting in waiting_greenlets:
+                if waiting is not g:
+                    self.update_timer(waiting.timer, self.NOW)
+
+        for child in child_completions:
+            self.register_callback(lambda e, c=child: complete_once(c))
+        return any_completion
+
     def register_callback(self, callback, waketime=NOW):
         rcb = ReactorCallback(self, callback, waketime)
         return rcb.completion
