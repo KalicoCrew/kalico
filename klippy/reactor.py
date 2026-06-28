@@ -203,6 +203,22 @@ class SelectReactor:
     def completion(self):
         return ReactorCompletion(self)
 
+    def completion_any(self, child_completions):
+        if len(child_completions) == 1:
+            return child_completions[0]
+        any_completion = self.completion()
+
+        def complete_once(child_completion):
+            if any_completion.test():
+                return
+            result = child_completion.wait()
+            if not any_completion.test():
+                any_completion.complete(result)
+
+        for child in child_completions:
+            self.register_callback(lambda e, c=child: complete_once(c))
+        return any_completion
+
     def register_callback(self, callback, waketime=NOW):
         rcb = ReactorCallback(self, callback, waketime)
         return rcb.completion

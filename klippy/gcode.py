@@ -3,30 +3,49 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import collections
 import logging
 import os
 import re
 import shlex
+from typing import Optional
+from weakref import WeakKeyDictionary
+
+import greenlet
+
+import klippy.exceptions as klippy_ex
 
 from . import mathutil
+from .reactor import ReactorCompletion, SelectReactor
 
-
-class CommandError(Exception):
-    pass
+# legacy export, use exceptions.CommandError
+CommandError = klippy_ex.CommandError
 
 
 Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
 
 
 class GCodeCommand:
-    error = CommandError
+    # legacy export, use exceptions.CommandError
+    error = klippy_ex.CommandError
 
-    def __init__(self, gcode, command, commandline, params, need_ack):
+    def __init__(
+        self,
+        gcode: GCodeDispatch,
+        command,
+        commandline,
+        params,
+        need_ack,
+        interrupt_token: Optional[InterruptToken] = None,
+    ):
+        self._printer = gcode.printer
         self._command = command
         self._commandline = commandline
         self._params = params
         self._need_ack = need_ack
+        self._interrupt_token: InterruptToken = interrupt_token
         # Method wrappers
         self.respond_info = gcode.respond_info
         self.respond_raw = gcode.respond_raw
@@ -84,33 +103,33 @@ class GCodeCommand:
         value = self._params.get(name)
         if value is None:
             if default is self.sentinel:
-                raise self.error(
+                raise klippy_ex.CommandError(
                     "Error on '%s': missing %s" % (self._commandline, name)
                 )
             return default
         try:
             value = parser(value)
         except:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': unable to parse %s" % (self._commandline, value)
             )
         if minval is not None and value < minval:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must have minimum of %s"
                 % (self._commandline, name, minval)
             )
         if maxval is not None and value > maxval:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must have maximum of %s"
                 % (self._commandline, name, maxval)
             )
         if above is not None and value <= above:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must be above %s"
                 % (self._commandline, name, above)
             )
         if below is not None and value >= below:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Error on '%s': %s must be below %s"
                 % (self._commandline, name, below)
             )
@@ -138,6 +157,130 @@ class GCodeCommand:
             below=below,
         )
 
+    # if the command was interrupted, throws WaitInterruption
+    def check_interrupted(self):
+        self._interrupt_token.check_interrupted()
+
+    def get_interrupt_token(self) -> InterruptToken:
+        return self._interrupt_token
+
+    def wait_while(self, condition_cb, interval=1.0):
+        """
+        receives a callback
+        waits until callback returns False
+            (or is interrupted, or printer shuts down)
+        """
+        eventtime = self._printer.get_reactor().monotonic()
+        while condition_cb(eventtime):
+            self._interrupt_token.wait_until(eventtime + interval)
+            eventtime = self._printer.get_reactor().monotonic()
+
+    def delay(self, delay_time):
+        """
+        waits for delay_time seconds
+            (unless interrupted, or printer shuts down)
+        """
+        waketime = self._printer.get_reactor().monotonic() + delay_time
+        self._interrupt_token.wait_until(waketime)
+
+
+class InterruptedSentinel:
+    pass
+
+
+# wrap a ReactorCompletion so callers cannot call complete()
+class InterruptToken:
+    def __init__(self, printer, completion: ReactorCompletion):
+        self._printer = printer
+        self._completion = completion
+
+    def test(self) -> bool:
+        """
+        Test for interruption, returns True if interrupted
+        """
+        return self._completion.test() or self._printer.is_shutdown()
+
+    def check_interrupted(self) -> bool:
+        """
+        Test for interruption and throws WaitInterruption if interrupted
+        or returns False
+        """
+        if self.test():
+            raise klippy_ex.WaitInterruption("Command Interrupted")
+        return False
+
+    def wait(self, waketime=SelectReactor.NEVER) -> bool:
+        """
+        Wait until waketime, return the value of test()
+        """
+        if not self.test():
+            self._completion.wait(waketime, None)
+        return self.test()
+
+    def wait_until(
+        self, waketime=SelectReactor.NEVER, error_on_interrupt=True
+    ) -> bool:
+        """
+        Wait until waketime, the value of test(), raise WaitInterruption if interrupted
+        """
+        self.wait(waketime)
+        if error_on_interrupt:
+            self.check_interrupted()
+        return self.test()
+
+
+class GCodeCommandStacks:
+    def __init__(self, printer):
+        self._printer = printer
+        # weak keys, so greenlets can be garbage collected without coordination
+        self._gcmd_stacks: WeakKeyDictionary[
+            greenlet.greenlet, collections.deque[GCodeCommand]
+        ] = WeakKeyDictionary()
+        self._interrupt_completion = printer.get_reactor().completion()
+
+    def _get_stack(self) -> Optional[collections.deque[GCodeCommand]]:
+        return self._gcmd_stacks.get(greenlet.getcurrent(), None)
+
+    def _get_default_stack(self) -> collections.deque[GCodeCommand]:
+        current_greenlet = greenlet.getcurrent()
+        if current_greenlet not in self._gcmd_stacks:
+            self._gcmd_stacks[current_greenlet] = collections.deque()
+        return self._gcmd_stacks.get(current_greenlet)
+
+    def create_interrupt_token(self):
+        """
+        Create an interrupt token based directly on the interrupt_completion
+        """
+        return InterruptToken(self._printer, self._interrupt_completion)
+
+    def get_interrupt_token(self) -> InterruptToken:
+        """
+        Get the InterruptToken for the currently executing GCodeCommand on
+        the active greenlet.
+        """
+        gcmd_stack = self._get_stack()
+        if gcmd_stack:
+            return gcmd_stack[-1].get_interrupt_token()
+        return self.create_interrupt_token()
+
+    def push(self, gcmd: GCodeCommand):
+        self._get_default_stack().append(gcmd)
+
+    def pop(self, gcmd: GCodeCommand):
+        current_greenlet = greenlet.getcurrent()
+        gcmd_stack = self._get_stack()
+        if not gcmd_stack:
+            raise RuntimeError("GCode command stack corrupted")
+        popped_gcmd = gcmd_stack.pop()
+        if popped_gcmd is not gcmd:
+            raise RuntimeError("GCode command stack corrupted")
+        if not gcmd_stack:
+            del self._gcmd_stacks[current_greenlet]
+
+    def trigger_interrupt(self):
+        self._interrupt_completion.complete(InterruptedSentinel)
+        self._interrupt_completion = self._printer.get_reactor().completion()
+
 
 # Parse and dispatch G-Code commands
 class GCodeDispatch:
@@ -161,7 +304,7 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
-        self._interrupt_counter = 0
+        self._gcmd_stacks = GCodeCommandStacks(printer)
         self._script_context = 0
         # Register commands needed before config file is loaded
         handlers = [
@@ -181,11 +324,12 @@ class GCodeDispatch:
             desc = getattr(self, "cmd_" + cmd + "_help", None)
             self.register_command(cmd, func, True, desc)
 
-    def get_interrupt_counter(self):
-        return self._interrupt_counter
+    # get the token for the active GCodeCommand context
+    def get_interrupt_token(self) -> InterruptToken:
+        return self._gcmd_stacks.get_interrupt_token()
 
-    def increment_interrupt_counter(self):
-        self._interrupt_counter += 1
+    def trigger_interrupt(self):
+        self._gcmd_stacks.trigger_interrupt()
 
     def is_traditional_gcode(self, cmd):
         # A "traditional" g-code command is a letter and followed by a number
@@ -272,6 +416,7 @@ class GCodeDispatch:
         self.output_callbacks.append(cb)
 
     def _handle_shutdown(self):
+        self.trigger_interrupt()
         if not self.is_printer_ready:
             return
         self.is_printer_ready = False
@@ -309,14 +454,24 @@ class GCodeDispatch:
             params = {
                 parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
             }
-            gcmd = GCodeCommand(self, cmd, origline, params, need_ack)
+            gcmd = GCodeCommand(
+                self,
+                cmd,
+                origline,
+                params,
+                need_ack,
+                self._gcmd_stacks.create_interrupt_token(),
+            )
             # Invoke handler for command
             if self._script_context > 0 and cmd == "RETURN":
                 return
             handler = self.gcode_handlers.get(cmd, self.cmd_default)
+            self._gcmd_stacks.push(gcmd)
             try:
+                # raise interrupted exception if interrupted
+                gcmd.check_interrupted()
                 handler(gcmd)
-            except self.error as e:
+            except klippy_ex.CommandError as e:
                 self._respond_error(str(e))
                 self.printer.send_event("gcode:command_error")
                 if not need_ack:
@@ -328,6 +483,8 @@ class GCodeDispatch:
                 self._respond_error(msg)
                 if not need_ack:
                     raise
+            finally:
+                self._gcmd_stacks.pop(gcmd)
             gcmd.ack()
 
     def run_script_from_command(self, script):
@@ -348,7 +505,14 @@ class GCodeDispatch:
         return self.mutex
 
     def create_gcode_command(self, command, commandline, params):
-        return GCodeCommand(self, command, commandline, params, False)
+        return GCodeCommand(
+            self,
+            command,
+            commandline,
+            params,
+            False,
+            self.get_interrupt_token(),
+        )
 
     # Response handling
     def respond_raw(self, msg):
@@ -384,7 +548,7 @@ class GCodeDispatch:
             eparams = [earg.split("=", 1) for earg in s]
             eparams = {k.upper(): v for k, v in eparams}
         except ValueError as e:
-            raise self.error(
+            raise klippy_ex.CommandError(
                 "Malformed command '%s'" % (gcmd.get_commandline(),)
             )
         # Update gcmd with new parameters
@@ -508,7 +672,7 @@ class GCodeDispatch:
         gcmd.respond_info("\n".join(cmdhelp), log=False)
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
-        self.increment_interrupt_counter()
+        self.trigger_interrupt()
 
     def cmd_LOG_ROLLOVER(self, gcmd):
         self.printer.bglogger.doRollover()
