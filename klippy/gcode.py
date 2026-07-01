@@ -334,9 +334,13 @@ class GCodeDispatch:
     def get_interrupt_token(self) -> InterruptToken:
         return self._gcmd_stacks.get_interrupt_token()
 
+    def _trigger_interrupt(self):
+        self._gcmd_stacks.trigger_interrupt()
+        self.mutex.throw(klippy_ex.WaitInterruption("Command Interrupted"))
+
     # trigger interrupt from another OS thread safely
     def async_trigger_interrupt(self):
-        self._gcmd_stacks.async_trigger_interrupt()
+        self.printer.get_reactor().register_callback(self._trigger_interrupt)
 
     def is_traditional_gcode(self, cmd):
         # A "traditional" g-code command is a letter and followed by a number
@@ -423,7 +427,7 @@ class GCodeDispatch:
         self.output_callbacks.append(cb)
 
     def _handle_shutdown(self):
-        self._gcmd_stacks.trigger_interrupt()
+        self._trigger_interrupt()
         if not self.is_printer_ready:
             return
         self.is_printer_ready = False
@@ -679,7 +683,7 @@ class GCodeDispatch:
         gcmd.respond_info("\n".join(cmdhelp), log=False)
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
-        self._gcmd_stacks.trigger_interrupt()
+        self._trigger_interrupt()
 
     def cmd_LOG_ROLLOVER(self, gcmd):
         self.printer.bglogger.doRollover()
