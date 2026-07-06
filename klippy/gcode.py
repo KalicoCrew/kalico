@@ -74,6 +74,9 @@ class GCodeCommand:
             param_start += 1
         return origline[param_start:param_end]
 
+    def get_need_ack(self):
+        return self._need_ack
+
     def ack(self, msg=None):
         if not self._need_ack:
             return False
@@ -464,72 +467,103 @@ class GCodeDispatch:
     # Parse input into commands
     args_r = re.compile("([A-Z_]+|[A-Z*])")
 
-    def _process_commands(self, commands, need_ack=True):
+    def _parse_command_line(self, line: str):
+        # Ignore comments and leading/trailing spaces
+        line = stripped_line = line.strip()
+        cpos = line.find(";")
+        if cpos >= 0:
+            line = line[:cpos]
+        # Break line into parts and determine command
+        parts = self.args_r.split(line.upper())
+        if "".join(parts[:2]) == "N":
+            # Skip line number at start of command
+            cmd = "".join(parts[3:5]).strip()
+        else:
+            cmd = "".join(parts[:3]).strip()
+        # Build gcode "params" dictionary
+        params = {
+            parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
+        }
+        return cmd, params, stripped_line
+
+    def _process_command(self, gcmd: GCodeCommand):
+        handler = self.gcode_handlers.get(gcmd.get_command(), self.cmd_default)
+        self._gcmd_stacks.push(gcmd)
+        try:
+            # raise interrupted exception if interrupted
+            gcmd.check_interrupted()
+            handler(gcmd)
+        except klippy_ex.CommandError as e:
+            self._respond_error(str(e))
+            self.printer.send_event("gcode:command_error")
+            if not gcmd.get_need_ack():
+                raise
+        except:
+            msg = 'Internal error on command:"%s"' % (gcmd.get_command(),)
+            logging.exception(msg)
+            self.printer.invoke_shutdown(msg)
+            self._respond_error(msg)
+            if not gcmd.get_need_ack():
+                raise
+        finally:
+            self._gcmd_stacks.pop(gcmd)
+        gcmd.ack()
+
+    def _process_commands_loop(self, commands, need_ack=True):
         for line in commands:
-            # Ignore comments and leading/trailing spaces
-            line = origline = line.strip()
-            cpos = line.find(";")
-            if cpos >= 0:
-                line = line[:cpos]
-            # Break line into parts and determine command
-            parts = self.args_r.split(line.upper())
-            if "".join(parts[:2]) == "N":
-                # Skip line number at start of command
-                cmd = "".join(parts[3:5]).strip()
-            else:
-                cmd = "".join(parts[:3]).strip()
-            # Build gcode "params" dictionary
-            params = {
-                parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
-            }
-            if cmd in self.trigger_interrupt_commands:
-                self._trigger_interrupt()
-            gcmd = GCodeCommand(
-                self,
-                cmd,
-                origline,
-                params,
-                need_ack,
-                self._gcmd_stacks.create_interrupt_token(),
-            )
-            # Invoke handler for command
+            cmd, params, line = self._parse_command_line(line)
+            # RETURN from gcode macro
             if self._script_context > 0 and cmd == "RETURN":
                 return
-            handler = self.gcode_handlers.get(cmd, self.cmd_default)
-            self._gcmd_stacks.push(gcmd)
-            try:
-                # raise interrupted exception if interrupted
-                gcmd.check_interrupted()
-                handler(gcmd)
-            except klippy_ex.CommandError as e:
-                self._respond_error(str(e))
-                self.printer.send_event("gcode:command_error")
-                if not need_ack:
-                    raise
-            except:
-                msg = 'Internal error on command:"%s"' % (cmd,)
-                logging.exception(msg)
-                self.printer.invoke_shutdown(msg)
-                self._respond_error(msg)
-                if not need_ack:
-                    raise
-            finally:
-                self._gcmd_stacks.pop(gcmd)
-            gcmd.ack()
+            if cmd in self.trigger_interrupt_commands:
+                # release the mutex so this thread will suspend on mutex.lock()
+                # to allow all interrupted threads to finish first when
+                # it waits to re-acquire the lock
+                if self.mutex.owns_lock():
+                    self.mutex.unlock()
+                # causes all waiters of the mutex to get an exception
+                self._trigger_interrupt()
+            gcmd: GCodeCommand = GCodeCommand(
+                self,
+                cmd,
+                line,
+                params,
+                need_ack,
+                # acquires the token after the interrupt, this command
+                # belongs to the next generation of commands
+                self._gcmd_stacks.create_interrupt_token(),
+            )
+            # take lock once per loop
+            if not self.mutex.owns_lock():
+                self.mutex.lock()
+            self._process_command(gcmd)
+
+    def _process_commands(self, commands, need_ack=True):
+        if self.mutex.owns_lock():
+            raise RuntimeError(
+                "The current greenlet already owns the lock! Did "
+                "you mean to call run_script_from_command()?"
+            )
+        try:
+            self._process_commands_loop(commands, need_ack)
+        finally:
+            if self.mutex.owns_lock():
+                self.mutex.unlock()
 
     def run_script_from_command(self, script):
+        if not self.mutex.owns_lock():
+            raise RuntimeError(
+                "The current greenlet does not own the lock! "
+                "Did you mean to call run_script()?"
+            )
         self._script_context += 1
         try:
-            self._process_commands(script.split("\n"), need_ack=False)
+            self._process_commands_loop(script.split("\n"), need_ack=False)
         finally:
             self._script_context -= 1
 
     def run_script(self, script):
-        if "INTERRUPT" in script:
-            self._process_commands(script.split("\n"), need_ack=False)
-        else:
-            with self.mutex:
-                self._process_commands(script.split("\n"), need_ack=False)
+        self._process_commands(script.split("\n"), need_ack=False)
 
     def get_mutex(self):
         return self.mutex
@@ -715,7 +749,6 @@ class GCodeIO:
         printer.register_event_handler("klippy:ready", self._handle_ready)
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         self.gcode = printer.lookup_object("gcode")
-        self.gcode_mutex = self.gcode.get_mutex()
         self.fd = printer.get_start_args().get("gcode_fd")
         self.reactor = printer.get_reactor()
         self.is_printer_ready = False
@@ -796,8 +829,7 @@ class GCodeIO:
         self.is_processing_data = True
         while pending_commands:
             self.pending_commands = []
-            with self.gcode_mutex:
-                self.gcode._process_commands(pending_commands)
+            self.gcode._process_commands(pending_commands)
             pending_commands = self.pending_commands
         self.is_processing_data = False
         if self.fd_handle is None:
