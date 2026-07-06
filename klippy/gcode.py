@@ -309,26 +309,34 @@ class GCodeDispatch:
         self.ready_gcode_handlers = {}
         self.mux_commands = {}
         self.gcode_help = {}
+        # Name-bound policy: intentionally survives unregister/rename_existing.
+        self.trigger_interrupt_commands = set()
         self.status_commands = {}
         self._gcmd_stacks = GCodeCommandStacks(printer)
         self._script_context = 0
         # Register commands needed before config file is loaded
-        handlers = [
-            "M110",
-            "M112",
-            "M115",
-            "RESTART",
-            "FIRMWARE_RESTART",
-            "ECHO",
-            "STATUS",
-            "HELP",
-            "HEATER_INTERRUPT",
-            "LOG_ROLLOVER",
-        ]
-        for cmd in handlers:
+        handlers: dict[str, bool] = {
+            "M110": False,
+            "M112": False,
+            "M115": False,
+            "RESTART": False,
+            "FIRMWARE_RESTART": False,
+            "ECHO": False,
+            "STATUS": False,
+            "HELP": False,
+            "LOG_ROLLOVER": False,
+            "HEATER_INTERRUPT": True,
+        }
+        for cmd, interrupt in handlers.items():
             func = getattr(self, "cmd_" + cmd)
             desc = getattr(self, "cmd_" + cmd + "_help", None)
-            self.register_command(cmd, func, True, desc)
+            self.register_command(
+                cmd,
+                func,
+                when_not_ready=True,
+                desc=desc,
+                trigger_interrupt=interrupt,
+            )
 
     # get the token for the active GCodeCommand context
     def get_interrupt_token(self) -> InterruptToken:
@@ -351,7 +359,14 @@ class GCodeDispatch:
         except:
             return False
 
-    def register_command(self, cmd, func, when_not_ready=False, desc=None):
+    def register_command(
+        self,
+        cmd,
+        func,
+        when_not_ready=False,
+        desc=None,
+        trigger_interrupt=False,
+    ):
         if func is None:
             old_cmd = self.ready_gcode_handlers.get(cmd)
             if cmd in self.ready_gcode_handlers:
@@ -381,6 +396,8 @@ class GCodeDispatch:
             def func(params):
                 return origfunc(self._get_extended_params(params))
 
+        if trigger_interrupt:
+            self.trigger_interrupt_commands.add(cmd)
         self.ready_gcode_handlers[cmd] = func
         if when_not_ready:
             self.base_gcode_handlers[cmd] = func
@@ -465,6 +482,8 @@ class GCodeDispatch:
             params = {
                 parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
             }
+            if cmd in self.trigger_interrupt_commands:
+                self._trigger_interrupt()
             gcmd = GCodeCommand(
                 self,
                 cmd,
@@ -683,7 +702,7 @@ class GCodeDispatch:
         gcmd.respond_info("\n".join(cmdhelp), log=False)
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
-        self._trigger_interrupt()
+        pass
 
     def cmd_LOG_ROLLOVER(self, gcmd):
         self.printer.bglogger.doRollover()
