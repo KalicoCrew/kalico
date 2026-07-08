@@ -140,7 +140,7 @@ DECL_TASK(usb_bulk_out_task);
 #else
 #define USB_STR_MANUFACTURER u"Klipper"
 #endif
-#define USB_STR_PRODUCT CONCAT(u,CONFIG_MCU)
+#define USB_STR_PRODUCT CONCAT(u,CONFIG_USB_PRODUCT)
 #define USB_STR_SERIAL CONCAT(u,CONFIG_USB_SERIAL_NUMBER)
 
 // String descriptors

@@ -100,6 +100,8 @@ config_dfll(uint32_t dfllmul, uint32_t ctrlb)
 
 #if CONFIG_CLOCK_REF_X32K
 DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PA0,PA1");
+#elif CONFIG_CLOCK_REF_X25M_XOSC0
+DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PA14,PA15");
 #elif CONFIG_CLOCK_REF_X25M
 DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PB22,PB23");
 #endif
@@ -132,26 +134,33 @@ clock_init_32k(void)
 static void
 clock_init_25m(void)
 {
-    // Enable XOSC1
+#if CONFIG_CLOCK_REF_X25M_XOSC0
+    uint32_t xosc = 0, xoscrdy = OSCCTRL_STATUS_XOSCRDY0;
+    uint32_t refclk = OSCCTRL_DPLLCTRLB_REFCLK_XOSC0;
+#else
+    uint32_t xosc = 1, xoscrdy = OSCCTRL_STATUS_XOSCRDY1;
+    uint32_t refclk = OSCCTRL_DPLLCTRLB_REFCLK_XOSC1;
+#endif
+    // Enable XOSC
     uint32_t freq_xosc = 25000000;
     uint32_t val = (OSCCTRL_XOSCCTRL_ENABLE | OSCCTRL_XOSCCTRL_XTALEN
                     | OSCCTRL_XOSCCTRL_IPTAT(3) | OSCCTRL_XOSCCTRL_IMULT(6));
-    OSCCTRL->XOSCCTRL[1].reg = val;
-    while (!(OSCCTRL->STATUS.reg & OSCCTRL_STATUS_XOSCRDY1))
+    OSCCTRL->XOSCCTRL[xosc].reg = val;
+    while (!(OSCCTRL->STATUS.reg & xoscrdy))
         ;
 
-    // Generate 120Mhz clock on PLL0 (with XOSC1 as reference)
+    // Generate 120Mhz clock on PLL0 (with XOSC as reference)
     uint32_t p0div = 10, p0mul = DIV_ROUND_CLOSEST(FREQ_MAIN, freq_xosc/p0div);
     uint32_t p0ctrlb = OSCCTRL_DPLLCTRLB_DIV(p0div / 2 - 1);
-    config_dpll(0, p0mul, p0ctrlb | OSCCTRL_DPLLCTRLB_REFCLK_XOSC1);
+    config_dpll(0, p0mul, p0ctrlb | refclk);
 
     // Switch main clock to 120Mhz PLL0
     gen_clock(CLKGEN_MAIN, GCLK_GENCTRL_SRC_DPLL0);
 
-    // Generate 96MHz clock on PLL1 (with XOSC1 as reference), divide by 2 for GCLK = 48 MHz
+    // Generate 96MHz clock on PLL1 (with XOSC as reference), divide by 2 for GCLK = 48 MHz
     uint32_t p1div = 50, p1mul = DIV_ROUND_CLOSEST(FREQ_96M, freq_xosc/p1div);
     uint32_t p1ctrlb = OSCCTRL_DPLLCTRLB_DIV(p1div / 2 - 1);
-    config_dpll(1, p1mul, p1ctrlb | OSCCTRL_DPLLCTRLB_REFCLK_XOSC1);
+    config_dpll(1, p1mul, p1ctrlb | refclk);
     gen_clock(CLKGEN_48M, GCLK_GENCTRL_SRC_DPLL1 | GCLK_GENCTRL_DIV(FREQ_96M / FREQ_48M));
 }
 
@@ -199,7 +208,7 @@ SystemInit(void)
     // Init clocks
     if (CONFIG_CLOCK_REF_X32K)
         clock_init_32k();
-    else if (CONFIG_CLOCK_REF_X25M)
+    else if (CONFIG_CLOCK_REF_X25M || CONFIG_CLOCK_REF_X25M_XOSC0)
         clock_init_25m();
     else
         clock_init_internal();

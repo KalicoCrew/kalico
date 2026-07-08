@@ -173,6 +173,8 @@ choice
         bool "12Mhz crystal" if MACH_SAMC21
     config CLOCK_REF_X25M
         bool "25Mhz crystal" if MACH_SAMC21 || MACH_SAMX5
+    config CLOCK_REF_X25M_XOSC0
+        bool "25Mhz crystal on XOSC0" if MACH_SAMX5
     config CLOCK_REF_INTERNAL
         bool "Internal clock" if !MACH_SAMC21
 endchoice

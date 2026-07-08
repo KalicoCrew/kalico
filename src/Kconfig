@@ -78,6 +78,8 @@ config USB_SERIAL_NUMBER
     default "12345"
 config USB_MANUFACTURER
     default "Klipper"
+config USB_PRODUCT
+    default MCU
 
 menu "USB ids"
     depends on USB && LOW_LEVEL_OPTIONS
@@ -91,6 +93,8 @@ config USB_SERIAL_NUMBER
     string "USB serial number" if !USB_SERIAL_NUMBER_CHIPID
 config USB_MANUFACTURER
     string "USB manufacturer"
+config USB_PRODUCT
+    string "USB product"
 endmenu
 
 menu "CAN bus UUID"
@@ -254,6 +258,9 @@ config WANT_NEOPIXEL
 config WANT_PULSE_COUNTER
     bool "Support measuring fan tachometer GPIO pins"
     depends on HAVE_GPIO
+config WANT_INDX_HEATER
+    bool "Bondtech INDX Heater"
+    depends on MACH_SAME51J19 && CLOCK_REF_X25M_XOSC0 && SAMD51_FREQ_120
 
 comment "LCD chips"
 config WANT_ST7920

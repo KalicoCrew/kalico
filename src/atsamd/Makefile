@@ -58,7 +58,11 @@ lib/bossac/bin/bossac:
 
 BOSSAC_OFFSET-$(CONFIG_MACH_SAMD21) := 0x2000
 BOSSAC_OFFSET-$(CONFIG_MACH_SAMX5) := 0x4000
+FLASH_TYPE-y := $(CONFIG_MCU)
+FLASH_TYPE-$(CONFIG_WANT_INDX_HEATER) := indx
+FLASH_DEPS-y := lib/bossac/bin/bossac
+FLASH_DEPS-$(CONFIG_WANT_INDX_HEATER) :=
 
-flash: $(OUT)klipper.bin lib/bossac/bin/bossac
+flash: $(OUT)klipper.bin $(FLASH_DEPS-y)
 	@echo "  Flashing $< to $(FLASH_DEVICE)"
-	$(Q)$(PYTHON) ./scripts/flash_usb.py -t $(CONFIG_MCU) -d "$(FLASH_DEVICE)" -s "$(BOSSAC_OFFSET-y)" $(OUT)klipper.bin
+	$(Q)$(PYTHON) ./scripts/flash_usb.py -t $(FLASH_TYPE-y) -d "$(FLASH_DEVICE)" -s "$(BOSSAC_OFFSET-y)" $(OUT)klipper.bin
