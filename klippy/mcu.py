@@ -233,17 +233,21 @@ class MCU_trsync:
         )
         state_tag = state_cmd.get_command_tag()
         ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch_mcu = ffi_main.gc(
-            ffi_lib.trdispatch_mcu_alloc(
-                self._trdispatch,
-                mcu._serial.get_serialqueue(),  # XXX
-                self._cmd_queue,
-                self._oid,
-                set_timeout_tag,
-                trigger_tag,
-                state_tag,
-            ),
-            ffi_lib.free,
+        # Not ffi.gc() - lifetime is managed explicitly.  _build_config() runs
+        # again when a non-critical mcu reconnects; free the previous object
+        # first so it is unlinked from td->tdm_list.  Any object still attached
+        # at teardown is released by trdispatch_free().
+        if self._trdispatch_mcu is not None:
+            ffi_lib.trdispatch_mcu_free(self._trdispatch_mcu)
+            self._trdispatch_mcu = None
+        self._trdispatch_mcu = ffi_lib.trdispatch_mcu_alloc(
+            self._trdispatch,
+            mcu._serial.get_serialqueue(),  # XXX
+            self._cmd_queue,
+            self._oid,
+            set_timeout_tag,
+            trigger_tag,
+            state_tag,
         )
 
     def _shutdown(self):
@@ -321,7 +325,9 @@ class TriggerDispatch:
         self._mcu = mcu
         self._trigger_completion = None
         ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
+        self._trdispatch = ffi_main.gc(
+            ffi_lib.trdispatch_alloc(), ffi_lib.trdispatch_free
+        )
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
     def get_oid(self):
