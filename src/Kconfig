@@ -79,6 +79,7 @@ config USB_SERIAL_NUMBER
 config USB_MANUFACTURER
     default "Klipper"
 config USB_PRODUCT
+    depends on USB
     default MCU
 
 menu "USB ids"
