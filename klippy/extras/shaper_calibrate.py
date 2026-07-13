@@ -99,6 +99,19 @@ def step_response(np, t, omega, damping_ratio):
     )
 
 
+def step_response_velocity(np, t, omega, damping_ratio):
+    # Analytic derivative of step_response:
+    # v(t) = omega * exp(-zeta*omega*t) * sin(omega_d*t) / sqrt(1-zeta^2)
+    t = np.maximum(t, 0.0)
+    omega = np.swapaxes(np.array(omega, ndmin=2), 0, 1)
+    df = math.sqrt(1.0 - damping_ratio**2)
+    return (
+        np.exp(-damping_ratio * omega * t)
+        * np.sin(omega * df * t)
+        * (omega / df)
+    )
+
+
 def step_response_min_velocity(damping_ratio):
     d2 = damping_ratio * damping_ratio
     d_r = damping_ratio / math.sqrt(1.0 - d2)
@@ -107,6 +120,19 @@ def step_response_min_velocity(damping_ratio):
     phase = math.acos(damping_ratio)
     v = math.exp(-d_r * t) * (d_r * math.sin(t + phase) - math.cos(t + phase))
     return v
+
+
+def _refined_min(np, v):
+    # Refine the per-row discrete minimum with a parabola through the
+    # 3 points around it (near-exact for smooth extrema)
+    j = np.argmin(v, axis=-1)
+    rows = np.arange(v.shape[0])
+    jc = np.clip(j, 1, v.shape[-1] - 2)
+    v_m, v_0, v_p = v[rows, jc - 1], v[rows, jc], v[rows, jc + 1]
+    denom = v_m - 2.0 * v_0 + v_p
+    interior = (j == jc) & (denom > 0.0)
+    adj = np.where(interior, (v_p - v_m) ** 2 / (8.0 * denom), 0.0)
+    return v[rows, j] - adj
 
 
 def estimate_shaper_old(np, shaper, test_damping_ratio, test_freqs):
@@ -134,22 +160,29 @@ def estimate_shaper(np, shaper, test_damping_ratio, test_freqs):
     n_t = 1000
     unity_range = np.linspace(0.0, 1.0, n_t)
     time = (t_end[:, np.newaxis] - t_start) * unity_range + t_start
-    dt = (time[:, -1] - time[:, 0]) / n_t
 
     min_v = -step_response_min_velocity(test_damping_ratio)
 
     omega = 2.0 * math.pi * test_freqs[test_freqs > 0.0]
 
-    response = np.zeros(shape=(omega.shape[0], time.shape[-1]))
+    velocity = np.zeros(shape=(omega.shape[0], time.shape[-1]))
+    # The velocity has kinks at the impulse times, evaluate it there exactly
+    kink_velocity = np.zeros(shape=(omega.shape[0], n))
     for i in range(n):
-        s_r = step_response(np, time - T[i], omega, test_damping_ratio)
-        response += A[i] * s_r
-    response *= inv_D
-    velocity = (response[:, 1:] - response[:, :-1]) / (omega * dt)[
-        :, np.newaxis
-    ]
+        velocity += A[i] * step_response_velocity(
+            np, time - T[i], omega, test_damping_ratio
+        )
+        kink_velocity += A[i] * step_response_velocity(
+            np, T - T[i], omega, test_damping_ratio
+        )
+    # step_response_min_velocity is normalized per unit omega
+    velocity *= inv_D / omega[:, np.newaxis]
+    kink_velocity *= inv_D / omega[:, np.newaxis]
+    velocity_min = np.minimum(
+        _refined_min(np, velocity), kink_velocity.min(axis=-1)
+    )
     res = np.zeros(shape=test_freqs.shape)
-    res[test_freqs > 0.0] = -velocity.min(axis=-1) / min_v
+    res[test_freqs > 0.0] = -velocity_min / min_v
     res[test_freqs <= 0.0] = 1.0
     return res
 
@@ -214,14 +247,18 @@ def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
             m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
         )
 
-    s_r = step_response(np, time, omega, test_damping_ratio)
+    # The velocity of the smoothed response is the smoother convolved
+    # with the analytic velocity of the step response
+    s_v = (
+        step_response_velocity(np, time, omega, test_damping_ratio)
+        / omega[:, np.newaxis]
+    )
     w_dt = w[:, wm:wp] * (np.reciprocal(norms) * dt)[:, np.newaxis]
-    response = np.einsum("ijk,ik->ij", get_windows(s_r, wp - wm), w_dt[:, ::-1])
-    velocity = (response[:, 1:] - response[:, :-1]) / (omega * dt)[
-        :, np.newaxis
-    ]
+    velocity = np.einsum("ijk,ik->ij", get_windows(s_v, wp - wm), w_dt[:, ::-1])
     res = np.zeros(shape=test_freqs.shape)
-    res[test_freqs > 0.0] = -velocity.min(axis=-1) / min_v
+    # The smoothed velocity is C^1, a parabolic refinement of the discrete
+    # minimum is sufficient
+    res[test_freqs > 0.0] = -_refined_min(np, velocity) / min_v
     res[test_freqs <= 0.0] = 1.0
     return res
 

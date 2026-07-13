@@ -8,7 +8,7 @@ import collections
 import importlib
 import math
 
-from . import shaper_defs
+from . import shaper_calibrate, shaper_defs
 
 ExtruderSmootherCfg = collections.namedtuple(
     "ExtruderSmootherCfg", ("order", "freq_opt_range")
@@ -31,19 +31,6 @@ EXTURDER_SMOOTHERS = {
 }
 
 
-def _step_response_velocity(np, t, omega, damping_ratio):
-    # Analytic derivative of shaper_calibrate.step_response:
-    # v(t) = omega * exp(-zeta*omega*t) * sin(omega_d*t) / sqrt(1-zeta^2)
-    t = np.maximum(t, 0.0)
-    omega = np.swapaxes(np.array(omega, ndmin=2), 0, 1)
-    df = math.sqrt(1.0 - damping_ratio**2)
-    return (
-        np.exp(-damping_ratio * omega * t)
-        * np.sin(omega * df * t)
-        * (omega / df)
-    )
-
-
 def _estimate_shaper(np, shaper, test_damping_ratio, test_freqs):
     A, T = np.asarray(shaper[0]), np.asarray(shaper[1])
     inv_D = 1.0 / A.sum()
@@ -59,7 +46,7 @@ def _estimate_shaper(np, shaper, test_damping_ratio, test_freqs):
 
     velocity = np.zeros(shape=(omega.shape[0], time.shape[-1]))
     for i in range(n):
-        velocity += A[i] * _step_response_velocity(
+        velocity += A[i] * shaper_calibrate.step_response_velocity(
             np, time - T[i] + hst, omega, test_damping_ratio
         )
     velocity *= inv_D
@@ -92,7 +79,9 @@ def _estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
             m, shape=(m.shape[0], nrows, wl), strides=(m.strides[0], n, n)
         )
 
-    s_v = _step_response_velocity(np, time, omega, test_damping_ratio)
+    s_v = shaper_calibrate.step_response_velocity(
+        np, time, omega, test_damping_ratio
+    )
     velocity = np.einsum("ijk,k->ij", get_windows(s_v, wl), w_dt[::-1])
     nrows = velocity.shape[-1]
     # Window starting at time[j] convolves the transient around T = time[j]+hst
