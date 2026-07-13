@@ -2335,8 +2335,8 @@ This can be useful when tuning high speed machines to know what the limits of yo
 <p><img alt="Nonlinear PA filament feedrate versus time" src="img/PA_photos/nonlin_speed_vs_time.png" />
 <img alt="Nonlinear PA filament acceleration versus time" src="img/PA_photos/nonlin_accel_vs_time.png" /></p>
 <p>Depending on the specific settings, nonlinear PA can request higher speeds and almost always requests higher accelerations than standard PA, so you can use this in combination with testing to ensure new settings combinations you are trying don't have issues.</p>
-<p>Note that there are two different nonlinear functions: reciprocal and tanh.
-They both can have similar results, but reciprocal provides better independence between low and high speed PA so we recommend you use that for ease of tuning.</p>
+<p>Note that there are two different nonlinear functions: recipr and tanh.
+They both can have similar results, but recipr provides better independence between low and high speed PA so we recommend you use that for ease of tuning.</p>
 <h2 id="setup">Setup<a class="headerlink" href="#setup" title="Permanent link">&para;</a></h2>
 <p>The best way to tune nonlinear pressure advance is to use the tuning macro that is built into <code>bleeding-edge-v2</code> Kalico.</p>
 <p>This generates gcode to print a tuning tower that tests several different speed transitions while changing one parameter.
