@@ -40,6 +40,7 @@ jobs:
       - name: Test Klipper build (changes to the firmware)
         if: steps.changes.outputs.klipper == 'true'
         run: |
+          set -o pipefail
           sudo apt-get update && sudo apt-get install -y expect
           # Clean up docker output so that github ::group: instructions
           # get recognized
