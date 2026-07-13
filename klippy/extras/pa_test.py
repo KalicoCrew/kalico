@@ -91,7 +91,7 @@ class PATest:
             self.size_y = min(
                 DEFAULT_Y_SIZE,
                 1.6 * (kin_status["axis_maximum"].y - self.origin_y),
-                1.6 * (self.origin_x - kin_status["axis_minimum"].y),
+                1.6 * (self.origin_y - kin_status["axis_minimum"].y),
             )
 
     cmd_PRINT_PA_TOWER_help = "Start Pressure Advance Tower print"
