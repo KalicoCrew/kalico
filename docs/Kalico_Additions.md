@@ -26,6 +26,7 @@
 ## New Kalico Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
+- [indx](./INDX.md) - Support for the Bondtech INDX toolboard and its inductive nozzle heater
 
 ## Sensorless Homing
 
