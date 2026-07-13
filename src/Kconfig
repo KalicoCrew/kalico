@@ -261,6 +261,7 @@ config WANT_PULSE_COUNTER
 config WANT_INDX_HEATER
     bool "Bondtech INDX Heater"
     depends on MACH_SAME51J19 && CLOCK_REF_X25M_XOSC0 && SAMD51_FREQ_120
+    select HAVE_SOFTWARE_DIVIDE_REQUIRED
 
 comment "LCD chips"
 config WANT_ST7920

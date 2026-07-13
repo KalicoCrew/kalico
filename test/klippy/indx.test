@@ -1,0 +1,12 @@
+# Test case for the Bondtech INDX toolboard module
+DICTIONARY atmega2560.dict indxmcu=bondtech_indx.dict
+CONFIG indx.cfg
+
+# Verify the INDX gcode commands are registered
+INDX_LED_FORCE_COLOR RED=10 GREEN=20 BLUE=30
+INDX_LED_FORCE_COLOR CLEAR=1
+INDX_LED_SET_CURRENT RED=10 GREEN=10 BLUE=10
+INDX_FORCE_BRACKET_TEMP TEMP=25
+
+# Verify the toolboard status is exported
+ASSERT TEST='{printer.indx.last_dock_measurement is none}'
