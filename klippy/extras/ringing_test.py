@@ -87,7 +87,7 @@ class RingingTest:
                 self.notch_offset = self.size * DEFAULT_NOTCH_OFFSET_RATIO
             if self.notch_offset < 2.0 or self.notch_offset > 0.5 * self.size:
                 raise self.printer.config_error(
-                    "notch_offset must not be in range [2.0, %.3f]"
+                    "notch_offset must be in range [2.0, %.3f]"
                     % (0.5 * self.size,)
                 )
 
