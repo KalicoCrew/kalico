@@ -185,7 +185,13 @@ class AxisInputShaper:
         return self.params.get_axis()
 
     def is_extruder_smoothing(self, exact_mode):
-        return not exact_mode and self.A
+        # Custom shapers have no fitted extruder smoother counterpart,
+        # they are applied to the extruder exactly (as a convolution)
+        return (
+            not exact_mode
+            and self.A
+            and self.get_type() != CustomInputShaperParams.SHAPER_TYPE
+        )
 
     def is_enabled(self):
         return self.n > 0
@@ -454,7 +460,10 @@ class AxisInputSmoother:
         # Make sure to disable any active input shaping
         A, T = shaper_defs.get_none_shaper()
         ffi_lib.extruder_set_shaper_params(sk, axis, len(A), A, T)
-        if exact_mode:
+        smoother_type = self.get_type()
+        if exact_mode or smoother_type == CustomInputSmootherParams.SHAPER_TYPE:
+            # Custom smoothers have no fitted extruder counterpart, apply
+            # the smoother itself exactly
             success = (
                 ffi_lib.extruder_set_smoothing_params(
                     sk, axis, self.n, self.coeffs, self.smooth_time, self.t_offs
@@ -462,7 +471,6 @@ class AxisInputSmoother:
                 == 0
             )
         else:
-            smoother_type = self.get_type()
             status = self.params.get_status()
             damping_ratio = float(
                 status.get("damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO)
