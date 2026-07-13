@@ -3742,7 +3742,7 @@ sensor_type: indx
 #   The temperature to report. Available kinds are "heater" (nozzle
 #   temperature), "sensor" (IR sensor die temperature), "board"
 #   (toolboard temperature), "bracket" (sensor bracket temperature),
-#   "ldc_coil" (filament sensor coil thermistor), "check_model"
+#   "ldc_coil" (eddy current probe coil temperature), "check_model"
 #   (thermal model prediction) and "check_model_delta" (difference
 #   between the model prediction and the measured temperature).
 ```

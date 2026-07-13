@@ -1039,9 +1039,11 @@ default) the measured values are applied and staged for SAVE_CONFIG.
 
 #### INDX_EXTRUDER_MOVE
 `INDX_EXTRUDER_MOVE DISTANCE=<mm> SPEED=<mm/s> CURRENT=<amps>`:
-Perform an extruder move with the TMC run current temporarily lowered
-to CURRENT, bypassing the cold extrude check. Useful for gently
-loading filament against a stop.
+Perform an extruder move that bypasses the cold extrude check, with
+the TMC run current temporarily lowered to CURRENT (think of it as
+M302 plus a move in a single command). Mainly intended for loading
+and unloading INDX tools without needing to set a low minimum
+extrusion temperature.
 
 #### INDX_SET_MODEL_PARAMS
 `INDX_SET_MODEL_PARAMS [MAX_POWER=<value>]

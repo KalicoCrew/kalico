@@ -8,10 +8,11 @@ MCU.
 
 Support consists of the `[indx]` host module (see
 [config reference](Config_Reference.md#indx)) and dedicated firmware
-for the toolboard's SAME51 MCU, both included in Kalico. Kalico tracks
-the upstream INDX module maintained at
-[BondtechAB/indx_klipper](https://github.com/BondtechAB/indx_klipper);
-also see the original
+for the toolboard's SAME51 MCU, both included in Kalico. Kalico is
+the reference implementation; the
+[BondtechAB/indx_klipper](https://github.com/BondtechAB/indx_klipper)
+module tracks Kalico to provide compatibility with mainline Klipper.
+Also see the original
 [commissioning guide](https://gist.github.com/dalegaard/b5106af63fcdde305e8c47421a8cc9b9).
 
 ## Flashing the firmware
