@@ -81,6 +81,13 @@ CalibrationResult = collections.namedtuple(
 )
 
 
+def _trapz(np, y, dx):
+    # np.trapz was removed in numpy 2.0 in favor of np.trapezoid
+    if hasattr(np, "trapezoid"):
+        return np.trapezoid(y, dx=dx)
+    return np.trapz(y, dx=dx)
+
+
 def step_response(np, t, omega, damping_ratio):
     t = np.maximum(t, 0.0)
     omega = np.swapaxes(np.array(omega, ndmin=2), 0, 1)
@@ -165,7 +172,9 @@ def estimate_smoother_old(np, smoother, test_damping_ratio, test_freqs):
     E = w * np.exp(np.outer(damping, (t - t_sm)))
     C = np.cos(np.outer(omega_d, (t - t_sm)))
     S = np.sin(np.outer(omega_d, (t - t_sm)))
-    return np.sqrt(np.trapz(E * C, dx=dt) ** 2 + np.trapz(E * S, dx=dt) ** 2)
+    return np.sqrt(
+        _trapz(np, E * C, dx=dt) ** 2 + _trapz(np, E * S, dx=dt) ** 2
+    )
 
 
 def estimate_smoother(np, smoother, test_damping_ratio, test_freqs):
@@ -405,18 +414,18 @@ class ShaperCalibrate:
         w = np.zeros(shape=t.shape)
         for c in C[::-1]:
             w = w * (-t) + c
-        w *= 1.0 / np.trapz(w, dx=dt)
-        t -= np.trapz(t * w, dx=dt)
+        w *= 1.0 / _trapz(np, w, dx=dt)
+        t -= _trapz(np, t * w, dx=dt)
         tw = t * w
         t2w = t * tw
         pos = t >= 0
         neg = t < 0
         integrals = (
-            np.trapz(t2w, dx=dt),  # full-range int(t^2 w), for offset_180
-            np.trapz(tw[pos], dx=dt),  # int_{t>=0}(t w)
-            np.trapz(t2w[pos], dx=dt),  # int_{t>=0}(t^2 w)
-            np.trapz(tw[neg], dx=dt),  # int_{t<0}(t w)
-            np.trapz(t2w[neg], dx=dt),  # int_{t<0}(t^2 w)
+            _trapz(np, t2w, dx=dt),  # full-range int(t^2 w), for offset_180
+            _trapz(np, tw[pos], dx=dt),  # int_{t>=0}(t w)
+            _trapz(np, t2w[pos], dx=dt),  # int_{t>=0}(t^2 w)
+            _trapz(np, tw[neg], dx=dt),  # int_{t<0}(t w)
+            _trapz(np, t2w[neg], dx=dt),  # int_{t<0}(t^2 w)
         )
         self._smoother_integrals_cache[cache_key] = integrals
         return integrals
