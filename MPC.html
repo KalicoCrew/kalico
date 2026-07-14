@@ -2099,7 +2099,8 @@ filament_heat_capacity: 1.8
 <em>Default Value: Nothing</em><br />
   The fan that is cooling extruded filament and the hotend. Default is no fan so 
   there will be no fan taken into account for controlling the heater.
-  Specifying "fan" will automatically use the part cooling fan.</li>
+  Specifying "fan" will automatically use the part cooling fan. Any other fan
+  section can also be used, e.g. <code>cooling_fan: fan_generic &lt;fan_name&gt;</code>.</li>
 </ul>
 <ul>
 <li><code>filament_diameter: 1.75</code><br />
