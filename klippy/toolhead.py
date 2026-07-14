@@ -534,6 +534,10 @@ class ToolHead:
             or self.print_time >= self.mcu.estimated_print_time(eventtime)
         ):
             if not self.can_pause:
+                # In batch mode the background flush intentionally lags;
+                # generate all pending steps so that stepper positions
+                # are deterministic after a wait_moves() (eg, M400)
+                self.motion_queuing.flush_all_steps()
                 break
             eventtime = self.reactor.pause(eventtime + 0.100)
 
