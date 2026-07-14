@@ -6184,6 +6184,64 @@ sensor_type:
 
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
+### ⚠️ [clog_detect]
+
+Clog Detection.
+
+Monitors the extruder stepper motor for stall events.
+When a stall is detected, this then reads the load cell force, and determines
+whether this indicates a clog.
+
+If both signals meet the threshold criteria (TMC StallGuard, force),
+this triggers a clog detection event, and executes the provided gcode.
+
+In mutli-tool setups, where there is one load cell and extruder per tool,
+it is possible to define these independently, so that clog detection is applied
+to all tools. In this scenario, only the active extruder is ever monitored.
+
+See [Clog Detection](TMC_Drivers.md#clog-detection) in TMC_Drivers.md for
+full setup and tuning guidance.
+
+See the [clog_detect GCode commands](G-Codes.md#clog_detect) for runtime
+control via `CLOG_DETECTION`.
+
+For single extruder setups, this can be simplified:
+
+```
+[clog_detect]
+#force: 4000
+#   The downward force magnitude in grams that must be present when a stall
+#   is detected for clog detection to trigger.
+#   The default is 4000g.
+#clog_detected_gcode:
+#   An optional GCode command or macro to run when a clog is detected.
+#   The detected state is not cleared automatically.
+#   Use CLOG_DETECTION RESET=1 to re-arm the detection.
+#   The default is no action.
+```
+
+For a multi-extruder, multi-tool configurations:
+
+```
+[clog_detect T1]
+#load_cell: load_cell_probe T1
+#   The name of the [load_cell] or [load_cell_probe] section to read force
+#   data from.
+#   The default is "load_cell_probe".
+#extruder: extruder1
+#   The name of the extruder this detector is bound to.
+#   The default is "extruder".
+#force: 4000
+#   The downward force magnitude in grams that must be present when a stall
+#   is detected for clog detection to trigger.
+#   The default is 4000g.
+#clog_detected_gcode:
+#   An optional GCode command or macro to run when a clog is detected.
+#   The detected state is not cleared automatically.
+#   Use CLOG_DETECTION NAME=T1 RESET=1 to re-arm the detection.
+#   The default is no action.
+```
+
 ## Board specific hardware support
 
 ### [sx1509]
