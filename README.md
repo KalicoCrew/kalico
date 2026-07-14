@@ -159,6 +159,13 @@ and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 ## Switch to Kalico
 
 > [!NOTE]
+> The steps below assume an existing Klipper installation (a `klipper`
+> systemd service and a `~/klippy-env` python environment). On a fresh
+> machine, install via [KIAUH](https://github.com/dw-0/kiauh) or run one
+> of the OS-specific setup scripts in [`scripts/`](scripts/) after
+> cloning; see the
+> [installation documentation](https://docs.kalico.gg/Installation.html).
+>
 > Any add-on modules you are using will need to be reinstalled after switching to Kalico. This includes things like Beacon support, led-effect, etc.
 >
 > Any data in ~/printer_data such as printer configs and macros will be unaffected.
