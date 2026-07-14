@@ -87,6 +87,8 @@ The Smooth Input Shaper feature employs polynomial smooth functions designed to 
 - **Configuration:** Configuration is similar to regular input shapers, but with some differences in parameters.
 - **smoother*freq*? Parameter:** This parameter doesn't correspond exactly to the current mainline Klipper input shaper settings. It represents the minimum frequency that the smoother cancels or, more precisely, the smallest frequency of the pole it cancels. This distinction is particularly relevant for smooth_ei and smooth_2hump_ei shapers.
 
+- **`shaper_freq_<axis>` alias and `damping_ratio_<axis>`:** Smoother types also accept `shaper_freq_<axis>` (config) / `SHAPER_FREQ_<axis>` (gcode) as an alias for `smoother_freq_<axis>`, plus a `damping_ratio_<axis>` / `DAMPING_RATIO_<axis>` value. This means a configuration produced by `SHAPER_CALIBRATE` followed by `SAVE_CONFIG` — which stores its recommendation under the `shaper_freq_<axis>` name for every shaper, including the `smooth_*` types — now loads directly; previously such a config failed validation with an `Option 'shaper_freq_x' is not valid` error on the next restart. If both `smoother_freq_<axis>` and `shaper_freq_<axis>` are set, `smoother_freq_<axis>` takes precedence.
+
 - **Calibration support:** The scripts/calibrate_shapers.py supports the calibration and overview of available smoothers automatically with no additional user input required.
 
 ## Extruder PA Synchronization with Input Shaping

@@ -185,7 +185,13 @@ class AxisInputShaper:
         return self.params.get_axis()
 
     def is_extruder_smoothing(self, exact_mode):
-        return not exact_mode and self.A
+        # Custom shapers have no fitted extruder smoother counterpart,
+        # they are applied to the extruder exactly (as a convolution)
+        return (
+            not exact_mode
+            and self.A
+            and self.get_type() != CustomInputShaperParams.SHAPER_TYPE
+        )
 
     def is_enabled(self):
         return self.n > 0
@@ -288,13 +294,25 @@ class TypedInputSmootherParams:
         self.axis = axis
         self.smoother_type = smoother_type
         self.smoother_freq = 0.0
+        self.damping_ratio = shaper_defs.DEFAULT_DAMPING_RATIO
         if config is not None:
             if smoother_type not in self.smoothers:
                 raise config.error(
                     "Unsupported shaper type: %s" % (smoother_type,)
                 )
+            # Accept shaper_freq_* as an alias: SHAPER_CALIBRATE and other
+            # tools store smoother recommendations under that name
+            shaper_freq = config.getfloat(
+                "shaper_freq_" + axis, self.smoother_freq, minval=0.0
+            )
             self.smoother_freq = config.getfloat(
-                "smoother_freq_" + axis, self.smoother_freq, minval=0.0
+                "smoother_freq_" + axis, shaper_freq, minval=0.0
+            )
+            self.damping_ratio = config.getfloat(
+                "damping_ratio_" + axis,
+                self.damping_ratio,
+                minval=0.0,
+                maxval=1.0,
             )
 
     def get_type(self):
@@ -307,8 +325,14 @@ class TypedInputSmootherParams:
         if smoother_type not in self.smoothers:
             raise gcmd.error("Unsupported shaper type: %s" % (smoother_type,))
         axis = self.axis.upper()
+        shaper_freq = gcmd.get_float(
+            "SHAPER_FREQ_" + axis, self.smoother_freq, minval=0.0
+        )
         self.smoother_freq = gcmd.get_float(
-            "SMOOTHER_FREQ_" + axis, self.smoother_freq, minval=0.0
+            "SMOOTHER_FREQ_" + axis, shaper_freq, minval=0.0
+        )
+        self.damping_ratio = gcmd.get_float(
+            "DAMPING_RATIO_" + axis, self.damping_ratio, minval=0.0, maxval=1.0
         )
         self.smoother_type = smoother_type
 
@@ -326,6 +350,7 @@ class TypedInputSmootherParams:
             [
                 ("shaper_type", self.smoother_type),
                 ("smoother_freq", "%.3f" % (self.smoother_freq,)),
+                ("damping_ratio", "%.6f" % (self.damping_ratio,)),
             ]
         )
 
@@ -435,7 +460,10 @@ class AxisInputSmoother:
         # Make sure to disable any active input shaping
         A, T = shaper_defs.get_none_shaper()
         ffi_lib.extruder_set_shaper_params(sk, axis, len(A), A, T)
-        if exact_mode:
+        smoother_type = self.get_type()
+        if exact_mode or smoother_type == CustomInputSmootherParams.SHAPER_TYPE:
+            # Custom smoothers have no fitted extruder counterpart, apply
+            # the smoother itself exactly
             success = (
                 ffi_lib.extruder_set_smoothing_params(
                     sk, axis, self.n, self.coeffs, self.smooth_time, self.t_offs
@@ -443,11 +471,14 @@ class AxisInputSmoother:
                 == 0
             )
         else:
-            smoother_type = self.get_type()
+            status = self.params.get_status()
+            damping_ratio = float(
+                status.get("damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO)
+            )
             C_e, t_sm = extruder_smoother.get_extruder_smoother(
                 smoother_type,
                 self.smooth_time,
-                shaper_defs.DEFAULT_DAMPING_RATIO,
+                damping_ratio,
                 normalize_coeffs=False,
             )
             success = (
