@@ -1345,10 +1345,11 @@ started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
-`PID_PROFILE GET_VALUES HEATER=<heater_name>`:
+`PID_PROFILE GET_VALUES=<profile_name> HEATER=<heater_name>`:
 Outputs the values of the currently loaded profile of the given heater to the
-console. For non-PID control types (`watermark`, `mpc`) the profile fields are
-listed generically.
+console (the `GET_VALUES` value is required by the command syntax but
+ignored; the active profile is always shown). For non-PID control types
+(`watermark`, `mpc`) the profile fields are listed generically.
 
 ### [pause_resume]
 
