@@ -307,7 +307,7 @@ choice
     config STM32_FLASH_START_2000
         bool "8KiB bootloader" if MACH_STM32F1 || MACH_STM32F070 || MACH_STM32G0 || MACH_STM32G4 || MACH_STM32F0x2
     config STM32_FLASH_START_5000
-        bool "20KiB bootloader" if MACH_STM32F103
+        bool "20KiB bootloader" if MACH_STM32F103 || MACH_AT32F403
     config STM32_FLASH_START_7000
         bool "28KiB bootloader" if MACH_STM32F1 && !MACH_AT32F403
     config STM32_FLASH_START_8000
