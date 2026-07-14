@@ -8,6 +8,15 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261021: The temporary acceleration and velocity limits applied during
+`TEST_RESONANCES` and `SHAPER_CALIBRATE` are now derived from the actual
+test sequence instead of only the configured `accel_per_hz`. Previously an
+`ACCEL_PER_HZ` override above the configured value, or a sweeping test
+(`SWEEPING_PERIOD` > 0), was silently velocity-clamped, attenuating the
+excitation. Such tests now produce larger (correct) vibration amplitudes,
+which can shift the recommended input shaper type and frequency. Consider
+re-running shaper calibration if you rely on either option.
+
 20261021: Support for the undocumented `max_stepper_error` option in
 the `[mcu]` config section has been removed.
 
