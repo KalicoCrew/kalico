@@ -8679,6 +8679,10 @@ in the config file.</p>
 <p>HEATER generally takes the short name (so for <code>heater_generic chamber</code> you would
 only write <code>chamber</code>)</p>
 <h4 id="pid_profile_1">PID_PROFILE<a class="headerlink" href="#pid_profile_1" title="Permanent link">&para;</a></h4>
+<p>Despite the name, profiles are not limited to PID control: a profile
+carries a control algorithm (<code>pid</code>, <code>pid_v</code>, <code>dual_loop_pid</code>,
+<code>watermark</code> or <code>mpc</code>) along with its settings, and loading a profile
+switches the heater to that algorithm.</p>
 <p><code>PID_PROFILE LOAD=&lt;profile_name&gt; HEATER=&lt;heater_name&gt; [DEFAULT=&lt;profile_name&gt;]
 [VERBOSE=&lt;verbosity&gt;] [KEEP_TARGET=0|1] [LOAD_CLEAN=0|1]</code>:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
@@ -8696,7 +8700,9 @@ By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.</p>
 <p><code>PID_PROFILE SAVE=&lt;profile_name&gt; HEATER=&lt;heater_name&gt;</code>:
 Saves the currently loaded profile of the specified heater to the config under
-the given name.</p>
+the given name. Supported for the PID control types and <code>watermark</code>;
+<code>mpc</code> profiles cannot be saved this way (use the
+<a href="MPC.html">MPC calibration flow</a> and SAVE_CONFIG instead).</p>
 <p><code>PID_PROFILE REMOVE=&lt;profile_name&gt; HEATER=&lt;heater_name&gt;</code>:
 Removes the given profile from the profiles List for the current session and
 config if SAVE_CONFIG is issued afterwards.</p>
@@ -8714,8 +8720,11 @@ If LOAD_CLEAN is set to 1, the profile would be loaded as if the printer just
 started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.</p>
-<p><code>PID_PROFILE GET_VALUES HEATER=&lt;heater_name&gt;</code>:
-Outputs the values of the current loaded pid_profile of the given heater to the console.</p>
+<p><code>PID_PROFILE GET_VALUES=&lt;profile_name&gt; HEATER=&lt;heater_name&gt;</code>:
+Outputs the values of the currently loaded profile of the given heater to the
+console (the <code>GET_VALUES</code> value is required by the command syntax but
+ignored; the active profile is always shown). For non-PID control types
+(<code>watermark</code>, <code>mpc</code>) the profile fields are listed generically.</p>
 <h3 id="pause_resume">[pause_resume]<a class="headerlink" href="#pause_resume" title="Permanent link">&para;</a></h3>
 <p>The following commands are available when the
 <a href="Config_Reference.html#pause_resume">pause_resume config section</a> is
