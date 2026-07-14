@@ -376,8 +376,11 @@ test_step_move(struct stepcompress *sc, struct step_move_hp *m
             // in the generated step sequence, but rather the total error.
             // However, we can still use the longest good generated prefix.
             m->count = i;
+            m->last_step = prev_step;
             return ERROR_RET;
         }
+        if (i == 0)
+            m->first_step = cur_step;
         if (trunc_move && m->count > 3 && m->count - i <= (m->count + 9) / 10) {
             int32_t err = cur_step - (sc->queue_pos[i] - lsc);
             if (err < 0) err = -err;
@@ -396,13 +399,12 @@ test_step_move(struct stepcompress *sc, struct step_move_hp *m
                        , sc->oid, m->interval, m->count, m->add, m->add2
                        , m->shift, i+1, s.interval);
             m->count = i;
+            m->last_step = prev_step;
             return ERROR_RET;
         }
-        m->last_step = cur_step;
-        if (!m->first_step)
-            m->first_step = cur_step;
         prev_step = cur_step;
     }
+    m->last_step = prev_step;
     if (trunc_move && trunc_pos) {
         m->count = trunc_pos;
         m->last_step = trunc_last_step;
