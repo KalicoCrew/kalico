@@ -1094,14 +1094,57 @@ class MCU:
         return "\n".join(log_info)
 
     def recon_mcu(self):
-        res = self._mcu_identify()
-        if not res:
+        try:
+            if not self._mcu_identify():
+                return False
+            if self._recon_handle_shutdown():
+                return False
+            self._is_shutdown = False
+            self.reset_to_initial_state()
+            self.non_critical_disconnected = False
+            self._connect()
+        except Exception:
+            logging.exception(
+                "Reconnect attempt on MCU '%s' failed", self._name
+            )
+            self._abort_recon_attempt()
             return False
-        self.reset_to_initial_state()
-        self.non_critical_disconnected = False
-        self._connect()
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
+
+    def _recon_handle_shutdown(self):
+        # A firmware shutdown survives the loss of the host connection.
+        # Ask the mcu to reset so a later reconnect attempt starts from
+        # a clean state.  Returns True if the mcu was shutdown.
+        get_config_cmd = self.lookup_query_command(
+            "get_config",
+            "config is_config=%c crc=%u is_shutdown=%c move_count=%hu",
+        )
+        if not get_config_cmd.send()["is_shutdown"]:
+            return False
+        logging.info(
+            "MCU '%s' is in a shutdown state - attempting reset", self._name
+        )
+        if self._reset_cmd is not None:
+            self._reset_cmd.send()
+        elif self._config_reset_cmd is not None:
+            self._config_reset_cmd.send()
+        else:
+            # No reset mechanism - clear the shutdown state and let the
+            # next reconnect attempt reuse the retained config
+            clear_shutdown_cmd = self.try_lookup_command("clear_shutdown")
+            if clear_shutdown_cmd is not None:
+                clear_shutdown_cmd.send()
+        self._reactor.pause(self._reactor.monotonic() + 0.015)
+        self._abort_recon_attempt()
+        return True
+
+    def _abort_recon_attempt(self):
+        # Return to the disconnected state; the reconnect timer retries
+        self._clocksync.disconnect()
+        self._disconnect()
+        self.non_critical_disconnected = True
+        self._get_status_info["non_critical_disconnected"] = True
 
     def reset_to_initial_state(self):
         if self._cached_init_state:
@@ -1389,8 +1432,10 @@ class MCU:
         self._steppersync = None
 
     def _shutdown(self, force=False):
-        if self._emergency_stop_cmd is None or (
-            self._is_shutdown and not force
+        if (
+            self._emergency_stop_cmd is None
+            or self.non_critical_disconnected
+            or (self._is_shutdown and not force)
         ):
             return
         self._emergency_stop_cmd.send()
