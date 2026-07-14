@@ -970,14 +970,20 @@ operation of the load cell. This command can be run on both calibrated and
 uncalibrated load cells.
 
 ### LOAD_CELL_CALIBRATE
-`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
-utility. Calibration is a 3 step process:
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>] [TARE=TRUE] [SAVE=TRUE]`: 
+Start the guided calibration utility. Calibration is a 3 step process:
 1. First you remove all load from the load cell and run the `TARE` command
 1. Next you apply a known load to the load cell and run the
 `CALIBRATE GRAMS=nnn` command
 1. Finally use the `ACCEPT` command to save the results
 
 You can cancel the calibration process at any time with `ABORT`.
+
+If the `TARE` option is included `reference_tare_counts` will be set at the
+current force. The `SAVE` option also prompts you to save the value and restart
+the printer. The default is to not save the value. Use this option to home the
+load cell in a print start routine at a time when the force on the load cell is
+'zero'. E.g. after [safe_z_home] or similar safety move.
 
 ### LOAD_CELL_TARE
 `LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
