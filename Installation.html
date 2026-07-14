@@ -909,6 +909,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#installing-with-the-setup-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installing with the setup scripts
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#building-and-flashing-the-micro-controller" class="md-nav__link">
     <span class="md-ellipsis">
       Building and flashing the micro-controller
@@ -2159,6 +2168,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#installing-with-the-setup-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Installing with the setup scripts
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#building-and-flashing-the-micro-controller" class="md-nav__link">
     <span class="md-ellipsis">
       Building and flashing the micro-controller
@@ -2262,6 +2280,20 @@ Kalico functions from working and even mask access to some printer boards.</p>
 <p>KIAUH can be used to install Kalico and its associated programs on a variety
 of Linux-based systems that run a form of Debian. More information can be found
 at <a href="https://github.com/dw-0/kiauh">https://github.com/dw-0/kiauh</a></p>
+<h2 id="installing-with-the-setup-scripts">Installing with the setup scripts<a class="headerlink" href="#installing-with-the-setup-scripts" title="Permanent link">&para;</a></h2>
+<p>As an alternative to KIAUH, the repository ships OS-specific setup
+scripts in <a href="https://github.com/KalicoCrew/kalico//blob/main/scripts/">scripts/</a> (for example <code>install-debian.sh</code>,
+<code>install-arch.sh</code> or <code>install-ubuntu-22.04.sh</code>). After cloning the
+repository, the matching script installs the required system packages,
+creates the <code>~/klippy-env</code> python environment and registers the
+<code>klipper</code> service:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/KalicoCrew/kalico.git<span class="w"> </span>~/klipper
+~/klipper/scripts/install-debian.sh
+</code></pre></div>
+
+<p>Note that these scripts install Kalico itself; Moonraker and a web
+interface such as Mainsail or Fluidd still need to be installed
+separately.</p>
 <h2 id="building-and-flashing-the-micro-controller">Building and flashing the micro-controller<a class="headerlink" href="#building-and-flashing-the-micro-controller" title="Permanent link">&para;</a></h2>
 <p>To compile the micro-controller code, start by running these commands
 on your host device:</p>
