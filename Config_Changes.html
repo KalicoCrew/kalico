@@ -2694,6 +2694,10 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20260201: The manual_stepper <code>STOP_ON_ENDSTOP</code> feature may now take
+less time to complete. Previously, the command would wait the entire
+time the move could possibly take even if the endstop triggered
+earlier. Now, the command finishes shortly after the endstop trigger.</p>
 <p>20260121: Kalico now uses automatic monthly release tags in the format
 <code>vYYYY.MM.NN</code> (e.g., <code>v2026.01.00</code>). Users can configure Moonraker to track
 stable monthly releases instead of the latest commits. See
