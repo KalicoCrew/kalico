@@ -18,8 +18,6 @@ markupsafe==2.1.5
     # via
     #   jinja2
     #   kalico
-msgpack==1.1.0 ; sys_platform != 'win32'
-    # via python-can
 numpy==2.0.2 ; python_full_version < '3.10'
     # via kalico
 numpy==2.2.2 ; python_full_version >= '3.10' and python_full_version < '3.14'
@@ -32,9 +30,7 @@ pycparser==2.22
     # via cffi
 pyserial==3.4
     # via kalico
-python-can==4.5.0
-    # via kalico
-setuptools==75.8.2 ; python_full_version >= '3.12'
+python-can==4.6.1
     # via kalico
 typing-extensions==4.13.2
     # via python-can

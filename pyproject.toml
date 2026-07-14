@@ -15,8 +15,7 @@ dependencies = [
   "numpy~=2.2 ; python_version>='3.10' and python_version<'3.14'",
   "numpy~=2.3.0 ; python_version>='3.14'",
   "pyserial==3.4",
-  "python-can~=4.5",
-  "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
+  "python-can~=4.6",
 ]
 
 [dependency-groups]
