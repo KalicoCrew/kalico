@@ -1299,6 +1299,11 @@ HEATER generally takes the short name (so for `heater_generic chamber` you would
 only write `chamber`)
 
 #### PID_PROFILE
+Despite the name, profiles are not limited to PID control: a profile
+carries a control algorithm (`pid`, `pid_v`, `dual_loop_pid`,
+`watermark` or `mpc`) along with its settings, and loading a profile
+switches the heater to that algorithm.
+
 `PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
 [VERBOSE=<verbosity>] [KEEP_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
@@ -1317,7 +1322,9 @@ if you encounter weird behaviour while switching profiles.
 
 `PID_PROFILE SAVE=<profile_name> HEATER=<heater_name>`:
 Saves the currently loaded profile of the specified heater to the config under
-the given name.
+the given name. Supported for the PID control types and `watermark`;
+`mpc` profiles cannot be saved this way (use the
+[MPC calibration flow](MPC.md) and SAVE_CONFIG instead).
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
 Removes the given profile from the profiles List for the current session and
@@ -1339,7 +1346,9 @@ By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
 `PID_PROFILE GET_VALUES HEATER=<heater_name>`:
-Outputs the values of the current loaded pid_profile of the given heater to the console.
+Outputs the values of the currently loaded profile of the given heater to the
+console. For non-PID control types (`watermark`, `mpc`) the profile fields are
+listed generically.
 
 ### [pause_resume]
 

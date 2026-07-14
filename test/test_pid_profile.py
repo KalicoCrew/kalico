@@ -264,3 +264,84 @@ def test_load_high_verbose_dual_loop_reports_inner():
     assert "inner_pid_Kp=60.499" in output
     assert "inner_pid_Ki=2.425" in output
     assert "inner_pid_Kd=377.360" in output
+
+
+######################################################################
+# Non-PID profiles (watermark/mpc) must not crash (#848)
+######################################################################
+
+
+def _watermark_profile(name="default"):
+    return {"control": "watermark", "name": name, "max_delta": 2.0}
+
+
+def _mpc_profile(name="default"):
+    return {
+        "control": "mpc",
+        "name": name,
+        "block_heat_capacity": 22.3,
+        "ambient_transfer": 0.15,
+        "heater_power": 60.0,
+        "smoothing": 0.83,
+        "target_reach_time": 2.0,
+        "filament_temp_src": ("ambient",),
+        "ambient_temp_sensor": None,
+        "cooling_fan": None,
+        "fan_ambient_transfer": [],
+    }
+
+
+def _make_control_setup(profile):
+    heater = _FakeDualLoopHeater()
+    heater.control = _FakeControl(profile)
+    pmgr = _make_pmgr(heater)
+    pmgr.profiles = {profile["name"]: profile}
+    return heater, pmgr
+
+
+def test_get_values_watermark_does_not_crash():
+    heater, pmgr = _make_control_setup(_watermark_profile())
+    gcmd = _gcmd(heater, {"GET_VALUES": "default"})
+    pmgr.get_values("default", gcmd, True)
+    output = "\n".join(heater.gcode.messages)
+    assert "watermark" in output
+    assert "max_delta" in output
+
+
+def test_get_values_mpc_does_not_crash():
+    heater, pmgr = _make_control_setup(_mpc_profile())
+    gcmd = _gcmd(heater, {"GET_VALUES": "default"})
+    pmgr.get_values("default", gcmd, True)
+    output = "\n".join(heater.gcode.messages)
+    assert "mpc" in output
+    assert "block_heat_capacity" in output
+
+
+def test_save_profile_watermark_persists():
+    heater, pmgr = _make_control_setup(_watermark_profile())
+    pmgr.save_profile(profile_name="cooler", verbose=False)
+    saved = heater.configfile.data["pid_profile heater_bed cooler"]
+    assert saved["control"] == "watermark"
+    assert saved["max_delta"] == "2.0000"
+    assert pmgr.profiles["cooler"]["max_delta"] == 2.0
+
+
+def test_save_profile_mpc_declines_gracefully():
+    heater, pmgr = _make_control_setup(_mpc_profile())
+    pmgr.save_profile(profile_name="mpc_save", verbose=True)
+    assert heater.configfile.data == {}
+    output = "\n".join(heater.gcode.messages)
+    assert "not supported" in output
+
+
+def test_load_high_verbose_watermark_does_not_crash():
+    heater, pmgr = _make_dual_loop_setup()
+    pmgr.profiles["cooler"] = _watermark_profile("cooler")
+    gcmd = _gcmd(
+        heater,
+        {"LOAD": "cooler", "VERBOSE": "high", "LOAD_CLEAN": "1"},
+    )
+    pmgr.load_profile("cooler", gcmd, True)
+    output = "\n".join(heater.gcode.messages)
+    assert "loaded" in output
+    assert "max_delta" in output
