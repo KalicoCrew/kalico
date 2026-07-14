@@ -3852,6 +3852,20 @@ a shutdown_speed equal to max_power.
 #enable_pin:
 #initial_speed:
 #   See the "fan" section for a description of the above parameters.
+#fan:
+#   Optional name of an existing fan config section (e.g. "fan" for
+#   [fan], "fan_generic my_fan" for [fan_generic my_fan]) to delegate
+#   to instead of driving a PWM pin. In delegate mode this heater_fan
+#   does not own a pin; it imposes a speed floor on the referenced
+#   fan while the heater is active. The referenced fan still responds
+#   normally to M106/M107 or SET_FAN_SPEED above the floor. "fan:" and
+#   "pin:" are mutually exclusive. The default is to use "pin:"
+#   (classic standalone heater_fan). In delegate mode this section's
+#   status reports the heater_fan's own floor state (power/value/speed
+#   /floor all equal the currently applied floor: 0 when the heater is
+#   cold, fan_speed when hot; rpm is taken from the target fan), and
+#   fan-hardware options like "pin:", "max_power:", "kick_start_time:",
+#   etc. are not accepted.
 #heater: extruder
 #   Name of the config section defining the heater that this fan is
 #   associated with. If a comma separated list of heater names is

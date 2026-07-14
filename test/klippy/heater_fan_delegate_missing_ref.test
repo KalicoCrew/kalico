@@ -1,0 +1,4 @@
+# Config error: fan reference does not exist.
+DICTIONARY atmega2560.dict
+CONFIG heater_fan_delegate_missing_ref.cfg
+SHOULD_FAIL

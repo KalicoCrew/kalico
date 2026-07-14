@@ -1,0 +1,4 @@
+# Config error: fan reference does not expose a fan.Fan.
+DICTIONARY atmega2560.dict
+CONFIG heater_fan_delegate_wrong_type.cfg
+SHOULD_FAIL
