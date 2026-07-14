@@ -3,11 +3,14 @@
 # Copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import collections
 import json
 import logging
 import math
 
+from ..printer_info import PrinterInfo
 from . import probe
 from .danger_options import get_danger_options
 
@@ -172,6 +175,8 @@ class BedMesh:
 
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        self.bmc._update_mesh_bounds(self.printer.config_error)
+
         if self.default_mesh_name:
             if self.default_mesh_name in self.pmgr.get_profiles():
                 self.pmgr.load_profile(self.default_mesh_name)
@@ -506,8 +511,24 @@ class BedMeshCalibrate:
     def _generate_points(self, error, probe_method="automatic"):
         x_cnt = self.mesh_config["x_count"]
         y_cnt = self.mesh_config["y_count"]
-        min_x, min_y = self.mesh_min
-        max_x, max_y = self.mesh_max
+
+        mesh_min = self.mesh_min
+        mesh_max = self.mesh_max
+
+        # The mesh_min and mesh_max points might not be calculated yet.
+        if None in [*mesh_min, *mesh_max]:
+            # These are explicitly set to None, None to make code fail that for
+            # some reason tries to use these placeholder values:
+            self.points = []
+            for i in range(y_cnt):
+                for j in range(x_cnt):
+                    self.points.append((None, None))
+            self.zero_reference_mode = ZrefMode.DISABLED
+            return
+
+        min_x, min_y = mesh_min
+        max_x, max_y = mesh_max
+
         x_dist = (max_x - min_x) / (x_cnt - 1)
         y_dist = (max_y - min_y) / (y_cnt - 1)
         # floor distances down to next hundredth
@@ -546,11 +567,12 @@ class BedMeshCalibrate:
                             (self.origin[0] + pos_x, self.origin[1] + pos_y)
                         )
             pos_y += y_dist
+
         self.points = points
         if self.zero_ref_pos is None or probe_method == "manual":
             # Zero Reference Disabled
             self.zero_reference_mode = ZrefMode.DISABLED
-        elif within(self.zero_ref_pos, self.mesh_min, self.mesh_max):
+        elif within(self.zero_ref_pos, mesh_min, mesh_max):
             # Zero Reference position within mesh
             self.zero_reference_mode = ZrefMode.IN_MESH
         else:
@@ -672,10 +694,28 @@ class BedMeshCalibrate:
         else:
             # rectangular
             x_cnt, y_cnt = parse_config_pair(config, "probe_count", 3, minval=3)
-            min_x, min_y = config.getfloatlist("mesh_min", count=2)
-            max_x, max_y = config.getfloatlist("mesh_max", count=2)
-            if max_x <= min_x or max_y <= min_y:
-                raise config.error("bed_mesh: invalid min/max points")
+            min_x, min_y = config.getfloatlist(
+                "mesh_min", count=2, default=(None, None)
+            )
+            max_x, max_y = config.getfloatlist(
+                "mesh_max", count=2, default=(None, None)
+            )
+
+            def check_min_max(axis, min_value, max_value, config):
+                if min_value is None or max_value is None:
+                    return
+
+                if max_value <= min_value:
+                    raise config.error(
+                        f"bed_mesh: invalid min/max points (min={min_value}, max={max_value}) for {axis}"
+                    )
+
+            check_min_max("X", min_x, max_x, config)
+            check_min_max("Y", min_y, max_y, config)
+
+        orig_cfg["aspect_ratio"] = config.getfloat(
+            "aspect_ratio", None, minval=0.1
+        )
         orig_cfg["x_count"] = mesh_cfg["x_count"] = x_cnt
         orig_cfg["y_count"] = mesh_cfg["y_count"] = y_cnt
         orig_cfg["mesh_min"] = self.mesh_min = (min_x, min_y)
@@ -738,6 +778,75 @@ class BedMeshCalibrate:
                         )
             self.faulty_regions.append((c1, c3))
         self._verify_algorithm(config.error)
+
+    def _update_mesh_bounds(self, error):
+        # For correctly calculating the mesh_min and mesh_max, it is necessary to
+        # know how where the toolhead can move to. The calculated values should not
+        # cause invalid moves.
+        #
+        # The toolhead and printer_info (the latter contains physical information about the printer)
+        # object are initialized after all other sections are loaded (including bed_mesh).
+        # Therefore this information is not available on init, but it is necessary.
+        #
+        # The first idea was to initialize the self.bmc (calling this class constructor) on connect,
+        # but then klipper would complain about unused config options. These config options are parsed
+        # in the constructor. Doing this by hand, would involve many changes to the code, which should
+        # be avoided, given that it makes it harder to merge changes from upstream klipper.
+        #
+        # Instead the following is done:
+        # - The mesh bounds are initialized with dummy values or the old ones on init
+        # - On connect, the toolhead is available, and it will then call this function
+        #   here the mesh bounds are updated with the correct values, or an error is raised
+        #   if they conflict with the toolhead kinematics.
+        #
+        # The important part is to update everything that depends on mesh_min/mesh_max, so they know
+        # the new values. The following use the ZMesh data:
+        # - BedMesh.update_status()
+        # - BED_MESH_MAP command
+        # - BED_MESH_CHECK command
+        #
+        # and the values from this class are used in
+        # - _init_mesh_config (reads config values and sets fields + in orig_cfg)
+        # - update_config
+        # - _generate_points (this one is important)
+        #
+        # The z_mesh seems to be initialized from the stored mesh data and after calibration it should be updated.
+        # That should not be a problem, given that after connect, the mesh_min and mesh_max will be set correctly.
+        # The update_config is only called through the BED_MESH_CALIBRATE command, so this is fine too.
+        #
+        # Now the only functions that remain are the _generate_points (which is called on init) and _init_mesh_config
+        #
+        # Both have been adjusted to handle the case where the mesh_min and mesh_max are not set as follows:
+        # - If the mesh_min or mesh_max is not set in the config, they default to (None, None), indicating that they are not set.
+        #   The None value is used instead of for example 0.0, to make code fail that might use the mesh_min and mesh_max
+        #   values before they are updated on connect.
+        # - _generate_points is updated to handle the case where the mesh_min and mesh_max are None
+
+        min_x, min_y = self.mesh_min
+        max_x, max_y = self.mesh_max
+
+        # If the mesh bounds are all explicitly set in the config,
+        # then there is nothing to calculate
+        if None not in [min_x, min_y, max_x, max_y]:
+            return
+
+        printer_info: PrinterInfo = self.printer.lookup_object("printer_info")
+
+        self.mesh_min, self.mesh_max = printer_info.get_mesh_bounds(
+            (min_x, min_y) if None not in [min_x, min_y] else None,
+            (max_x, max_y) if None not in [max_x, max_y] else None,
+            self.probe_helper.use_offsets,
+            error,
+            # NOTE: probe xy offset might still be null here in probe_helper, because it is only set while probing
+            # This is left empty, so printer_info automatically loads the probe offsets from the probe object
+            target_aspect_ratio=self.orig_config["aspect_ratio"],
+        )
+
+        self.orig_config["mesh_min"] = self.mesh_min
+        self.orig_config["mesh_max"] = self.mesh_max
+
+        # Now that the mesh bounds are updated, the points have to be generated again:
+        self._internal_update_config(error)
 
     def _verify_algorithm(self, error):
         params = self.mesh_config
@@ -920,6 +1029,12 @@ class BedMeshCalibrate:
         self._profile_name = None
         return True
 
+    def _internal_update_config(self, error, probe_method="automatic"):
+        self._verify_algorithm(error)
+        self._generate_points(error, probe_method)
+        pts = self._get_adjusted_points()
+        self.probe_helper.update_probe_points(pts, 3)
+
     def update_config(self, gcmd):
         # reset default configuration
         self.radius = self.orig_config["radius"]
@@ -967,10 +1082,7 @@ class BedMeshCalibrate:
         probe_method = gcmd.get("METHOD", "automatic")
 
         if need_cfg_update:
-            self._verify_algorithm(gcmd.error)
-            self._generate_points(gcmd.error, probe_method)
-            pts = self._get_adjusted_points()
-            self.probe_helper.update_probe_points(pts, 3)
+            self._internal_update_config(gcmd.error, probe_method)
             msg = "\n".join(
                 ["%s: %s" % (k, v) for k, v in self.mesh_config.items()]
             )

@@ -205,6 +205,19 @@ kinematics:
 #   The type of printer in use. This option may be one of: cartesian,
 #   corexy, corexz, hybrid_corexy, hybrid_corexz, rotary_delta, delta,
 #   deltesian, polar, winch, or none. This parameter must be specified.
+#bed_size:
+#   The physical size of the bed (width, height) in mm. This is used
+#   for automatic mesh bounds and home position calculation. This
+#   parameter is currently only supported for rectangular kinematics
+#   (cartesian, corexy, corexz, limited_*, and deltesian).
+#bed_corner_position:
+#   The XY coordinate (as a nozzle coordinate) of the front-left corner
+#   of the bed. This is used for automatic mesh bounds and home
+#   position calculation. This parameter is currently only supported
+#   for rectangular kinematics (cartesian, corexy, corexz, limited_*,
+#   and deltesian). Note that this value can be outside of the axis
+#   limits defined for the steppers; Kalico will automatically find
+#   the nearest reachable point within the bed's boundaries.
 max_velocity:
 #   Maximum velocity (in mm/s) of the toolhead (relative to the
 #   print). This value may be changed at runtime using the
@@ -1702,8 +1715,11 @@ Where x is the 0, 0 point on the bed
 #   A newline separated list of four X, Y points that should be probed
 #   during a QUAD_GANTRY_LEVEL command. Order of the locations is
 #   important, and should correspond to Z, Z1, Z2, and Z3 location in
-#   order. This parameter must be provided. For maximum accuracy,
-#   ensure your probe offsets are configured.
+#   order. If `bed_size` and `bed_corner_position` are defined in the
+#   `[printer]` section, this parameter is optional and defaults to
+#   the largest reachable area of the bed, while maintaining the
+#   aspect ratio of the gantry corners. For maximum accuracy, ensure
+#   your probe offsets are configured.
 #speed: 50
 #   The speed (in mm/s) of non-probing moves during the calibration.
 #   The default is 50.
@@ -1822,7 +1838,10 @@ has to move to the center of the bed before Z can be homed.
 [safe_z_home]
 home_xy_position:
 #   A X, Y coordinate (e.g. 100, 100) where the Z homing should be
-#   performed. This parameter must be provided.
+#   performed. If `bed_size` and `bed_corner_position` are defined
+#   in the `[printer]` section, this parameter is optional and
+#   defaults to the center of the bed (adjusted by the probe's
+#   offsets if a probe is present).
 #speed: 50.0
 #   Speed at which the toolhead is moved to the safe Z home
 #   coordinate. The default is 50 mm/s
