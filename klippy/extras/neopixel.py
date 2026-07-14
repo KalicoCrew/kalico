@@ -49,6 +49,9 @@ class PrinterNeoPixel:
         self.old_color_data = bytearray([d ^ 1 for d in self.color_data])
         # Register callbacks
         printer.register_event_handler("klippy:connect", self.send_data)
+        printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(), self.send_data
+        )
 
     def build_config(self):
         bmt = self.mcu.seconds_to_clock(BIT_MAX_TIME)
@@ -75,6 +78,8 @@ class PrinterNeoPixel:
             color_data[cdidx] = int(led_state[lidx][cidx] * 255.0 + 0.5)
 
     def send_data(self, print_time=None):
+        if self.mcu.non_critical_disconnected:
+            return
         old_data, new_data = self.old_color_data, self.color_data
         if new_data == old_data:
             return
