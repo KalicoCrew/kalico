@@ -368,8 +368,9 @@ class ToolHead:
         )
         sg_flush_time = max(sg_flush_want, flush_time)
         trapq_free_time = sg_flush_time - self.kin_flush_delay
-        self.motion_queuing.flush_motion_queues(flush_time, sg_flush_time,
-                                                trapq_free_time)
+        self.motion_queuing.flush_motion_queues(
+            flush_time, sg_flush_time, trapq_free_time
+        )
         self.min_restart_time = max(self.min_restart_time, sg_flush_time)
         self.last_flush_time = flush_time
 
