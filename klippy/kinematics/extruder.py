@@ -30,7 +30,7 @@ class ExtruderStepper:
         self.stepper = stepper.PrinterStepper(config)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.sk_extruder = ffi_main.gc(
-            ffi_lib.extruder_stepper_alloc(), ffi_lib.free
+            ffi_lib.extruder_stepper_alloc(), ffi_lib.extruder_stepper_free
         )
         self.stepper.set_stepper_kinematics(self.sk_extruder)
         self.motion_queue = None
