@@ -579,9 +579,8 @@ class TradRack:
                     "condition": (
                         lambda t=tool: self.default_lanes[t] is not None
                     ),
-                    "action": lambda g=gcmd,
-                    t=tool_override: self.cmd_TR_LOAD_TOOLHEAD(
-                        g, tool_override=t
+                    "action": lambda g=gcmd, t=tool_override: (
+                        self.cmd_TR_LOAD_TOOLHEAD(g, tool_override=t)
                     ),
                     "fail_msg": (
                         "Cannot resume. Please use TR_ASSIGN_LANE to assign a"
@@ -623,8 +622,9 @@ class TradRack:
             # (and wait for user to resume)
             resume_kwargs = {
                 "condition": self._is_selector_homed,
-                "action": lambda g=gcmd,
-                t=tool_override: self.cmd_TR_LOAD_TOOLHEAD(g, tool_override=t),
+                "action": lambda g=gcmd, t=tool_override: (
+                    self.cmd_TR_LOAD_TOOLHEAD(g, tool_override=t)
+                ),
                 "fail_msg": (
                     "Cannot resume. Please use either TR_LOCATE_SELECTOR or"
                     " TR_HOME to home the selector, then use TR_RESUME."
@@ -863,8 +863,10 @@ class TradRack:
                 # (and wait for user to resume)
                 resume_kwargs = {
                     "condition": (
-                        lambda: self.active_lane is not None
-                        or not self._query_selector_sensor()
+                        lambda: (
+                            self.active_lane is not None
+                            or not self._query_selector_sensor()
+                        )
                     ),
                     "action": self._resume_act_locate_selector,
                     "fail_msg": (
