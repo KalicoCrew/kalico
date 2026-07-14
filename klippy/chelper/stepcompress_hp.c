@@ -205,7 +205,9 @@ step_move_encode(uint16_t count, struct rhs_3* f)
                 next_shift > 8 ? 16-next_shift : 8-next_shift;
             if (fabs(next_add) > MAX_ADD || fabs(next_end_add) > MAX_ADD ||
                 fabs(next_add2) > MAX_ADD2 || next_max_end_int > MAX_INTRVL ||
-                next_interval * (1 << extra_shift) > MAX_INT32 ||
+                // max_end_int bounds the running interval over the whole
+                // move, so the decoded interval never overflows int32
+                next_max_end_int * (1 << extra_shift) > MAX_INT32 ||
                 fabs(next_add * (1 << extra_shift)) > MAX_INT32 ||
                 fabs(next_add2 * (1 << extra_shift)) > MAX_INT32)
                 break;
@@ -376,8 +378,11 @@ test_step_move(struct stepcompress *sc, struct step_move_hp *m
             // in the generated step sequence, but rather the total error.
             // However, we can still use the longest good generated prefix.
             m->count = i;
+            m->last_step = prev_step;
             return ERROR_RET;
         }
+        if (i == 0)
+            m->first_step = cur_step;
         if (trunc_move && m->count > 3 && m->count - i <= (m->count + 9) / 10) {
             int32_t err = cur_step - (sc->queue_pos[i] - lsc);
             if (err < 0) err = -err;
@@ -389,20 +394,22 @@ test_step_move(struct stepcompress *sc, struct step_move_hp *m
             }
         }
         inc_interval(&s);
-        if (s.interval >= 0x80000000) {
+        // Only reject an interval overflow if a subsequent step would
+        // actually use the overflowed interval; the current step already
+        // passed the point check and can be kept.
+        if (i + 1 < m->count && s.interval >= 0x80000000) {
             if (report_errors)
                 errorf("stepcompress o=%d i=%d c=%d a=%d, a2=%d, s=%d:"
                        " Point %d: interval overflow %d"
                        , sc->oid, m->interval, m->count, m->add, m->add2
-                       , m->shift, i+1, s.interval);
-            m->count = i;
+                       , m->shift, i+2, s.interval);
+            m->count = i + 1;
+            m->last_step = cur_step;
             return ERROR_RET;
         }
-        m->last_step = cur_step;
-        if (!m->first_step)
-            m->first_step = cur_step;
         prev_step = cur_step;
     }
+    m->last_step = prev_step;
     if (trunc_move && trunc_pos) {
         m->count = trunc_pos;
         m->last_step = trunc_last_step;
