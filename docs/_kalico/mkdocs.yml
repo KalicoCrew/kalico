@@ -105,6 +105,7 @@ nav:
     - PID.md
     - MPC.md
     - Dockable_Probe.md
+    - INDX.md
   - G-Code Reference:
     - G-Codes.md
     - Command_Templates.md

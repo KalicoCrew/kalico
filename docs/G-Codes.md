@@ -1033,6 +1033,117 @@ The idle_timeout module is automatically loaded.
 `SET_IDLE_TIMEOUT [TIMEOUT=<timeout>]`: Allows the user to set the
 idle timeout (in seconds).
 
+### [indx]
+
+The following commands are available when an
+[indx config section](Config_Reference.md#indx) is enabled (also see
+the [INDX document](INDX.md)).
+
+#### INDX_CALIBRATE
+`INDX_CALIBRATE [MIN_TEMP=<temp>] [MAX_TEMP=<temp>]
+[HOLD_TIME=<seconds>] [COOLDOWN_TIME=<seconds>]`: Tune the inductive
+coil drive timings and fit the heater thermal model. The nozzle must
+be cold (below MIN_TEMP, default 60) and the heater off; the nozzle
+is then heated to MAX_TEMP (default 200), held for HOLD_TIME (default
+10 seconds) and allowed to cool for COOLDOWN_TIME (default 15
+seconds). The heater will not heat until this calibration has been
+performed. Run SAVE_CONFIG afterwards to persist the results.
+
+#### INDX_FAN_CALIBRATE
+`INDX_FAN_CALIBRATE [BREAKS=<count>] [HOLD_TIME=<seconds>]
+[MIN_SPEED=<value>] [TEMP=<temp>] [SETTLE_TIME=<seconds>]`: Measure
+the cooling effect of the part cooling fan at BREAKS (default 6) fan
+speeds between MIN_SPEED (default 0.20) and full speed while holding
+the nozzle at TEMP (default 200). Run SAVE_CONFIG afterwards to
+persist the results.
+
+#### INDX_LOAD_FILAMENT
+`INDX_LOAD_FILAMENT [SPEED=<mm/s>] [MAX_LENGTH=<mm>]
+[PRIME_TIME=<seconds>] [PRIME_LENGTH=<mm>] [THRESHOLD=<value>]
+[SEGMENT_TIME=<seconds>] [APPLY=[0|1]]`: Load filament while
+measuring its thermal properties (the density and heat capacity used
+by the thermal model). Requires a calibrated thermal model and the
+active extruder to be at printing temperature. If APPLY is 1 (the
+default) the measured values are applied and staged for SAVE_CONFIG.
+
+#### INDX_CLEAR_FILAMENT
+`INDX_CLEAR_FILAMENT`: Reset the filament thermal parameters to zero
+(no filament compensation). Run SAVE_CONFIG to persist.
+
+#### INDX_EXTRUDER_MOVE
+`INDX_EXTRUDER_MOVE DISTANCE=<mm> SPEED=<mm/s> CURRENT=<amps>`:
+Perform an extruder move that bypasses the cold extrude check, with
+the TMC run current temporarily lowered to CURRENT (think of it as
+M302 plus a move in a single command). Mainly intended for loading
+and unloading INDX tools without needing to set a low minimum
+extrusion temperature.
+
+#### INDX_SET_MODEL_PARAMS
+`INDX_SET_MODEL_PARAMS [MAX_POWER=<value>]
+[MAX_POWER_TEMP_COEFF=<value>] [THERMAL_CAPACITY=<value>]
+[TO_AMBIENT_R=<value>] [FILAMENT_DIAMETER=<mm>]
+[FILAMENT_DENSITY=<g/cm3>] [FILAMENT_HEAT_CAPACITY=<J/g/K>]
+[PART_COOLING_FAN_A=<value>] [PART_COOLING_FAN_K=<value>]
+[AMBIENT_BLEND_BOARD=<value>] [AMBIENT_BLEND_BRACKET=<value>]
+[AMBIENT_BLEND_SENSOR=<value>] [ERROR_APPLICATION=<value>]`: Set
+thermal model parameters at runtime. Updated values are staged for
+SAVE_CONFIG.
+
+#### INDX_SET_PID
+`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]`:
+Update the PID parameters of the controller running on the toolboard.
+
+#### INDX_MEASURE_POWER
+`INDX_MEASURE_POWER [DURATION=<seconds>]`: Measure the heater power
+draw over DURATION (default 5) seconds and report the total energy
+and average power.
+
+#### INDX_DOCK_MEASURE
+`INDX_DOCK_MEASURE [X_FIRST=[0|1]]`: Measure the dock X/Y position of
+an INDX toolchanger by energizing the XY motors and homing. Set
+X_FIRST=1 to home X before Y. The result is reported and exported in
+the module status.
+
+#### INDX_FORCE_BRACKET_TEMP
+`INDX_FORCE_BRACKET_TEMP [TEMP=<temp>]`: Override the sensor bracket
+temperature reported to the toolboard. Run without TEMP to remove the
+override.
+
+#### INDX_SET_IR_SENSOR_PARAMS
+`INDX_SET_IR_SENSOR_PARAMS EXPONENT=<value> OBJ_GAIN=<value>
+BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
+stored in the sensor EEPROM. These should not normally be changed.
+
+#### INDX_SET_CYCLE_LIMIT
+`INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty
+(mainly for development and testing).
+
+#### INDX_LED_FORCE_COLOR
+`INDX_LED_FORCE_COLOR [RED=<0-255>] [GREEN=<0-255>] [BLUE=<0-255>]
+[CLEAR=1]`: Force the toolboard status LED to the given color,
+overriding the automatic status indication. Use CLEAR=1 to return the
+LED to automatic control.
+
+#### INDX_LED_SET_CURRENT
+`INDX_LED_SET_CURRENT RED=<0-255> GREEN=<0-255> BLUE=<0-255>`: Set
+the per-channel drive current of the toolboard status LED.
+
+#### INDX_LOG
+`INDX_LOG`: Toggle logging of heater temperature, model and power
+data to "/tmp/indx_log.csv" (for debugging).
+
+#### INDX_DUMP_MODEL_UPDATE
+`INDX_DUMP_MODEL_UPDATE`: Report the internal state of the last
+thermal model update (for debugging).
+
+#### INDX_DEBUG_IR_SENSOR_EEPROM
+`INDX_DEBUG_IR_SENSOR_EEPROM`: Dump the IR sensor EEPROM contents
+(for debugging).
+
+#### INDX_DEBUG_STREAM_RAW_IR_SENSOR
+`INDX_DEBUG_STREAM_RAW_IR_SENSOR`: Toggle streaming of raw IR sensor
+readings to a timestamped csv file under /tmp (for debugging).
+
 ### [input_shaper]
 
 The following command is enabled if an

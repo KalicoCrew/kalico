@@ -341,6 +341,14 @@ is always available):
   been in the "Printing" state (as tracked by the idle_timeout
   module).
 
+## indx
+
+The following information is available in the
+[indx](Config_Reference.md#indx) object:
+- `last_dock_measurement`: The result of the last INDX_DOCK_MEASURE
+  command (None if no measurement has been taken). It is a dictionary
+  containing the keys `x`, `y`, `position` and `axis_order`.
+
 ## led
 
 The following information is available for each `[led led_name]`,
