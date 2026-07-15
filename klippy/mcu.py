@@ -982,6 +982,11 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
+        if self.non_critical_disconnected:
+            # motion_queuing.stats() keeps calling calibrate_clock() (and
+            # thus _check_timeout()) while the mcu is disconnected; only
+            # handle the first disconnect notification
+            return
         self.non_critical_disconnected = True
         self._clocksync.disconnect()
         self._disconnect()
