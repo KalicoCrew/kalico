@@ -1790,6 +1790,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#indx-temperature-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        INDX temperature sensor
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2550,6 +2561,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#indx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [indx]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#sx1509" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2945,6 +2967,34 @@
     
   
     Dockable Probe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="INDX.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bondtech INDX
   
 
     
@@ -6041,6 +6091,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#indx-temperature-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        INDX temperature sensor
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -6799,6 +6860,17 @@
   
     <nav class="md-nav" aria-label="Board specific hardware support">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#indx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [indx]
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#sx1509" class="md-nav__link">
@@ -10373,6 +10445,20 @@ max_temp: 325
 #   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
 </code></pre></div>
 
+<h3 id="indx-temperature-sensor">INDX temperature sensor<a class="headerlink" href="#indx-temperature-sensor" title="Permanent link">&para;</a></h3>
+<p>Temperature reported by a <a href="#indx">Bondtech INDX toolboard</a>. The
+default "heater" kind reports the nozzle temperature and is the one
+to use for the extruder; the other kinds are mainly diagnostic.</p>
+<div class="highlight"><pre><span></span><code>sensor_type: indx
+#indx_sensor: heater
+#   The temperature to report. Available kinds are &quot;heater&quot; (nozzle
+#   temperature), &quot;sensor&quot; (IR sensor die temperature), &quot;board&quot;
+#   (toolboard temperature), &quot;bracket&quot; (sensor bracket temperature),
+#   &quot;ldc_coil&quot; (eddy current probe coil temperature), &quot;check_model&quot;
+#   (thermal model prediction) and &quot;check_model_delta&quot; (difference
+#   between the model prediction and the measured temperature).
+</code></pre></div>
+
 <h2 id="fans">Fans<a class="headerlink" href="#fans" title="Permanent link">&para;</a></h2>
 <h3 id="fan">[fan]<a class="headerlink" href="#fan" title="Permanent link">&para;</a></h3>
 <p>Print cooling fan.</p>
@@ -12644,6 +12730,87 @@ sensor_type:
 
 <p>See <a href="Load_Cell.html#tap-quality-components">Tap Quality Components</a> for more details on maximum for tap quality.</p>
 <h2 id="board-specific-hardware-support">Board specific hardware support<a class="headerlink" href="#board-specific-hardware-support" title="Permanent link">&para;</a></h2>
+<h3 id="indx">[indx]<a class="headerlink" href="#indx" title="Permanent link">&para;</a></h3>
+<p>Support for the Bondtech INDX toolboard with its inductive nozzle
+heater, contactless IR temperature sensor and on-board PID
+controller. The toolboard must run Kalico firmware built with the
+"Bondtech INDX Heater" option enabled. See the
+<a href="INDX.html">INDX document</a> for setup and calibration instructions and
+<a href="G-Codes.html#indx">G-Codes</a> for the available commands.</p>
+<p>The module registers named aliases for the toolboard pins (e.g.
+<code>&lt;mcu&gt;:motor_step</code>, <code>&lt;mcu&gt;:part_cooling</code>, <code>&lt;mcu&gt;:endstop</code>), exposes
+the nozzle heater as the virtual pin <code>indx:heater</code>, the nozzle
+temperature as <code>sensor_type: indx</code>, and automatically manages the
+heatsink fan. The heater will not heat until INDX_CALIBRATE has been
+run.</p>
+<div class="highlight"><pre><span></span><code>[indx]
+mcu:
+#   The name of the mcu config section for the INDX toolboard (e.g.
+#   &quot;indxmcu&quot; when the toolboard is defined as &quot;[mcu indxmcu]&quot;). This
+#   parameter must be provided.
+#part_cooling_fan: fan
+#   Name of the part cooling fan object on the tool. The fan speed is
+#   used by the thermal model to compensate for part cooling airflow.
+#   Set to an empty string to disable.
+#pid_kp: 4.0
+#pid_ti: 0.0
+#pid_td: 0.0
+#pid_b: 1.0
+#   Parameters for the PID controller running on the toolboard. The
+#   defaults should work for most setups.
+#max_temp_nozzle: 305.0
+#max_temp_sensor: 130.0
+#max_temp_bracket: 130.0
+#max_temp_board: 100.0
+#   Maximum allowed temperature for the nozzle, the IR sensor die,
+#   the sensor bracket and the toolboard. Exceeding any of these
+#   triggers a shutdown.
+#max_model_error: 50.0
+#   Maximum allowed difference (in Celsius) between the measured
+#   nozzle temperature and the thermal model prediction before a
+#   shutdown is triggered.
+#coil_time_on:
+#coil_time_off:
+#coil_time_on_first:
+#   Inductive coil drive timings in microseconds. These are measured
+#   by INDX_CALIBRATE and stored by SAVE_CONFIG; they should not
+#   normally be set by hand.
+#max_power:
+#model_max_power_temp_coeff:
+#model_thermal_capacity:
+#model_to_ambient_r:
+#   Thermal model parameters. These are measured by INDX_CALIBRATE
+#   and stored by SAVE_CONFIG; they should not normally be set by
+#   hand.
+#model_filament_diameter: 1.75
+#model_filament_density: 1.20
+#model_filament_heat_capacity: 1.8
+#   Filament parameters used by the thermal model to account for the
+#   energy carried away by extruded filament. The density is in
+#   g/cm^3 and the heat capacity in J/(g*K). These can also be
+#   measured with INDX_LOAD_FILAMENT or changed at runtime with
+#   INDX_SET_MODEL_PARAMS.
+#model_part_cooling_fan_a: 0.0
+#model_part_cooling_fan_k: 0.0
+#   Part cooling fan compensation for the thermal model, measured by
+#   INDX_FAN_CALIBRATE and stored by SAVE_CONFIG.
+#model_ambient_blend_board: 0.0
+#model_ambient_blend_bracket: 1.0
+#model_ambient_blend_sensor: 1.0
+#   Relative weights of the toolboard, sensor bracket and IR sensor
+#   die temperatures when estimating the ambient temperature for the
+#   thermal model.
+#model_error_application: 1.0
+#   Fraction of the observed model error fed back into the thermal
+#   model on each update.
+#ir_sensor_exponent:
+#ir_sensor_obj_gain:
+#ir_sensor_bracket_gain:
+#   Override the IR sensor tuning parameters stored in the sensor
+#   EEPROM. All three must be provided if any is given. These should
+#   not normally be set.
+</code></pre></div>
+
 <h3 id="sx1509">[sx1509]<a class="headerlink" href="#sx1509" title="Permanent link">&para;</a></h3>
 <p>Configure an SX1509 I2C to GPIO expander. Due to the delay incurred by
 I2C communication you should NOT use SX1509 pins as stepper enable,
