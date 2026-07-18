@@ -5073,6 +5073,166 @@ sense_resistor:
 #   sensorless homing.
 ```
 
+### [tmc5262]
+
+Configure a TMC5262 stepper motor driver via SPI bus. To use this
+feature, define a config section with a "tmc5262" prefix followed by
+the name of the corresponding stepper config section (for example,
+"[tmc5262 stepper_x]").
+
+The TMC5262 is a 65V/4.25A RMS smart stepper driver with integrated
+MOSFETs and Integrated Current Sense (ICS) - no external sense resistor
+is required. It uses a reference resistor (RREF) between the REF pin
+and GND to set the current ranges (typ. 12kΩ ±1%). Communication is
+SPI only - this driver does not support UART.
+
+```
+[tmc5262 stepper_x]
+cs_pin:
+#   The pin corresponding to the TMC5262 chip select line. This pin
+#   will be set to low at the start of SPI messages and raised to high
+#   after the message completes. This parameter must be provided.
+#spi_speed:
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+#chain_position:
+#chain_length:
+#   These parameters configure an SPI daisy chain. The two parameters
+#   define the stepper position in the chain and the total chain length.
+#   Position 1 corresponds to the stepper that connects to the MOSI signal.
+#   The default is to not use an SPI daisy chain.
+#interpolate: True
+#   If true, enable step interpolation (the driver will internally
+#   step at a rate of 256 micro-steps). The default is True.
+run_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   during stepper movement. This parameter must be provided.
+#hold_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   when the stepper is not moving. Setting a hold_current is not
+#   recommended (see TMC_Drivers.md for details). The default is to
+#   not reduce the current.
+#home_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
+#rref: 12000
+#   The resistance (in ohms) of the external reference resistor between
+#   the REF pin and GND. The TMC5262 datasheet specifies 12kΩ ±1%.
+#   Valid range is 10000-14000. The default is 12000.
+#current_range:
+#current_range_scale:
+#   These set the DRV_CONF.CURRENT_RANGE (0-3, peak 1A/2A/3A/4A) and
+#   DRV_CONF.CURRENT_RANGE_SCALE (0-3, scale 25%/50%/75%/100%) bits.
+#   By default both are auto-selected to match the requested run_current.
+#   Per the datasheet, current_range_scale below 3 is only valid when
+#   current_range is 0 - this is enforced.
+#stealthchop_threshold: 0
+#   The velocity (in mm/s) below which the driver runs in StealthChop+
+#   mode. The default of 0 disables StealthChop+.
+#coolstep_threshold:
+#   The velocity (in mm/s) above which the CoolStep+ feature is enabled.
+#   If set, sensorless homing speed must be above this threshold. The
+#   default is to not enable CoolStep+.
+#high_velocity_threshold:
+#   The velocity (in mm/s) at which the driver internal "high velocity"
+#   threshold (THIGH) is set. Typically used to disable CoolStep+ at
+#   high speeds. The default is unset.
+#driver_MSLUT0: 2863314260
+#driver_MSLUT1: 1251300522
+#driver_MSLUT2: 608774441
+#driver_MSLUT3: 269500962
+#driver_MSLUT4: 4227858431
+#driver_MSLUT5: 3048961917
+#driver_MSLUT6: 1227445590
+#driver_MSLUT7: 4211234
+#driver_W0: 2
+#driver_W1: 1
+#driver_W2: 1
+#driver_W3: 1
+#driver_X1: 128
+#driver_X2: 255
+#driver_X3: 255
+#driver_START_SIN: 0
+#driver_START_SIN90: 247
+#driver_OFFSET_SIN90: 0
+#   These fields control the Microstep Table registers directly. See the
+#   tmc2240 entry above for tuning notes - the wave-table format is the
+#   same on TMC5262.
+#driver_STEP_DIR: True
+#   Selects the external step/dir interface (GCONF.step_dir). Must be
+#   true to use the chip with Klipper's stepper driver - the default is
+#   True.
+#driver_MULTISTEP_FILT: True
+#driver_IHOLDDELAY: 7
+#driver_IRUNDELAY: 4
+#driver_TPOWERDOWN: 10
+#driver_TBL: 2
+#driver_TOFF: 3
+#driver_HEND: 2
+#driver_HSTRT: 5
+#driver_FD3: 0
+#driver_TPFD: 4
+#driver_CHM: 0
+#driver_PWM_FREQ: 0
+#driver_FREEWHEEL: 0
+#driver_SD_ON_MEAS_LO: 14
+#driver_SD_ON_MEAS_HI: 15
+#   These set PWMCONF thresholds that control when the Integrated Current
+#   Sense (ICS) samples each motor coil within the chopper cycle. The
+#   defaults (14/15) come from datasheet Table 8 (p.75) for PWM_FREQ=0
+#   (19.5 kHz). If you change driver_PWM_FREQ, also adjust these per
+#   Table 8 - leaving them at 0 silently disables ICS sampling and breaks
+#   StealthChop+ / StallGuard+ regulation.
+#driver_SLOPE_CONTROL: 3
+#   Controls the slew rate of the gate driver output (DRV_CONF.SLOPE_CONTROL).
+#   0=100V/μs, 1=200V/μs, 2=400V/μs, 3=800V/μs (chip default and Kalico
+#   default). Lower values reduce EMI at the cost of higher driver heat.
+#driver_SGT: 0
+#driver_SEMIN: 0
+#driver_SEUP: 0
+#driver_SEMAX: 0
+#driver_SEDN: 0
+#driver_SEIMIN: 0
+#driver_SFILT: 0
+#driver_CUR_P: 64
+#driver_CUR_I: 10
+#driver_ANGLE_P: 50
+#driver_ANGLE_I: 20
+#driver_CUR_PI_LIMIT: 4095
+#driver_ANGLE_PI_LIMIT: 256
+#driver_ANGLE_LOWER_I_LIMIT: 256
+#   StealthChop+ PI regulator tuning. The TMC5262 replaces TMC2240's
+#   StealthChop2 (with driver_PWM_GRAD / OFS / REG / LIM) by two PI
+#   regulators - one for current amplitude (CUR_P / CUR_I) and one for
+#   electrical angle (ANGLE_P / ANGLE_I), each with a clip limit. The
+#   defaults here match the chip's reset values, which the datasheet
+#   recommends as starting points ("Keep this default value, unless...").
+#   See datasheet pp 33-40 for the tuning guide.
+#   Set the given register during the configuration of the TMC5262
+#   chip. This may be used to set custom motor parameters. The defaults
+#   for each parameter are next to the parameter name in the above list.
+#diag0_pin:
+#diag1_pin:
+#   The micro-controller pin attached to one of the DO0 / DO1 pins of
+#   the TMC5262. Only a single diag pin should be specified. The pin is
+#   "active low" by default (chip default DO0/DO1 polarity) and is thus
+#   normally prefaced with "^!". Setting this creates a
+#   "tmc5262_stepper_x:virtual_endstop" virtual pin which may be used
+#   as the stepper's endstop_pin to enable sensorless homing. Be sure
+#   to also set driver_SGT to an appropriate sensitivity value. Unlike
+#   TMC2130/5160/2240, the TMC5262 routes the stall signal through
+#   DO_CONF.do0_stall / do1_stall (datasheet pg 140), so the driver
+#   reconfigures DO_CONF at homing start and restores it at homing end.
+#   The default is to not enable sensorless homing.
+```
+
 ## Run-time stepper motor current configuration
 
 ### [ad5206]
