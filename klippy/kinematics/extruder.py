@@ -30,7 +30,7 @@ class ExtruderStepper:
         self.stepper = stepper.PrinterStepper(config)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.sk_extruder = ffi_main.gc(
-            ffi_lib.extruder_stepper_alloc(), ffi_lib.free
+            ffi_lib.extruder_stepper_alloc(), ffi_lib.extruder_stepper_free
         )
         self.stepper.set_stepper_kinematics(self.sk_extruder)
         self.motion_queue = None
@@ -70,8 +70,6 @@ class ExtruderStepper:
         )
 
     def _handle_connect(self):
-        toolhead = self.printer.lookup_object("toolhead")
-        toolhead.register_step_generator(self.stepper.generate_steps)
         self._set_pressure_advance(self.config_pa, self.config_smooth_time)
 
     def get_status(self, eventtime):
@@ -116,12 +114,24 @@ class ExtruderStepper:
         if not pressure_advance:
             new_smooth_time = 0.0
         toolhead = self.printer.lookup_object("toolhead")
-        toolhead.note_step_generation_scan_time(
-            new_smooth_time * 0.5, old_delay=old_smooth_time * 0.5
-        )
         ffi_main, ffi_lib = chelper.get_ffi()
         espa = ffi_lib.extruder_set_pressure_advance
-        espa(self.sk_extruder, pressure_advance, new_smooth_time)
+        if new_smooth_time != old_smooth_time:
+            # Need full kinematic flush to change the smooth time
+            toolhead.flush_step_generation()
+            espa(self.sk_extruder, 0.0, pressure_advance, new_smooth_time)
+            motion_queuing = self.printer.lookup_object("motion_queuing")
+            motion_queuing.check_step_generation_scan_windows()
+        else:
+            toolhead.register_lookahead_callback(
+                lambda print_time: espa(
+                    self.sk_extruder,
+                    print_time,
+                    pressure_advance,
+                    new_smooth_time,
+                )
+            )
+
         self.pressure_advance = pressure_advance
         self.pressure_advance_smooth_time = smooth_time
 
@@ -236,10 +246,9 @@ class PrinterExtruder:
             "instantaneous_corner_velocity", 1.0, minval=0.0
         )
         # Setup extruder trapq (trapezoidal motion queue)
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-        self.trapq_append = ffi_lib.trapq_append
-        self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        self.motion_queuing = self.printer.load_object(config, "motion_queuing")
+        self.trapq = self.motion_queuing.allocate_trapq()
+        self.trapq_append = self.motion_queuing.lookup_trapq_append()
 
         # Setup extruder stepper
         self.extruder_stepper = None
