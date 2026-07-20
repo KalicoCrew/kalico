@@ -3,16 +3,21 @@
 # Copyright (C) 2025  Gareth Farrington <gareth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import math
-from typing import Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
 from klippy import mcu
-from klippy.configfile import ConfigWrapper
+from klippy.configfile import ConfigWrapper, PrinterConfig
+from klippy.extras.bed_mesh import BedMesh
 from klippy.extras.homing import PrinterHoming
-from klippy.extras.probe import PrinterProbe
-from klippy.gcode import GCodeCommand
+from klippy.extras.probe import PrinterProbe, ProbePointsHelper
+from klippy.gcode import GCodeCommand, GCodeDispatch
+from klippy.printer import Printer
+from klippy.toolhead import ToolHead
 
 from . import sos_filter
 from .interfaces import LoadCellSensor
@@ -20,7 +25,8 @@ from .load_cell import (
     LoadCell,
     LoadCellSampleCollector,
 )
-from .tap_analysis import TapAnalysisHelper, TapClassifierModule
+from .tap_analysis import TapAnalysis, TapAnalysisHelper, TapClassifierModule
+from .tap_quality_classifier import TapQualityClassifier
 
 # constants for fixed point numbers
 Q2_INT_BITS = 2
@@ -34,9 +40,9 @@ Q16_FRAC_BITS = 32 - (1 + Q16_INT_BITS)
 class ParamHelper:
     def __init__(
         self,
-        config,
-        name,
-        type_name,
+        config: ConfigWrapper,
+        name: str,
+        type_name: str,
         default=None,
         minval=None,
         maxval=None,
@@ -44,6 +50,7 @@ class ParamHelper:
         below=None,
         max_len=None,
     ):
+        self._printer: Printer = config.get_printer()
         self._config_section = config.get_name()
         self._config_error = config.error
         self.name = name
@@ -153,6 +160,13 @@ class ParamHelper:
             return self._get_float(config, gcmd, minval, maxval, above, below)
         else:
             return self._get_float_list(config, gcmd, above, below)
+
+    def set(self, value):
+        self.value = value
+
+    def save(self):
+        configfile: PrinterConfig = self._printer.lookup_object("configfile")
+        configfile.set(self._config_section, self.name, self.value)
 
 
 def intParamHelper(config, name, default=None, minval=None, maxval=None):
@@ -328,6 +342,10 @@ class ContinuousTareFilterHelper:
     def get_sos_filter(self) -> sos_filter.SosFilter:
         return self._sos_filter
 
+    def save_drift_filter_cutoff_frequency(self, value):
+        self._drift_param.set(value)
+        self._drift_param.save()
+
 
 # check results from the collector for errors and raise an exception is found
 def check_sensor_errors(results, printer):
@@ -402,6 +420,13 @@ class LoadCellProbeConfigHelper:
 
     def is_pullback_move_disabled(self) -> bool:
         return self._disable_pullback_move
+
+    def set_pullback_distance(self, value):
+        self._pullback_distance_param.set(value)
+
+    def save_pullback_distance(self, value):
+        self._pullback_distance_param.set(value)
+        self._pullback_distance_param.save()
 
     def get_rest_time(self) -> float:
         return self._rest_time
@@ -962,6 +987,331 @@ class LoadCellEndstopWrapper:
         return status
 
 
+class DriftFilterCalibration:
+    def __init__(
+        self,
+        config: ConfigWrapper,
+        config_helper: ContinuousTareFilterHelper,
+        tare_callback,
+        load_cell: LoadCell,
+    ):
+        self._config_helper = config_helper
+        self._tare_callback = tare_callback
+        self._load_cell = load_cell
+        self._printer: Printer = config.get_printer()
+        self._horizontal_move_z: float = 5.0
+        if config.has_section("bed_mesh"):
+            bed_mesh_config = config.getsection("bed_mesh")
+            self._horizontal_move_z: float = bed_mesh_config.getfloat(
+                "horizontal_move_z", 5.0, note_valid=False
+            )
+        self._max_z_position: Optional[float] = None
+        if config.has_section("stepper_z"):
+            zconfig = config.getsection("stepper_z")
+            self._max_z_position = zconfig.getfloat(
+                "position_max", None, note_valid=False
+            )
+        if self._max_z_position is None:
+            raise config.error("Printer has no configured maximum z-position")
+        pconfig = config.getsection("printer")
+        self._max_z_velocity: float = pconfig.getfloat(
+            "max_z_velocity", None, note_valid=False
+        )
+        if self._max_z_velocity is None:
+            raise config.error("Printer has no configured maximum z-velocity")
+
+    def calibrate(self, gcmd: GCodeCommand):
+        try:
+            import scipy.signal as signal
+
+            _ = signal
+        except:
+            raise gcmd.error("Drift Filter requires the SciPy module")
+        toolhead: ToolHead = self._printer.lookup_object("toolhead")
+        # delta kinematics have a z limit that is lower than stepper limit:
+        kinematics = toolhead.get_kinematics()
+        if hasattr(kinematics, "limit_z"):
+            self._max_z_position = kinematics.limit_z
+        probe = self._printer.lookup_object("probe")
+        bed_mesh: BedMesh = self._printer.lookup_object(
+            "bed_mesh", default=None
+        )
+        if bed_mesh is None:
+            raise gcmd.error("bed_mesh not configured")
+
+        # Calibration parameters
+        max_z_position = gcmd.get_float(
+            "MAXIMUM_Z_POSITION", minval=0, default=self._max_z_position
+        )
+        max_z_velocity = gcmd.get_float(
+            "MAX_Z_VELOCITY", minval=0, default=self._max_z_velocity
+        )
+        approach_speed = gcmd.get_float(
+            "APPROACH_SPEED", 10.0, above=0.0, maxval=50.0
+        )
+        segment_duration = gcmd.get_float("SEGMENT_DURATION", 5.0, above=0.0)
+        slope_percentile = gcmd.get_float(
+            "SLOPE_PERCENTILE", 99.0, minval=0.0, maxval=100.0
+        )
+        max_drift_rate = gcmd.get_float("MAX_DRIFT_RATE", 1.0, above=0.0)
+        max_cutoff_frequency = gcmd.get_float(
+            "MAX_CUTOFF_FREQUENCY", 20.0, above=0.0
+        )
+        cutoff_increment = gcmd.get_float("CUTOFF_INCREMENT", 0.1, above=0.0)
+
+        gcmd.respond_info("Starting drift filter calibration...")
+        points = bed_mesh.generate_points(gcmd, "drift_filter_calibrate")
+        # Get actual approach speed (limited by Z max speed)
+        approach_speed = min(approach_speed, max_z_velocity)
+
+        gcmd.respond_info(
+            f"Collecting drift data at {len(points)} points\n"
+            f"Z range: {max_z_position:.1f} -> {self._horizontal_move_z:.1f}mm\n"
+            f"Approach speed: {approach_speed:.1f}mm/s"
+        )
+
+        # Get probe offsets for XY positioning
+        max_filter_cutoff = cutoff_increment
+        # Get sampling rate from sensor
+        probe_offset_x, probe_offset_y, _ = probe.get_offsets()
+        sample_rate: int = self._load_cell.get_sensor().get_samples_per_second()
+        failed_count = 0
+        for i, point in enumerate(points):
+            # Adjust for probe offset (this should be 0 for a nozzle probe)
+            point = [
+                point[0] - probe_offset_x,
+                point[1] - probe_offset_y,
+                max_z_position,
+            ]
+            # Move to XY position at max Z
+            toolhead.manual_move(point, max_z_velocity)
+            toolhead.wait_moves()
+            # Tare the sensor (probing_move behavior)
+            self._tare_callback(gcmd)
+            # Start collecting samples
+            collector: LoadCellSampleCollector = self._load_cell.get_collector()
+            print_time = toolhead.get_last_move_time()
+            collector.start_collecting(min_time=print_time)
+            try:
+                # Start the downward move
+                point[2] = self._horizontal_move_z
+                toolhead.manual_move(point, approach_speed)
+                toolhead.wait_moves()
+                move_end_time = toolhead.get_last_move_time()
+            except Exception as ex:
+                collector.stop_collecting()
+                raise ex
+            # Stop collecting
+            samples, errors = collector.collect_until(move_end_time)
+            if errors:
+                raise gcmd.error("Load cell errors detected!")
+            force = np.array(samples)[:, 1]
+            cutoff_freq = self._run_calibration(
+                force,
+                sample_rate,
+                segment_duration,
+                slope_percentile,
+                max_cutoff_frequency,
+                max_filter_cutoff,
+                cutoff_increment,
+                max_drift_rate,
+                gcmd,
+            )
+            if math.isnan(cutoff_freq):
+                failed_count += 1
+            else:
+                max_filter_cutoff = cutoff_freq
+        self._config_helper.save_drift_filter_cutoff_frequency(
+            round(max_filter_cutoff, 4)
+        )
+        if failed_count > 0:
+            raise gcmd.error(
+                f"WARNING: {failed_count} calibrations failed with the "
+                f"max_cutoff_frequency={max_cutoff_frequency}Hz"
+            )
+        gcmd.respond_info(
+            f"Minimum drift filter cutoff: {max_filter_cutoff:.1f}Hz\n"
+            f"drift_filter_cutoff_frequency={max_filter_cutoff:.1f}\n"
+            "This has been saved for the current session.\n"
+            "The SAVE_CONFIG command will update the printer config file "
+            "with the above and restart the printer."
+        )
+
+    @staticmethod
+    def _calculate_segment_slopes(force_data, sampling_rate, segment_duration):
+        """Split the graph into segments and calculate a slope for each."""
+        segment_samples = int(segment_duration * sampling_rate)
+        num_segments = len(force_data) // segment_samples
+        segments = np.array_split(force_data, num_segments)
+        slopes = []
+        for segment in segments:
+            time = np.arange(len(segment)) / sampling_rate
+            coefficients = np.polyfit(time, segment, 1)
+            slopes.append(coefficients[0])
+        return np.array(slopes)
+
+    @staticmethod
+    def _apply_drift_filter(force_data, cutoff_freq, sampling_rate):
+        import scipy.signal as signal
+
+        sos = signal.butter(
+            1, cutoff_freq, fs=sampling_rate, btype="highpass", output="sos"
+        )
+        # use zi to immediately have the filter start in a steady state at 0
+        zi = signal.sosfilt_zi(sos)
+        zi = zi * force_data[0]
+        filtered_data, zo = signal.sosfilt(sos, force_data, zi=zi)
+        return filtered_data
+
+    def _run_calibration(
+        self,
+        force_data: np.ndarray,
+        sampling_rate: float,
+        segment_duration: float,
+        slope_percentile: float,
+        max_cutoff_frequency: float,
+        cutoff: float,
+        cutoff_increment: float,
+        max_drift_rate: float,
+        gcmd: GCodeCommand,
+    ):
+        current_cutoff = cutoff
+        while current_cutoff <= max_cutoff_frequency:
+            filtered_data = self._apply_drift_filter(
+                force_data, current_cutoff, sampling_rate
+            )
+            filtered_slopes = self._calculate_segment_slopes(
+                filtered_data, sampling_rate, segment_duration
+            )
+            post_filter_pct = float(
+                np.percentile(np.abs(filtered_slopes), slope_percentile)
+            )
+            if post_filter_pct <= max_drift_rate:
+                gcmd.respond_info(
+                    f"Cutoff frequency: {current_cutoff:.4f} Hz\n"
+                )
+                return current_cutoff
+            current_cutoff += cutoff_increment
+        gcmd.respond_info(
+            f"Calibration FAILED\n"
+            f"Could not meet criteria within the {max_cutoff_frequency}Hz "
+            f"limit\n"
+        )
+        return math.nan
+
+
+class PullbackDistanceCalibration:
+    def __init__(
+        self,
+        config: ConfigWrapper,
+        config_helper: LoadCellProbeConfigHelper,
+        register_tap_callback: Callable,
+    ):
+        self._config = config
+        self._config_helper = config_helper
+        self._register_tap_callback = register_tap_callback
+        self._printer = config.get_printer()
+        self._bed_mesh_config = None
+        if config.has_section("bed_mesh"):
+            self._bed_mesh_config = config.getsection("bed_mesh")
+        self._calibrating = False
+        self._gcmd: Optional[GCodeCommand] = None
+        self._distances: list[float] = []
+        self._forces: list[float] = []
+
+    @staticmethod
+    def _decompression_distance(tap: TapAnalysis) -> tuple[float, float]:
+        if not tap.is_valid():
+            return math.nan, math.nan
+
+        tap_points = tap.get_tap_points()
+        decompression_start_z = tap.get_toolhead_position(tap_points[3].time)[2]
+        decompression_start_force = tap_points[3].force
+        break_contact_z = tap.get_toolhead_position(tap_points[4].time)[2]
+        break_contact_force = tap_points[4].force
+        return (
+            abs(decompression_start_z - break_contact_z),
+            abs(decompression_start_force - break_contact_force),
+        )
+
+    def _tap_callback(self, tap: TapAnalysis):
+        if not self._calibrating or isinstance(tap, dict):
+            return self._calibrating
+        decomp_dist, decomp_force = self._decompression_distance(tap)
+        if math.isnan(decomp_dist):
+            # TODO: consider if we want to allow this...
+            return self._calibrating
+        self._distances.append(decomp_dist)
+        self._forces.append(decomp_force)
+        self._gcmd.respond_info(
+            f"Decompression distance: {self._distances[-1]:.3f}mm, force: "
+            f"{self._forces[-1]:.0f}g"
+        )
+        return self._calibrating
+
+    def _finalize_callback(self, probe_offsets, results):
+        pass
+
+    def calibrate(self, gcmd: GCodeCommand):
+        self._gcmd = gcmd
+        gcmd.respond_info("Starting pullback_distance calibration...")
+        bed_mesh: BedMesh = self._printer.lookup_object(
+            "bed_mesh", default=None
+        )
+        if bed_mesh is None:
+            raise gcmd.error("bed_mesh not configured")
+
+        original_pullback_distance = self._config_helper.get_pullback_distance()
+        pullback_distance = gcmd.get_float(
+            "PULLBACK_DISTANCE", default=1.0, minval=0.5, maxval=2.0
+        )
+        self._config_helper.set_pullback_distance(pullback_distance)
+        self._calibrating: bool = True
+        self._register_tap_callback(self._tap_callback)
+        self._distances = []
+        self._forces = []
+
+        try:
+            points = bed_mesh.generate_points(
+                gcmd, "pullback_distance_calibrate"
+            )
+            points_helper = ProbePointsHelper(
+                self._bed_mesh_config,
+                self._finalize_callback,
+                points,
+                use_offsets=True,
+                enable_horizontal_z_clearance=True,
+            )
+            points_helper.start_probe(gcmd)
+        finally:
+            self._calibrating = False
+            self._register_tap_callback(None)
+            # restore state in case of an error
+            self._config_helper.set_pullback_distance(
+                original_pullback_distance
+            )
+
+        min_distance = min(self._distances)
+        max_distance = max(self._distances)
+        mean_distance = float(np.mean(self._distances))
+        mean_force = float(np.mean(self._forces))
+        distance_std = float(np.std(self._distances))
+        pullback_distance = (mean_distance + (3.0 * distance_std)) * 2.0
+        deflection_per_kg = (mean_distance / mean_force) * 1000.0
+
+        self._config_helper.save_pullback_distance(pullback_distance)
+        gcmd.respond_info(
+            f"Decompression Distance: mean={mean_distance:.4f}mm, "
+            f"min={min_distance:.4f}mm, max={max_distance:.4f}mm, "
+            f"std={distance_std:.4f}mm\n"
+            f"pullback_distance={pullback_distance:.4f}\n"
+            f"deflection per kilogram={deflection_per_kg:.1f}mm\n"
+            "This has been saved for the current session.\n"
+            "The SAVE_CONFIG command will update the printer config file "
+            "with the above and restart the printer."
+        )
+
+
 class LoadCellPrinterProbe:
     def __init__(
         self,
@@ -969,14 +1319,16 @@ class LoadCellPrinterProbe:
         sensor: LoadCellSensor,
         tap_classifier: TapClassifierModule,
     ):
+        self._config = config
         self._printer = config.get_printer()
         self._load_cell = LoadCell(config, sensor)
+        self._tap_classifier = tap_classifier
         # Read all user configuration and build modules
         name = config.get_name()
         self._tap_analysis_helper = TapAnalysisHelper(
             self._printer, name, tap_classifier
         )
-        config_helper = LoadCellProbeConfigHelper(config, self._load_cell)
+        self._config_helper = LoadCellProbeConfigHelper(config, self._load_cell)
         self._mcu = self._load_cell.get_sensor().get_mcu()
         trigger_dispatch = mcu.TriggerDispatch(self._mcu)
         continuous_tare_filter_helper = ContinuousTareFilterHelper(
@@ -987,29 +1339,73 @@ class LoadCellPrinterProbe:
             config,
             self._load_cell,
             continuous_tare_filter_helper.get_sos_filter(),
-            config_helper,
+            self._config_helper,
             trigger_dispatch,
         )
-        load_cell_primitives = LoadCellPrimitives(
+        self._load_cell_primitives = LoadCellPrimitives(
             config,
             self._mcu_load_cell_probe,
             continuous_tare_filter_helper,
-            config_helper,
+            self._config_helper,
         )
-        homing_move = HomingMove(config, load_cell_primitives)
+        homing_move = HomingMove(config, self._load_cell_primitives)
         self._tapping_move = TappingMove(
             config,
-            load_cell_primitives,
+            self._load_cell_primitives,
             self._tap_analysis_helper,
-            config_helper,
+            self._config_helper,
         )
         # printer integration
-        LoadCellProbeCommands(config, load_cell_primitives)
+        LoadCellProbeCommands(config, self._load_cell_primitives)
         wrapper = LoadCellEndstopWrapper(
             config, homing_move, self._tapping_move
         )
         printer_probe = PrinterProbe(config, wrapper)
         self._printer.add_object("probe", printer_probe)
+        # calibration macro setup:
+        self._drift_filter_calibration = DriftFilterCalibration(
+            config,
+            continuous_tare_filter_helper,
+            self._load_cell_primitives.tare,
+            self._load_cell,
+        )
+        self._pullback_distance_calibration = PullbackDistanceCalibration(
+            config,
+            self._config_helper,
+            self._tap_analysis_helper.set_calibration_callback,
+        )
+        self._register_macros()
+
+    def _register_macros(self):
+        gcode_dispatch: GCodeDispatch = self._printer.lookup_object("gcode")
+        gcode_dispatch.register_command(
+            "LOAD_CELL_PROBE_CALIBRATE",
+            self.cmd_LOAD_CELL_PROBE_CALIBRATE,
+            desc=self.cmd_LOAD_CELL_PROBE_CALIBRATE_help,
+        )
+
+    cmd_LOAD_CELL_PROBE_CALIBRATE_help: str = "Run a calibration routine"
+
+    def cmd_LOAD_CELL_PROBE_CALIBRATE(self, gcmd: GCodeCommand):
+        calibration: str = gcmd.get("CALIBRATION")
+        if calibration == "DRIFT_FILTER":
+            self._drift_filter_calibration.calibrate(gcmd)
+        elif calibration == "PULLBACK_DISTANCE":
+            self._pullback_distance_calibration.calibrate(gcmd)
+        elif calibration == "DECOMPRESSION_ANGLE" and isinstance(
+            self._tap_classifier, TapQualityClassifier
+        ):
+            self._tap_classifier.calibrate(gcmd)
+        elif not calibration:
+            raise gcmd.error(
+                "CALIBRATION must be one of DRIFT_FILTER, "
+                "PULLBACK_DISTANCE or DECOMPRESSION_ANGLE"
+            )
+        else:
+            raise gcmd.error(f"Unknown CALIBRATION value '{calibration}'")
+
+    def add_client(self, callback):
+        self._tap_analysis_helper.add_client(callback)
 
     def get_status(self, eventtime):
         return self._tapping_move.get_status(eventtime)

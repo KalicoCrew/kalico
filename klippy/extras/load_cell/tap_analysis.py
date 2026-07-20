@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import time
@@ -667,9 +668,10 @@ class TapAnalysis:
 # Orchestrate TapAnalysis and TapClassifier. Handle timing, error capture,
 # event broadcast, clients & logging
 class TapAnalysisHelper:
-    def __init__(self, printer, name, tap_classifier):
+    def __init__(self, printer, name, tap_classifier: TapClassifierModule):
         self._printer = printer
         self._tap_classifier = tap_classifier
+        self._calibration_cb = None
         # webhooks support
         self._clients = ApiClientHelper(printer)
         header = {"header": ["probe_tap_event"]}
@@ -686,6 +688,11 @@ class TapAnalysisHelper:
             tap_analysis.set_is_valid(False)
             tap_analysis.set_validation_error(ve)
             tap_analysis.log_trapq()
+        # notify calibration tool, if any:
+        if self._calibration_cb and not self._calibration_cb(
+            copy.deepcopy(tap_analysis)
+        ):
+            self._calibration_cb = None
         # tap classifier always gets to process the data
         try:
             self._tap_classifier.classify(tap_analysis, gcmd)
@@ -713,3 +720,6 @@ class TapAnalysisHelper:
     # get internal tap events
     def add_client(self, callback):
         self._clients.add_client(callback)
+
+    def set_calibration_callback(self, callback):
+        self._calibration_cb = callback
