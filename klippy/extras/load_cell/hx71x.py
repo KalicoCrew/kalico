@@ -24,16 +24,16 @@ class HX71xBase(LoadCellSensor):
         self,
         config,
         sensor_type,
-        sample_rate_options,
-        default_sample_rate,
-        gain_options,
-        default_gain,
+        sps,
+        setting_pulses,
     ):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.last_error_count = 0
-        self.consecutive_fails = 0
         self.sensor_type = sensor_type
+        self.consecutive_fails = 0
+        self.sps = sps
+        self.setting_pulses = setting_pulses
         # Chip options
         dout_pin_name = config.get("dout_pin")
         sclk_pin_name = config.get("sclk_pin")
@@ -50,14 +50,6 @@ class HX71xBase(LoadCellSensor):
             )
         self.dout_pin = dout_ppin["pin"]
         self.sclk_pin = sclk_ppin["pin"]
-        # Samples per second choices
-        self.sps = config.getchoice(
-            "sample_rate", sample_rate_options, default=default_sample_rate
-        )
-        # gain/channel choices
-        self.gain_channel = int(
-            config.getchoice("gain", gain_options, default=default_gain)
-        )
         ## Bulk Sensor Setup
         # Clock tracking
         chip_smooth = self.sps * UPDATE_INTERVAL * 2
@@ -74,16 +66,16 @@ class HX71xBase(LoadCellSensor):
         self.query_hx71x_cmd = None
         self.attach_probe_cmd = None
         mcu.add_config_cmd(
-            "config_hx71x oid=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
-            % (self.oid, self.gain_channel, self.dout_pin, self.sclk_pin)
-        )
-        mcu.add_config_cmd(
             "query_hx71x oid=%d rest_ticks=0" % (self.oid,), on_restart=True
         )
 
         mcu.register_config_callback(self._build_config)
 
     def _build_config(self):
+        self.mcu.add_config_cmd(
+            "config_hx71x oid=%d setting_pulses=%d dout_pin=%s sclk_pin=%s"
+            % (self.oid, self.setting_pulses, self.dout_pin, self.sclk_pin)
+        )
         self.query_hx71x_cmd = self.mcu.lookup_command(
             "query_hx71x oid=%c rest_ticks=%u"
         )
@@ -182,31 +174,33 @@ class HX71xBase(LoadCellSensor):
 
 
 class HX711(HX71xBase):
+    SPS_OPTIONS = {80: 80, 10: 10}
+    GAIN_OPTIONS = {"A-128": 1, "B-32": 2, "A-64": 3}
+
     def __init__(self, config):
-        super(HX711, self).__init__(
-            config,
-            "hx711",
-            # HX711 sps options
-            {80: 80, 10: 10},
-            80,
-            # HX711 gain/channel options
-            {"A-128": 1, "B-32": 2, "A-64": 3},
-            "A-128",
-        )
+        sps = config.getchoice("sample_rate", self.SPS_OPTIONS, default=80)
+        gain = int(config.getchoice("gain", self.GAIN_OPTIONS, default="A-128"))
+        super(HX711, self).__init__(config, "hx711", sps, gain)
 
 
 class HX717(HX71xBase):
+    SPS_OPTIONS = {320: 320, 80: 80, 20: 20, 10: 10}
+    GAIN_OPTIONS = {"A-128": 1, "B-64": 2, "A-64": 3, "B-8": 4}
+
     def __init__(self, config):
-        super(HX717, self).__init__(
-            config,
-            "hx717",
-            # HX717 sps options
-            {320: 320, 80: 80, 20: 20, 10: 10},
-            320,
-            # HX717 gain/channel options
-            {"A-128": 1, "B-64": 2, "A-64": 3, "B-8": 4},
-            "A-128",
-        )
+        sps = config.getchoice("sample_rate", self.SPS_OPTIONS, default=320)
+        gain = int(config.getchoice("gain", self.GAIN_OPTIONS, default="A-128"))
+        super(HX717, self).__init__(config, "hx717", sps, gain)
 
 
-HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717}
+class HX71708(HX71xBase):
+    SPS_OPTIONS = {320: 320, 80: 80, 20: 20, 10: 10}
+    SPS_TO_BITS = {320: 4, 80: 3, 20: 2, 10: 1}
+
+    def __init__(self, config):
+        sps = config.getchoice("sample_rate", self.SPS_OPTIONS, default=320)
+        setting_pulses = self.SPS_TO_BITS[sps]
+        super(HX71708, self).__init__(config, "hx71708", sps, setting_pulses)
+
+
+HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717, "hx71708": HX71708}

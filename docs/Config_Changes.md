@@ -8,6 +8,10 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260714: Users of HX711 and HX717 load cell sensors need to reflash their MCUs
+as the communication protocol for these sensors has changed to support the
+HX71708 which doesn't support changing the gain setting.
+
 20260201: The manual_stepper `STOP_ON_ENDSTOP` feature may now take
 less time to complete. Previously, the command would wait the entire
 time the move could possibly take even if the endstop triggered
