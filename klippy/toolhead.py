@@ -3,13 +3,18 @@
 # Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import importlib
 import logging
 import math
 
 from . import chelper
+from .exceptions import WaitInterruption
 from .extras.danger_options import get_danger_options
+from .gcode import GCodeDispatch, InterruptToken
 from .kinematics import extruder as kinematics_extruder
+from .reactor import ReactorCompletion, SelectReactor
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -253,11 +258,38 @@ DRIP_SEGMENT_TIME = 0.050
 DRIP_TIME = 0.100
 
 
+class DripMoveCompletion:
+    def __init__(
+        self,
+        reactor: SelectReactor,
+        drip_completion: ReactorCompletion,
+        interrupt_token: InterruptToken,
+    ):
+        self.drip_completion = drip_completion
+        self.interrupt_token = interrupt_token
+        self.wait_completion = drip_completion
+        if interrupt_token:
+            self.wait_completion = reactor.completion_any(
+                [drip_completion, interrupt_token]
+            )
+
+    def check(self):
+        return (
+            self.interrupt_token.check_interrupted()
+            or self.drip_completion.test()
+        )
+
+    def wait(self, waketime):
+        self.wait_completion.wait(waketime)
+        self.check()
+
+
 # Main code to track events (and their timing) on the printer toolhead
 class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
+        self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
         self.all_mcus = [
             m for n, m in self.printer.lookup_objects(module="mcu")
         ]
@@ -532,7 +564,9 @@ class ToolHead:
             if not self.can_pause:
                 self.need_check_pause = self.reactor.NEVER
                 return
-            eventtime = self.reactor.pause(eventtime + min(1.0, pause_time))
+            interrupt_token = self.gcode.get_interrupt_token()
+            interrupt_token.wait_until(eventtime + min(1.0, pause_time))
+            eventtime = self.reactor.monotonic()
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
         if not self.special_queuing_state:
@@ -607,6 +641,7 @@ class ToolHead:
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
+        self.gcode.get_interrupt_token().check_interrupted()
         if move.is_kinematic_move:
             self.kin.check_move(move)
         for e_index, ea in enumerate(self.extra_axes):
@@ -641,7 +676,9 @@ class ToolHead:
         ):
             if not self.can_pause:
                 break
-            eventtime = self.reactor.pause(eventtime + 0.100)
+            interrupt_token = self.gcode.get_interrupt_token()
+            interrupt_token.wait_until(eventtime + 0.100)
+            eventtime = self.reactor.monotonic()
 
     def set_extruder(self, extruder, extrude_pos):
         # XXX - should use add_extra_axis
@@ -693,7 +730,7 @@ class ToolHead:
         # Update print_time in segments until drip_completion signal
         flush_delay = DRIP_TIME + STEPCOMPRESS_FLUSH_TIME + self.kin_flush_delay
         while self.print_time < next_print_time:
-            if drip_completion.test():
+            if drip_completion.check():
                 break
             curtime = self.reactor.monotonic()
             est_print_time = self.mcu.estimated_print_time(curtime)
@@ -714,50 +751,62 @@ class ToolHead:
         self.flush_step_generation()
 
     def _drip_load_trapq(self, submit_move):
-        # Queue move into trapezoid motion queue (trapq)
-        if submit_move.move_d:
-            self.commanded_pos[:] = submit_move.end_pos
-            self.lookahead.add_move(submit_move)
-        moves = self.lookahead.flush()
-        self._calc_print_time()
-        next_move_time = self.print_time
-        for move in moves:
-            self.trapq_append(
-                self.trapq,
-                next_move_time,
-                move.accel_t,
-                move.cruise_t,
-                move.decel_t,
-                move.start_pos[0],
-                move.start_pos[1],
-                move.start_pos[2],
-                move.axes_r[0],
-                move.axes_r[1],
-                move.axes_r[2],
-                move.start_v,
-                move.cruise_v,
-                move.accel,
-            )
-            next_move_time = (
-                next_move_time + move.accel_t + move.cruise_t + move.decel_t
-            )
-        self.lookahead.reset()
+        try:
+            # Queue move into trapezoid motion queue (trapq)
+            if submit_move.move_d:
+                self.commanded_pos[:] = submit_move.end_pos
+                self.lookahead.add_move(submit_move)
+            moves = self.lookahead.flush()
+            self._calc_print_time()
+            next_move_time = self.print_time
+            for move in moves:
+                self.trapq_append(
+                    self.trapq,
+                    next_move_time,
+                    move.accel_t,
+                    move.cruise_t,
+                    move.decel_t,
+                    move.start_pos[0],
+                    move.start_pos[1],
+                    move.start_pos[2],
+                    move.axes_r[0],
+                    move.axes_r[1],
+                    move.axes_r[2],
+                    move.start_v,
+                    move.cruise_v,
+                    move.accel,
+                )
+                next_move_time = (
+                    next_move_time + move.accel_t + move.cruise_t + move.decel_t
+                )
+        except WaitInterruption:
+            logging.info("caught WaitInterruption in _drip_load_trapq")
+            raise
+        finally:
+            self.lookahead.reset()
         return next_move_time
 
     def drip_move(self, newpos, speed, drip_completion):
-        # Create and verify move is valid
-        newpos = newpos[:3] + self.commanded_pos[3:]
-        move = Move(self, self.commanded_pos, newpos, speed)
-        if move.move_d:
-            self.kin.check_move(move)
-        # Make sure stepper movement doesn't start before nominal start time
-        self.dwell(self.kin_flush_delay)
-        # Transmit move in "drip" mode
-        self._process_lookahead()
-        next_move_time = self._drip_load_trapq(move)
-        self.drip_update_time(next_move_time, drip_completion)
-        # Move finished; cleanup any remnants on trapq
-        self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
+        try:
+            # Create and verify move is valid
+            newpos = newpos[:3] + self.commanded_pos[3:]
+            move = Move(self, self.commanded_pos, newpos, speed)
+            if move.move_d:
+                self.kin.check_move(move)
+            # Make sure stepper movement doesn't start before nominal start time
+            self.dwell(self.kin_flush_delay)
+            # Transmit move in "drip" mode
+            drip_completion = DripMoveCompletion(
+                self.reactor, drip_completion, self.gcode.get_interrupt_token()
+            )
+            self._process_lookahead()
+            next_move_time = self._drip_load_trapq(move)
+            self.drip_update_time(next_move_time, drip_completion)
+        except WaitInterruption:
+            raise
+        finally:
+            # Move finished; cleanup any remnants on trapq
+            self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
 
     # Misc commands
     def stats(self, eventtime):

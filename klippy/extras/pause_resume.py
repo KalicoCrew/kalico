@@ -30,6 +30,7 @@ class PauseResume:
             "CANCEL_PRINT",
             self.cmd_CANCEL_PRINT,
             desc=self.cmd_CANCEL_PRINT_help,
+            trigger_interrupt=True,
         )
         webhooks = self.printer.lookup_object("webhooks")
         webhooks.register_endpoint(
