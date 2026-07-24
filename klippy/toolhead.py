@@ -8,6 +8,7 @@ import logging
 import math
 
 from . import chelper
+from .extras import pathplan
 from .extras.danger_options import get_danger_options
 from .kinematics import extruder as kinematics_extruder
 
@@ -83,12 +84,26 @@ class Move:
             ea.calc_junction(prev_move, self, e_index + 3)
             for e_index, ea in enumerate(self.toolhead.extra_axes)
         ]
+        # Reachability across prev_move: the jerk-aware S-curve reach when the
+        # unified emitter renders moves jerk-limited (matches flush()), else the
+        # stock constant-accel delta_v2. Slightly below the constant-accel reach,
+        # so every planned move stays jerk-feasible and the emitter never falls
+        # to the sharp constant-accel fallback.
+        th = self.toolhead
+        uj = th.unified_max_jerk if th.unified_emit else 0.0
+        nf = th.unified_notch_freq if th.unified_emit else 0.0
+        if uj > 0.0 or nf > 0.0:
+            prev_reach_v2 = pathplan.jerk_reach_v2(
+                prev_move.max_start_v2, prev_move.move_d, prev_move.accel, uj,
+                th.max_velocity, notch_freq=nf or None)
+        else:
+            prev_reach_v2 = prev_move.max_start_v2 + prev_move.delta_v2
         max_start_v2 = min(
             [
                 self.max_cruise_v2,
                 prev_move.max_cruise_v2,
                 prev_move.next_junction_v2,
-                prev_move.max_start_v2 + prev_move.delta_v2,
+                prev_reach_v2,
             ]
             + ea_v2
         )
@@ -174,9 +189,23 @@ class LookAheadQueue:
         # after the last move.
         delayed = []
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
+        # Jerk-aware lookahead: when the unified emitter renders moves
+        # jerk-limited, the reachable boundary speed is the jerk S-curve reach
+        # (slightly below the constant-accel reach), so every planned move is
+        # jerk-feasible and the emitter never falls to the sharp constant-accel
+        # fallback. The toolhead is reached via any queued move.
+        th = queue[0].toolhead if queue else None
+        uj = th.unified_max_jerk if (th and th.unified_emit) else 0.0
+        nf = th.unified_notch_freq if (th and th.unified_emit) else 0.0
+        jerk_on = uj > 0.0 or nf > 0.0
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            reachable_start_v2 = next_end_v2 + move.delta_v2
+            if jerk_on and move.is_kinematic_move:
+                reachable_start_v2 = pathplan.jerk_reach_v2(
+                    next_end_v2, move.move_d, move.accel, uj,
+                    th.max_velocity, notch_freq=nf or None)
+            else:
+                reachable_start_v2 = next_end_v2 + move.delta_v2
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -211,6 +240,22 @@ class LookAheadQueue:
                         move.max_cruise_v2,
                         peak_cruise_v2,
                     )
+                    if jerk_on and move.is_kinematic_move:
+                        # Jerk S-curve peak is below the constant-accel midpoint;
+                        # clamp cruise to what is jerk-reachable from each end so
+                        # the emitted profile stays jerk-feasible. Must use the
+                        # SAME jerk law as the emitter or the clamp lets through
+                        # a cruise the emitter cannot ramp to, forcing the sharp
+                        # fallback.
+                        cruise_v2 = min(
+                            cruise_v2,
+                            pathplan.jerk_reach_v2(
+                                start_v2, move.move_d, move.accel, uj,
+                                th.max_velocity, notch_freq=nf or None),
+                            pathplan.jerk_reach_v2(
+                                next_end_v2, move.move_d, move.accel, uj,
+                                th.max_velocity, notch_freq=nf or None),
+                        )
                     move.set_junction(
                         min(start_v2, cruise_v2),
                         cruise_v2,
@@ -273,6 +318,26 @@ class ToolHead:
         )
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
+        )
+        # Jerk-limited motion (opt-in). When enabled, each move's acceleration
+        # is rendered as a continuous jerk-limited ramp instead of a hard accel
+        # step, and the lookahead plans the boundary speeds that ramp can reach.
+        self.unified_emit = config.getboolean("unified_planner", False)
+        # Fixed jerk cap (mm/s^3). 0 = uncapped. With unified_notch_freq set it
+        # is a CEILING on the per-ramp jerk rather than the jerk itself.
+        self.unified_max_jerk = config.getfloat(
+            "unified_max_jerk", 0.0, minval=0.0
+        )
+        # Ramp integration time step (s).
+        self.unified_jerk_dt = config.getfloat(
+            "unified_jerk_dt", 0.001, above=0.0
+        )
+        # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
+        # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
+        # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
+        # 0 = off (fixed unified_max_jerk governs).
+        self.unified_notch_freq = config.getfloat(
+            "unified_notch_freq", 0.0, minval=0.0
         )
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
@@ -363,6 +428,11 @@ class ToolHead:
             desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
+        gcode.register_command(
+            "SET_UNIFIED",
+            self.cmd_SET_UNIFIED,
+            desc=self.cmd_SET_UNIFIED_help,
+        )
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
@@ -453,29 +523,76 @@ class ToolHead:
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
         for move in moves:
-            if move.is_kinematic_move:
-                self.trapq_append(
-                    self.trapq,
-                    next_move_time,
-                    move.accel_t,
-                    move.cruise_t,
-                    move.decel_t,
-                    move.start_pos[0],
-                    move.start_pos[1],
-                    move.start_pos[2],
-                    move.axes_r[0],
-                    move.axes_r[1],
-                    move.axes_r[2],
-                    move.start_v,
-                    move.cruise_v,
-                    move.accel,
-                )
-            for e_index, ea in enumerate(self.extra_axes):
-                if move.axes_d[e_index + 3]:
-                    ea.process_move(next_move_time, move, e_index + 3)
-            next_move_time = (
-                next_move_time + move.accel_t + move.cruise_t + move.decel_t
-            )
+            # Default (stock trapezoid) duration; the jerk path overrides it
+            # below with the actual emitted profile duration.
+            move_dur = move.accel_t + move.cruise_t + move.decel_t
+            segs = None
+            if self.unified_emit and move.is_kinematic_move:
+                # `or None` sends a degenerate empty profile back to the stock
+                # path rather than emitting a zero-duration move.
+                segs = pathplan.emit_profile(
+                    move.start_v, move.cruise_v, move.end_v, move.move_d,
+                    self._pathplan_cons(move)
+                ) or None
+            if segs is not None:
+                # Emit the jerk-limited profile as a chain of constant-accel
+                # slices, driving the toolhead trapq and each extra axis (the
+                # extruder) in lock-step so pressure advance integrates the real
+                # profile. The profile's duration differs from the nominal
+                # trapezoid (a_peak = dv*f_n < max_accel), so advance
+                # next_move_time by the ACTUAL emitted duration.
+                t = next_move_time
+                pos = 0.0
+                for (at, ct, dt, sv, cv, a, dist) in segs:
+                    self.trapq_append(
+                        self.trapq,
+                        t,
+                        at,
+                        ct,
+                        dt,
+                        move.start_pos[0] + move.axes_r[0] * pos,
+                        move.start_pos[1] + move.axes_r[1] * pos,
+                        move.start_pos[2] + move.axes_r[2] * pos,
+                        move.axes_r[0],
+                        move.axes_r[1],
+                        move.axes_r[2],
+                        sv,
+                        cv,
+                        a,
+                    )
+                    for e_index, ea in enumerate(self.extra_axes):
+                        if move.axes_d[e_index + 3] and hasattr(
+                            ea, "process_move_segment"
+                        ):
+                            ea.process_move_segment(
+                                t, move, e_index + 3, at, ct, dt, sv, cv, a,
+                                dist
+                            )
+                    t += at + ct + dt
+                    pos += dist
+                move_dur = t - next_move_time
+            else:
+                if move.is_kinematic_move:
+                    self.trapq_append(
+                        self.trapq,
+                        next_move_time,
+                        move.accel_t,
+                        move.cruise_t,
+                        move.decel_t,
+                        move.start_pos[0],
+                        move.start_pos[1],
+                        move.start_pos[2],
+                        move.axes_r[0],
+                        move.axes_r[1],
+                        move.axes_r[2],
+                        move.start_v,
+                        move.cruise_v,
+                        move.accel,
+                    )
+                for e_index, ea in enumerate(self.extra_axes):
+                    if move.axes_d[e_index + 3]:
+                        ea.process_move(next_move_time, move, e_index + 3)
+            next_move_time = next_move_time + move_dur
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
@@ -850,6 +967,21 @@ class ToolHead:
         self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
+    def _pathplan_cons(self, move):
+        # Build the pathplan.Constraints for one move. a_const is the move's
+        # constant accel (the sharp-fallback ceiling); with a notch frequency
+        # the emitter governs ordinary moves via a_peak = dv*f_n instead.
+        jerk = self.unified_max_jerk or None
+        notch = self.unified_notch_freq or None
+        v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
+        return pathplan.Constraints(
+            a_const=move.accel,
+            v_ceil=v_ceil,
+            max_jerk=jerk,
+            jerk_dt=self.unified_jerk_dt,
+            notch_freq=notch,
+        )
+
     def cmd_G4(self, gcmd):
         # Dwell
         delay = gcmd.get_float("P", 0.0, minval=0.0) / 1000.0
@@ -1011,6 +1143,35 @@ class ToolHead:
     def reset_accel(self):
         self.max_accel = self.orig_cfg["max_accel"]
         self._calc_junction_deviation()
+
+    cmd_SET_UNIFIED_help = (
+        "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
+        "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
+        "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk). "
+        "No args = report state."
+    )
+
+    def cmd_SET_UNIFIED(self, gcmd):
+        en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+        jerk = gcmd.get_float("MAX_JERK", None, minval=0.0)
+        notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
+        # Flush pending moves so the change only affects moves planned after
+        # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
+        self.flush_step_generation()
+        if en is not None:
+            self.unified_emit = bool(en)
+        if jerk is not None:
+            self.unified_max_jerk = jerk
+        if notch is not None:
+            self.unified_notch_freq = notch
+        gcmd.respond_info(
+            "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
+            % (
+                self.unified_emit,
+                self.unified_max_jerk,
+                self.unified_notch_freq,
+            )
+        )
 
 
 def add_printer_objects(config):

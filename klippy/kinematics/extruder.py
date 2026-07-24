@@ -363,6 +363,41 @@ class PrinterExtruder:
         )
         self.last_position = move.end_pos[ea_index]
 
+    def process_move_segment(self, print_time, move, ea_index, accel_t,
+                             cruise_t, decel_t, start_v, cruise_v, accel,
+                             seg_dist):
+        # One velocity slice of `move` queued to the extruder trapq, mirroring
+        # a jerk-limited toolhead slice emitted at the same print_time so the
+        # extruder stays time-synced with the (non-trapezoidal) XY profile. Same
+        # pressure-advance handling as process_move; the extruder position is
+        # advanced by this slice's share of the move (axis_r * seg_dist), so it
+        # lands exactly on move.end_pos over the move's slices.
+        axis_r = move.axes_r[ea_index]
+        pressure_advance = 0.0
+        use_pa_from_trapq = 0.0
+        if self.extruder_stepper:
+            if self.extruder_stepper.per_move_pressure_advance:
+                use_pa_from_trapq = 1.0
+            if axis_r > 0.0 and (move.axes_d[0] or move.axes_d[1]):
+                pressure_advance = self.extruder_stepper.pressure_advance
+        self.trapq_append(
+            self.trapq,
+            print_time,
+            accel_t,
+            cruise_t,
+            decel_t,
+            self.last_position,
+            0.0,
+            0.0,
+            1.0,
+            pressure_advance,
+            use_pa_from_trapq,
+            start_v * axis_r,
+            cruise_v * axis_r,
+            accel * axis_r,
+        )
+        self.last_position += axis_r * seg_dist
+
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.0
