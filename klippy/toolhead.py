@@ -91,7 +91,9 @@ class Move:
         # to the sharp constant-accel fallback.
         th = self.toolhead
         uj = th.unified_max_jerk if th.unified_emit else 0.0
-        nf = th.unified_notch_freq if th.unified_emit else 0.0
+        # Reach is rendered across prev_move's ramp, so notch on prev_move's
+        # direction.
+        nf = th._move_notch_freq(prev_move) if th.unified_emit else 0.0
         if uj > 0.0 or nf > 0.0:
             prev_reach_v2 = pathplan.jerk_reach_v2(
                 prev_move.max_start_v2, prev_move.move_d, prev_move.accel, uj,
@@ -196,10 +198,14 @@ class LookAheadQueue:
         # fallback. The toolhead is reached via any queued move.
         th = queue[0].toolhead if queue else None
         uj = th.unified_max_jerk if (th and th.unified_emit) else 0.0
-        nf = th.unified_notch_freq if (th and th.unified_emit) else 0.0
-        jerk_on = uj > 0.0 or nf > 0.0
+        notch_on = bool(th and th.unified_emit and th._notch_on())
+        jerk_on = uj > 0.0 or notch_on
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
+            # Per-move notch: direction-weighted so X-dominant and Y-dominant
+            # moves park the zero on their own axis mode (0.0 when off / non-kin).
+            nf = (th._move_notch_freq(move)
+                  if (jerk_on and move.is_kinematic_move) else 0.0)
             if jerk_on and move.is_kinematic_move:
                 reachable_start_v2 = pathplan.jerk_reach_v2(
                     next_end_v2, move.move_d, move.accel, uj,
@@ -339,6 +345,21 @@ class ToolHead:
         self.unified_notch_freq = config.getfloat(
             "unified_notch_freq", 0.0, minval=0.0
         )
+        # Optional PER-AXIS notch. A jerk-limited accel ramp shapes the SCALAR
+        # path speed, so its single spectral zero lands on both axes at once
+        # (a_x, a_y are the same a(t) scaled by the move's unit direction). Two
+        # independent zeros are impossible on one move; the target is instead
+        # chosen per move, weighted by direction (see _move_notch_freq).
+        #   - unified_notch_freq alone notches BOTH axes at that frequency.
+        #   - unified_notch_freq_x AND _y set the per-axis modes; they must be
+        #     given together (setting exactly one is a config error).
+        nfx = config.getfloat("unified_notch_freq_x", None, minval=0.0)
+        nfy = config.getfloat("unified_notch_freq_y", None, minval=0.0)
+        try:
+            self.unified_notch_freq_x, self.unified_notch_freq_y = \
+                self._resolve_notch(self.unified_notch_freq, nfx, nfy)
+        except ValueError as e:
+            raise config.error(str(e))
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -967,12 +988,61 @@ class ToolHead:
         self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
+    @staticmethod
+    def _resolve_notch(shared, nfx, nfy):
+        # Resolve the notch config into a per-axis pair (f_x, f_y).
+        #   shared   -> unified_notch_freq (0 = off), notches BOTH axes.
+        #   nfx/nfy  -> unified_notch_freq_x/_y, or None when absent.
+        # Per-axis values override `shared` but must be given as a pair: setting
+        # exactly one is ambiguous (which axis keeps the shared value?), so it is
+        # rejected. Raises ValueError on that case; the caller maps it to a
+        # config error.
+        if (nfx is None) != (nfy is None):
+            raise ValueError(
+                "unified_notch_freq_x and unified_notch_freq_y must be set"
+                " together. Use unified_notch_freq to notch both axes at one"
+                " frequency, or set BOTH unified_notch_freq_x and"
+                " unified_notch_freq_y.")
+        if nfx is None:
+            return shared, shared
+        return nfx, nfy
+
+    def _notch_on(self):
+        # True when a notch frequency is configured on either axis. The shared
+        # unified_notch_freq is folded into both at config time (_resolve_notch).
+        return bool(self.unified_notch_freq_x or self.unified_notch_freq_y)
+
+    def _move_notch_freq(self, move):
+        # Direction-weighted notch frequency (Hz) for one move; 0.0 = off.
+        #
+        # A jerk-limited accel ramp shapes the SCALAR path speed, so its single
+        # spectral zero lands on both axes at once: a_x(t) = rx*a(t) and
+        # a_y(t) = ry*a(t) share one zero. Two independent per-axis zeros are
+        # impossible on a single move; we pick ONE target, weighted by how much
+        # each axis moves:
+        #     f = (f_x*|rx| + f_y*|ry|) / (|rx| + |ry|)
+        # -> f_x on pure-X, f_y on pure-Y, a weighted mean (within
+        # [min(f_x,f_y), max(f_x,f_y)]) on diagonals. f_x / f_y are pre-resolved
+        # at config time (_resolve_notch), so a single shared unified_notch_freq
+        # yields that frequency for every direction.
+        fx = self.unified_notch_freq_x
+        fy = self.unified_notch_freq_y
+        if not fx and not fy:
+            return 0.0
+        rx = abs(move.axes_r[0])
+        ry = abs(move.axes_r[1])
+        w = rx + ry
+        if w <= 1e-12:
+            # No XY motion (Z/E-only): the path notch is direction-free.
+            return fx or fy
+        return (fx * rx + fy * ry) / w
+
     def _pathplan_cons(self, move):
         # Build the pathplan.Constraints for one move. a_const is the move's
         # constant accel (the sharp-fallback ceiling); with a notch frequency
         # the emitter governs ordinary moves via a_peak = dv*f_n instead.
         jerk = self.unified_max_jerk or None
-        notch = self.unified_notch_freq or None
+        notch = self._move_notch_freq(move) or None
         v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
         return pathplan.Constraints(
             a_const=move.accel,
@@ -1147,14 +1217,17 @@ class ToolHead:
     cmd_SET_UNIFIED_help = (
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
         "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
-        "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk). "
-        "No args = report state."
+        "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
+        "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
+        "direction (0 = fall back to NOTCH_FREQ). No args = report state."
     )
 
     def cmd_SET_UNIFIED(self, gcmd):
         en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
         jerk = gcmd.get_float("MAX_JERK", None, minval=0.0)
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
+        notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
+        notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
@@ -1163,13 +1236,23 @@ class ToolHead:
         if jerk is not None:
             self.unified_max_jerk = jerk
         if notch is not None:
+            # NOTCH_FREQ notches both axes; explicit NOTCH_FREQ_X/Y below win.
             self.unified_notch_freq = notch
+            self.unified_notch_freq_x = notch
+            self.unified_notch_freq_y = notch
+        if notch_x is not None:
+            self.unified_notch_freq_x = notch_x
+        if notch_y is not None:
+            self.unified_notch_freq_y = notch_y
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
+            " notch_freq_x=%.2f notch_freq_y=%.2f"
             % (
                 self.unified_emit,
                 self.unified_max_jerk,
                 self.unified_notch_freq,
+                self.unified_notch_freq_x,
+                self.unified_notch_freq_y,
             )
         )
 

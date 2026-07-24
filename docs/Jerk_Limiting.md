@@ -71,6 +71,30 @@ unified_notch_freq: 55
   Mode frequency in Hz to park the accel-ramp's shaper zero on, via
   `J = dv * f_n^2`. `0` disables the notch law (a fixed jerk is used instead).
 
+- `unified_notch_freq_x`, `unified_notch_freq_y` (default: 0)
+  Optional per-axis notch modes in Hz. The ramp shapes the *scalar path speed*,
+  so its single spectral zero lands on both axes at once (`a_x` and `a_y` are the
+  same `a(t)` scaled by the move's direction) — two independent per-axis zeros
+  cannot coexist on one move. The target is therefore chosen per move, weighted
+  by direction:
+
+  ```
+  f = (f_x*|rx| + f_y*|ry|) / (|rx| + |ry|)
+  ```
+
+  giving `f_x` on a pure-X move, `f_y` on a pure-Y move, and a weighted mean
+  (always within `[min(f_x,f_y), max(f_x,f_y)]`) on diagonals. Use this when X
+  and Y have different measured modes — e.g. a bed-slinger whose heavy Y rings
+  low and lighter X higher: each axis is shaped on its own mode where it
+  dominates the move, instead of running everything at the single worst mode.
+  These two must be set **together** — setting exactly one is a config error
+  (use `unified_notch_freq` to notch both axes at one frequency, or set both
+  `_x` and `_y`). Omitting both reproduces the single-`unified_notch_freq`
+  behaviour exactly. Diagonals remain a compromise (one zero per move) — that
+  irreducible coupling is what
+  per-axis *input shaping*, which filters each axis independently, avoids at the
+  cost of operating post-hoc on the committed path.
+
 - `unified_max_jerk` (default: 0)
   Fixed jerk cap in mm/s^3. `0` = uncapped. When `unified_notch_freq` is set
   this acts as a *ceiling* on the per-ramp jerk rather than the jerk itself.
@@ -88,6 +112,7 @@ flushed first, so the change applies to subsequently planned moves):
 
 ```
 SET_UNIFIED ENABLE=1 NOTCH_FREQ=55
+SET_UNIFIED NOTCH_FREQ_X=70 NOTCH_FREQ_Y=55   # per-axis modes
 SET_UNIFIED MAX_JERK=400000
 SET_UNIFIED                       # report current state
 ```
