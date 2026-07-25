@@ -76,17 +76,13 @@ class Constraints:
         so acceleration self-scales with the size of the velocity change while
         the shaper zero stays on the mode.
 
-        max_jerk, when set, is applied as a machine ceiling. Clamping J DOWN
-        reduces jerk and acceleration, but it moves the first zero below f_n;
-        it does not preserve cancellation at f_n except at coincident higher
-        zeros.
+        max_jerk, when set in notch mode, limits the allowed ramp dv so
+        J=dv*f_n^2 stays below the cap instead of lowering the notch frequency.
         """
         dv = abs(dv)
         if not self.notch_freq or dv <= 1e-12:
             return self.max_jerk
         j = dv * self.notch_freq * self.notch_freq
-        if self.max_jerk:
-            j = min(j, self.max_jerk)
         return j if j > 0.0 else None
 
 
@@ -137,7 +133,10 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
         return u0 + 2.0 * accel * dist
     v0 = math.sqrt(max(u0, 0.0))
     if notch_freq:
-        v_ceil = min(v_ceil, v0 + accel / notch_freq)
+        dv_max = accel / notch_freq
+        if jerk:
+            dv_max = min(dv_max, jerk / (notch_freq * notch_freq))
+        v_ceil = min(v_ceil, v0 + dv_max)
     hi = max(v0, v_ceil)
     if jerk_dist(v0, hi, accel, jerk, notch_freq) <= dist:
         return hi * hi
@@ -220,6 +219,9 @@ def _notch_unsat_peak(vs, vc, ve, cons):
     if not cons.notch_freq or not cons.a_const or cons.a_const <= 0.0:
         return vc
     dv_max = cons.a_const / cons.notch_freq
+    if cons.max_jerk:
+        dv_max = min(dv_max, cons.max_jerk
+                     / (cons.notch_freq * cons.notch_freq))
     return min(vc, vs + dv_max, ve + dv_max)
 
 
@@ -393,8 +395,6 @@ def notch_loss_reasons(vs, vc, ve, move_d, cons):
         if dv <= 1e-12:
             continue
         target_j = dv * cons.notch_freq * cons.notch_freq
-        if cons.max_jerk and target_j > cons.max_jerk:
-            reasons.add("jerk_clamped")
         if cons.a_const and dv > cons.a_const / cons.notch_freq:
             reasons.add("accel_saturated")
     req_d = (_ramp_up_jerk(vs, max(vc, vs), cons, collect=False)[1]

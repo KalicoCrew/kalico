@@ -52,10 +52,11 @@ distance = (v0 + v1) / f_n   (the "runway" a ramp needs)
 
 The parked zero is exact only for the ideal, unsaturated triangular pulse. When
 `max_accel` is finite, notch mode limits the velocity change of each ramp to
-`max_accel / f_n`; moves that would exceed that are slowed instead of clipping
-the acceleration pulse. The emitted zero-order-held slices still approximate
-the ideal pulse, and jerk clamping or insufficient runway move the response away
-from the requested notch.
+`max_accel / f_n`; if `unified_max_jerk` is set, it also limits each ramp to
+`unified_max_jerk / f_n^2`. Moves that would exceed either bound are slowed
+instead of clipping the acceleration pulse or lowering the notch frequency. The
+emitted zero-order-held slices still approximate the ideal pulse, and
+insufficient runway moves the response away from the requested notch.
 
 For notch tuning, set `max_accel` high enough that it does not unintentionally
 become the active limit. Many users will want an intentionally high
@@ -109,10 +110,9 @@ unified_notch_freq: 55
 - `unified_max_jerk` (default: 0)
   Fixed jerk cap in mm/s^3. `0` = uncapped. Values other than `0` must be at
   least `1000`. When `unified_notch_freq` is set this caps the normal per-ramp
-  jerk. Clamping reduces jerk and acceleration, but it moves the first zero
-  below `f_n`; it is not a guarantee of cancellation at the requested frequency.
-  Very short moves may use a bounded escape ramp above this cap while still
-  respecting `max_accel`.
+  jerk by limiting ramp `dv` to `unified_max_jerk / f_n^2`; this slows the move
+  rather than moving the first zero below `f_n`. Very short moves may use a
+  bounded escape ramp above this cap while still respecting `max_accel`.
 
 - `unified_max_da` (default: 0)
   Optional cap in mm/s^2 on the positive acceleration step emitted between

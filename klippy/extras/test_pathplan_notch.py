@@ -8,9 +8,9 @@
 # Verifies: the zero is parked (rise time constant across dv, total ramp = 2/f_n);
 # a_peak scales linearly with dv; ramp distance is (v0+v1)/f_n; the LOOKAHEAD
 # twin jerk_dist agrees with the emitter's integrated distance (else moves get
-# planned into the sharp fallback); jerk_reach_v2 stays monotone; max_jerk acts
-# as a ceiling; notch_freq unset is a no-op; the stepguard invariants hold; and
-# a full chain plans with zero sharp fallbacks.
+# planned into the sharp fallback); jerk_reach_v2 stays monotone; max_jerk
+# preserves the target notch by limiting dv; notch_freq unset is a no-op; the
+# stepguard invariants hold; and a full chain plans with zero sharp fallbacks.
 #
 # Run: klippy-env/bin/python klippy/extras/test_pathplan_notch.py
 import math
@@ -137,17 +137,17 @@ def test_reach_is_monotone_and_finite():
     print("  jerk_reach_v2 monotone under the notch law OK")
 
 
-def test_max_jerk_is_a_ceiling():
-    # Clamping J DOWN may only lengthen the ramp, but it does not preserve the
-    # target notch at f_n.
-    free = make_cons(max_jerk=None)
-    capped = make_cons(max_jerk=1.0e5)
-    for dv in DVS:
-        d_free, _, _ = ramp_stats(10.0, 10.0 + dv, free)
-        d_cap, _, _ = ramp_stats(10.0, 10.0 + dv, capped)
-        assert d_cap >= d_free - 1e-6, ("ceiling shortened the ramp",
-                                        dv, d_cap, d_free)
-    print("  max_jerk clamps down only OK")
+def test_max_jerk_limits_dv_to_preserve_notch():
+    capped = make_cons(notch=55.0, max_jerk=100000.0, a_const=30000.0)
+    dv_max = capped.max_jerk / (capped.notch_freq * capped.notch_freq)
+    segs = pathplan.emit_profile(0.0, 200.0, 0.0, 40.0, capped)
+    assert segs
+    peak_v = max(max(s[3], s[4]) for s in segs)
+    assert peak_v <= dv_max + 1e-3, (peak_v, dv_max)
+    peak_a = max(s[5] for s in segs)
+    assert peak_a <= dv_max * capped.notch_freq * 1.05, (
+        peak_a, dv_max * capped.notch_freq)
+    print("  max_jerk limits dv instead of moving the notch OK")
 
 
 def test_emitted_zoh_notch_response():
@@ -183,9 +183,9 @@ def test_notch_loss_reasons():
     saturated = make_cons(notch=55.0, a_const=3000.0)
     assert "accel_saturated" in pathplan.notch_loss_reasons(
         0.0, 100.0, 0.0, 20.0, saturated)
-    clamped = make_cons(notch=55.0, max_jerk=100000.0)
-    assert "jerk_clamped" in pathplan.notch_loss_reasons(
-        0.0, 100.0, 0.0, 20.0, clamped)
+    capped = make_cons(notch=55.0, max_jerk=100000.0)
+    reasons = pathplan.notch_loss_reasons(0.0, 100.0, 0.0, 20.0, capped)
+    assert "jerk_clamped" not in reasons, reasons
     short = make_cons()
     assert "insufficient_runway" in pathplan.notch_loss_reasons(
         0.0, 200.0, 0.0, 0.5, short)
@@ -214,6 +214,18 @@ def test_notch_reach_clamps_to_unsaturated_accel():
     v = math.sqrt(u)
     assert v <= accel / notch + 1e-6, (v, accel / notch)
     print("  notch reach clamps to unsaturated velocity delta OK")
+
+
+def test_notch_reach_clamps_to_max_jerk():
+    accel = 30000.0
+    notch = 55.0
+    jerk = 100000.0
+    u = pathplan.jerk_reach_v2(0.0, 1000.0, accel, jerk, 500.0,
+                               notch_freq=notch)
+    v = math.sqrt(u)
+    assert v <= jerk / (notch * notch) + 1e-6, (
+        v, jerk / (notch * notch))
+    print("  notch reach clamps to max_jerk/f_n^2 OK")
 
 
 def test_notch_off_is_noop():
@@ -315,12 +327,13 @@ def main():
     test_lookahead_matches_emitter()
     test_lookahead_conservative_across_dt_and_saturation()
     test_reach_is_monotone_and_finite()
-    test_max_jerk_is_a_ceiling()
+    test_max_jerk_limits_dv_to_preserve_notch()
     test_emitted_zoh_notch_response()
     test_zoh_notch_error_scales_with_dt()
     test_notch_loss_reasons()
     test_notch_peak_clamps_to_unsaturated_accel()
     test_notch_reach_clamps_to_unsaturated_accel()
+    test_notch_reach_clamps_to_max_jerk()
     test_notch_off_is_noop()
     test_invariants_hold()
     test_chain_no_sharp_fallback()
