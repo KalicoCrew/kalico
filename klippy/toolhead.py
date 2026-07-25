@@ -541,9 +541,6 @@ class ToolHead:
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
         for move in moves:
-            # Default (stock trapezoid) duration; the jerk path overrides it
-            # below with the actual emitted profile duration.
-            move_dur = move.accel_t + move.cruise_t + move.decel_t
             segs = None
             if self.unified_emit and move.is_kinematic_move:
                 cons = self._pathplan_cons(move)
@@ -619,7 +616,10 @@ class ToolHead:
                         ea, "sync_position"
                     ):
                         ea.sync_position(move, e_index + 3)
-                move_dur = t - next_move_time
+                # The emitted profile's duration differs from the nominal
+                # trapezoid (a_peak = dv*f_n < max_accel), so advance by the
+                # slice chain's own accumulated end time.
+                next_move_time = t
             else:
                 if move.is_kinematic_move:
                     self.trapq_append(
@@ -641,7 +641,14 @@ class ToolHead:
                 for e_index, ea in enumerate(self.extra_axes):
                     if move.axes_d[e_index + 3]:
                         ea.process_move(next_move_time, move, e_index + 3)
-            next_move_time = next_move_time + move_dur
+                # Keep this sum grouped EXACTLY as upstream computes it. Folding
+                # it into a precomputed duration regroups the float addition to
+                # nmt + (a+c+d) instead of ((nmt+a)+c)+d, which shifts
+                # print_time by an ULP and trips "Internal error in
+                # stepcompress" on long extruder-only runs.
+                next_move_time = (
+                    next_move_time + move.accel_t + move.cruise_t + move.decel_t
+                )
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
