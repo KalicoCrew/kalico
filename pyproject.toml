@@ -39,6 +39,7 @@ indent-width = 4
 exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
 
 [tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 extend-select = [
   "B006",  # Checks for uses of mutable objects as function argument defaults
   "FA100", # Detect when type annotations could be made better with PEP563

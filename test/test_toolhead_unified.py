@@ -1,12 +1,21 @@
 # Standalone regression tests for unified-planner ToolHead integration.
 #
 # Run: klippy-env/bin/python test/test_toolhead_unified.py
+import importlib
 import os
 import sys
 import types
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 KLIPPY = os.path.join(ROOT, 'klippy')
+STUB_MODULES = [
+    'klippy',
+    'klippy.chelper',
+    'klippy.kinematics',
+    'klippy.kinematics.extruder',
+    'klippy.toolhead',
+]
+saved_modules = {name: sys.modules.get(name) for name in STUB_MODULES}
 pkg = types.ModuleType('klippy')
 pkg.__path__ = [KLIPPY]
 sys.modules['klippy'] = pkg
@@ -19,7 +28,12 @@ extruder.DummyExtruder = object
 extruder.add_printer_objects = lambda config: None
 sys.modules['klippy.kinematics.extruder'] = extruder
 
-import klippy.toolhead as toolhead  # noqa: E402
+toolhead = importlib.import_module('klippy.toolhead')
+for name in STUB_MODULES:
+    if saved_modules[name] is None:
+        sys.modules.pop(name, None)
+    else:
+        sys.modules[name] = saved_modules[name]
 
 
 class FakePrinter:

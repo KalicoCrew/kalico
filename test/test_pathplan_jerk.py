@@ -4,7 +4,6 @@
 # fall back to sharp; disabled == sharp.
 #
 # Run: klippy-env/bin/python test/test_pathplan_jerk.py
-import math
 import os
 import sys
 
