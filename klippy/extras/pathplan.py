@@ -136,6 +136,8 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
     if accel <= 0.0 or ((jerk is None or jerk <= 0.0) and not notch_freq):
         return u0 + 2.0 * accel * dist
     v0 = math.sqrt(max(u0, 0.0))
+    if notch_freq:
+        v_ceil = min(v_ceil, v0 + accel / notch_freq)
     hi = max(v0, v_ceil)
     if jerk_dist(v0, hi, accel, jerk, notch_freq) <= dist:
         return hi * hi
@@ -214,12 +216,19 @@ def _decel_from_accel(acc_slices):
     return dec
 
 
+def _notch_unsat_peak(vs, vc, ve, cons):
+    if not cons.notch_freq or not cons.a_const or cons.a_const <= 0.0:
+        return vc
+    dv_max = cons.a_const / cons.notch_freq
+    return min(vc, vs + dv_max, ve + dv_max)
+
+
 def _peak_velocity_jerk(vs, ve, move_d, cons):
     # Highest cruise a jerk-limited move can reach: bisection on the ramp
     # distance (accel vs->vp plus decel vp->ve). Returns max(vs,ve) when even
     # that connecting ramp overfills move_d (caller then falls back to sharp).
     lo = max(vs, ve)
-    hi = cons.v_ceil
+    hi = _notch_unsat_peak(vs, cons.v_ceil, ve, cons)
     need_lo = (_ramp_up_jerk(vs, lo, cons, collect=False)[1]
                + _ramp_up_jerk(ve, lo, cons, collect=False)[1])
     if need_lo >= move_d:
@@ -251,7 +260,7 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
     # One jerk-limited profile at the per-ramp jerk: ramp vs->vc, cruise, ramp
     # vc->ve. Returns None when the move can't be jerk-limited (endpoints
     # unreachable within move_d even at the connecting peak).
-    vc = max(vc, vs, ve)
+    vc = max(_notch_unsat_peak(vs, vc, ve, cons), vs, ve)
     acc, d_acc = _ramp_up_jerk(vs, vc, cons, collect=collect)
     dec_acc, d_dec = _ramp_up_jerk(ve, vc, cons, collect=collect)
     if not math.isfinite(d_acc) or not math.isfinite(d_dec):

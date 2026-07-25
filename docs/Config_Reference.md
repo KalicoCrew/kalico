@@ -263,6 +263,9 @@ max_accel:
 #   Values other than 0 must be at least 1000. Short moves may use a bounded
 #   escape ramp that exceeds this cap while still respecting max_accel. The
 #   default is 0.
+#unified_max_da: 0
+#   Optional cap in mm/s^2 on positive jerk-up acceleration changes between
+#   emitted slices. 0 disables this cap. The default is 0.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
 #   values create more motion-queue entries. The minimum is 0.0001. The default

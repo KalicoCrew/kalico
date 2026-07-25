@@ -192,6 +192,30 @@ def test_notch_loss_reasons():
     print("  notch loss diagnostics report emitted-profile limits OK")
 
 
+def test_notch_peak_clamps_to_unsaturated_accel():
+    cons = make_cons(notch=55.0, a_const=3000.0, jerk_dt=0.0002)
+    dv_max = cons.a_const / cons.notch_freq
+    segs = pathplan.emit_profile(0.0, 200.0, 0.0, 30.0, cons)
+    assert segs
+    peak_v = max(max(s[3], s[4]) for s in segs)
+    peak_a = max(s[5] for s in segs)
+    assert peak_v <= dv_max + 1e-3, (peak_v, dv_max)
+    assert peak_a <= cons.a_const + 1e-6, (peak_a, cons.a_const)
+    assert "accel_saturated" in pathplan.notch_loss_reasons(
+        0.0, 200.0, 0.0, 30.0, cons)
+    print("  notch peak clamps to max_accel/f_n to avoid saturation OK")
+
+
+def test_notch_reach_clamps_to_unsaturated_accel():
+    accel = 3000.0
+    notch = 55.0
+    u = pathplan.jerk_reach_v2(0.0, 1000.0, accel, None, 500.0,
+                               notch_freq=notch)
+    v = math.sqrt(u)
+    assert v <= accel / notch + 1e-6, (v, accel / notch)
+    print("  notch reach clamps to unsaturated velocity delta OK")
+
+
 def test_notch_off_is_noop():
     a = pathplan.Constraints(a_const=8000.0, v_ceil=400.0, max_jerk=1.0e5,
                              jerk_dt=0.001)
@@ -295,6 +319,8 @@ def main():
     test_emitted_zoh_notch_response()
     test_zoh_notch_error_scales_with_dt()
     test_notch_loss_reasons()
+    test_notch_peak_clamps_to_unsaturated_accel()
+    test_notch_reach_clamps_to_unsaturated_accel()
     test_notch_off_is_noop()
     test_invariants_hold()
     test_chain_no_sharp_fallback()

@@ -1274,7 +1274,7 @@ class ToolHead:
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
         "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
         "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
-        "MAX_DA caps the emitted acceleration step per slice (mm/s^2, 0 = off); "
+        "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
         "direction (0 = fall back to NOTCH_FREQ). No args = report state."
     )

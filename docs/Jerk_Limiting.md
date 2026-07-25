@@ -50,9 +50,19 @@ a_peak   = dv * f_n          (linear in the velocity change)
 distance = (v0 + v1) / f_n   (the "runway" a ramp needs)
 ```
 
-The parked zero is exact only for the ideal, unsaturated triangular pulse. The
-emitted zero-order-held slices approximate it, and saturation, jerk clamping,
-or insufficient runway move the response away from the requested notch.
+The parked zero is exact only for the ideal, unsaturated triangular pulse. When
+`max_accel` is finite, notch mode limits the velocity change of each ramp to
+`max_accel / f_n`; moves that would exceed that are slowed instead of clipping
+the acceleration pulse. The emitted zero-order-held slices still approximate
+the ideal pulse, and jerk clamping or insufficient runway move the response away
+from the requested notch.
+
+For notch tuning, set `max_accel` high enough that it does not unintentionally
+become the active limit. Many users will want an intentionally high
+`max_accel` value while testing this feature, then use `unified_notch_freq`,
+`unified_max_jerk`, and mechanical testing to set the real behavior. If
+`max_accel` is left at a conservative printing value, the planner may slow large
+velocity changes to preserve the unsaturated notch law.
 
 ## Configuration
 
@@ -156,11 +166,11 @@ printed at a known speed. Band spacing is the resonance period, so
   profile (bounded by `max_accel`). Lower `f_n` needs more runway, so very fine
   detail on a low-frequency notch may not be shaped.
 
-- **Acceleration saturation.** Parking the first zero at `f_n` requires the
-  unsaturated condition `dv <= max_accel / f_n`. For example, at
-  `max_accel = 3000 mm/s^2` and `f_n = 55 Hz`, ramps with `dv` above about
-  `54.5 mm/s` saturate acceleration and no longer keep the first zero at
-  `55 Hz`.
+- **Acceleration limit.** Parking the first zero at `f_n` requires
+  `dv <= max_accel / f_n`. For example, at `max_accel = 3000 mm/s^2` and
+  `f_n = 55 Hz`, each ramp is limited to about `54.5 mm/s` of velocity change.
+  Set `max_accel` high enough that this limit does not interfere unless you
+  deliberately want it to slow the move.
 
 - **Homing and probing.** Homing/probing drip moves continue to use the standard
   trapezoid path. `unified_planner` applies to normal queued motion.
