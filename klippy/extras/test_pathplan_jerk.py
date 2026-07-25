@@ -84,6 +84,20 @@ def test_max_da_shrinks_jerk_step_dt():
     print("  max_da shrinks dt and caps positive accel steps OK")
 
 
+def test_collect_false_matches_feasibility():
+    cons = make_cons()
+    cases = [(0.0, 200.0, 0.0, 0.5),
+             (0.0, 200.0, 0.0, 0.05),
+             (100.0, 200.0, 0.0, 0.5),
+             (50.0, 200.0, 100.0, 0.2)]
+    for c in cases:
+        full = pathplan._emit_jerk_core(*c, cons)
+        probe = pathplan._emit_jerk_core(*c, cons, collect=False)
+        assert (full is None) == (probe is None), (
+            "collect=False changed feasibility", c, full, probe)
+    print("  collect=False feasibility matches collected emission OK")
+
+
 def test_disabled_matches_sharp():
     a = pathplan.emit_profile(0.0, 200.0, 50.0, 30.0,
                               pathplan.Constraints(a_const=8000.0,
@@ -98,6 +112,7 @@ def main():
     test_jerk_widens_ramp_vs_sharp()
     test_short_move_falls_back_to_sharp()
     test_max_da_shrinks_jerk_step_dt()
+    test_collect_false_matches_feasibility()
     test_disabled_matches_sharp()
     print("ALL PASS")
 

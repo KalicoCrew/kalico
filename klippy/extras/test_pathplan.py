@@ -73,10 +73,21 @@ def test_disabled_matches_sharp():
     print("  max_jerk=None identical to sharp OK")
 
 
+def test_impossible_endpoint_change_rejected():
+    cons = pathplan.Constraints(a_const=8000.0, v_ceil=400.0)
+    cases = [(100.0, 200.0, 0.0, 0.5),
+             (50.0, 200.0, 100.0, 0.2)]
+    for c in cases:
+        assert pathplan.emit_profile(*c, cons) == [], (
+            "impossible endpoint change emitted", c)
+    print("  impossible endpoint changes rejected OK")
+
+
 def main():
     test_sharp_trapezoid()
     test_jerk_profile_invariants()
     test_disabled_matches_sharp()
+    test_impossible_endpoint_change_rejected()
     print("ALL PASS")
 
 

@@ -8,6 +8,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pathplan  # noqa: E402
+from test_pathplan import check_segs  # noqa: E402
 
 
 def bench_reach(iterations=2000):
@@ -30,12 +31,13 @@ def bench_emit(iterations=400):
     seg_count = 0
     dist_sum = 0.0
     for i in range(iterations):
-        vs = float((i * 17) % 120)
-        ve = float((i * 11) % 100)
-        vc = max(vs, ve) + 20.0 + float(i % 160)
-        move_d = 0.8 + float(i % 80) * 0.25
+        vs = float((i * 7) % 40)
+        ve = float((i * 11) % 40)
+        vc = max(vs, ve) + 20.0 + float(i % 120)
+        move_d = 8.0 + float(i % 80) * 0.35
         segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
         assert segs
+        check_segs(segs, move_d, vs, ve, "perf[%d]" % (i,))
         seg_count += len(segs)
         dist_sum += sum(s[6] for s in segs)
     return time.perf_counter() - start, seg_count, dist_sum

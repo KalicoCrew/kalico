@@ -44,6 +44,11 @@ def make_toolhead_without_unified_fields():
     th.junction_deviation = 0.01
     th.max_accel_to_decel = 1500.0
     th.extra_axes = []
+    th._move_notch_freq = lambda move: 0.0
+    th._uses_unified_reach = toolhead.ToolHead._uses_unified_reach.__get__(
+        th, object)
+    th._pathplan_cons = toolhead.ToolHead._pathplan_cons.__get__(th, object)
+    th._move_reach_v2 = toolhead.ToolHead._move_reach_v2.__get__(th, object)
     return th
 
 
@@ -53,6 +58,8 @@ def test_subclass_without_unified_fields():
     move = toolhead.Move(th, [10., 0., 0., 0.], [10., 10., 0., 0.], 100.)
     move.calc_junction(prev)
     assert move.max_start_v2 >= 0.0
+    reach = th._move_reach_v2(prev, prev.max_start_v2)
+    assert reach == prev.max_start_v2 + prev.delta_v2
     print("  Move.calc_junction tolerates missing unified fields OK")
 
 

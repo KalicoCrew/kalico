@@ -84,23 +84,8 @@ class Move:
             ea.calc_junction(prev_move, self, e_index + 3)
             for e_index, ea in enumerate(self.toolhead.extra_axes)
         ]
-        # Reachability across prev_move: the jerk-aware S-curve reach when the
-        # unified emitter renders moves jerk-limited (matches flush()), else the
-        # stock constant-accel delta_v2. Slightly below the constant-accel reach,
-        # so every planned move stays jerk-feasible and the emitter never falls
-        # to the sharp constant-accel fallback.
         th = self.toolhead
-        unified_emit = getattr(th, "unified_emit", False)
-        uj = getattr(th, "unified_max_jerk", 0.0) if unified_emit else 0.0
-        # Reach is rendered across prev_move's ramp, so notch on prev_move's
-        # direction.
-        nf = th._move_notch_freq(prev_move) if unified_emit else 0.0
-        if uj > 0.0 or nf > 0.0:
-            prev_reach_v2 = pathplan.jerk_reach_v2(
-                prev_move.max_start_v2, prev_move.move_d, prev_move.accel, uj,
-                th.max_velocity, notch_freq=nf or None)
-        else:
-            prev_reach_v2 = prev_move.max_start_v2 + prev_move.delta_v2
+        prev_reach_v2 = th._move_reach_v2(prev_move, prev_move.max_start_v2)
         max_start_v2 = min(
             [
                 self.max_cruise_v2,
@@ -192,28 +177,11 @@ class LookAheadQueue:
         # after the last move.
         delayed = []
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
-        # Jerk-aware lookahead: when the unified emitter renders moves
-        # jerk-limited, the reachable boundary speed is the jerk S-curve reach
-        # (slightly below the constant-accel reach), so every planned move is
-        # jerk-feasible and the emitter never falls to the sharp constant-accel
-        # fallback. The toolhead is reached via any queued move.
+        # The toolhead is reached via any queued move.
         th = queue[0].toolhead if queue else None
-        unified_emit = bool(th and getattr(th, "unified_emit", False))
-        uj = getattr(th, "unified_max_jerk", 0.0) if unified_emit else 0.0
-        notch_on = bool(unified_emit and th._notch_on())
-        jerk_on = uj > 0.0 or notch_on
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            # Per-move notch: direction-weighted so X-dominant and Y-dominant
-            # moves park the zero on their own axis mode (0.0 when off / non-kin).
-            nf = (th._move_notch_freq(move)
-                  if (jerk_on and move.is_kinematic_move) else 0.0)
-            if jerk_on and move.is_kinematic_move:
-                reachable_start_v2 = pathplan.jerk_reach_v2(
-                    next_end_v2, move.move_d, move.accel, uj,
-                    th.max_velocity, notch_freq=nf or None)
-            else:
-                reachable_start_v2 = next_end_v2 + move.delta_v2
+            reachable_start_v2 = th._move_reach_v2(move, next_end_v2)
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -248,7 +216,7 @@ class LookAheadQueue:
                         move.max_cruise_v2,
                         peak_cruise_v2,
                     )
-                    if jerk_on and move.is_kinematic_move:
+                    if th._uses_unified_reach(move):
                         # Jerk S-curve peak is below the constant-accel midpoint;
                         # clamp cruise to what is jerk-reachable from each end so
                         # the emitted profile stays jerk-feasible. Must use the
@@ -257,12 +225,8 @@ class LookAheadQueue:
                         # fallback.
                         cruise_v2 = min(
                             cruise_v2,
-                            pathplan.jerk_reach_v2(
-                                start_v2, move.move_d, move.accel, uj,
-                                th.max_velocity, notch_freq=nf or None),
-                            pathplan.jerk_reach_v2(
-                                next_end_v2, move.move_d, move.accel, uj,
-                                th.max_velocity, notch_freq=nf or None),
+                            th._move_reach_v2(move, start_v2),
+                            th._move_reach_v2(move, next_end_v2),
                         )
                     move.set_junction(
                         min(start_v2, cruise_v2),
@@ -1087,6 +1051,20 @@ class ToolHead:
             notch_freq=notch,
             max_da=max_da,
         )
+
+    def _uses_unified_reach(self, move):
+        if not getattr(self, "unified_emit", False) or not move.is_kinematic_move:
+            return False
+        return self.unified_max_jerk > 0.0 or self._move_notch_freq(move) > 0.0
+
+    def _move_reach_v2(self, move, start_v2):
+        if not self._uses_unified_reach(move):
+            return start_v2 + move.delta_v2
+        cons = self._pathplan_cons(move)
+        jerk = cons.max_jerk or 0.0
+        return pathplan.jerk_reach_v2(
+            start_v2, move.move_d, move.accel, jerk, self.max_velocity,
+            notch_freq=cons.notch_freq)
 
     def _check_unified_extra_axis_support(self, error_factory=None):
         if not self.unified_emit:

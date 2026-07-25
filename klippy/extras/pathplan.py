@@ -254,14 +254,14 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
     vc = max(vc, vs, ve)
     acc, d_acc = _ramp_up_jerk(vs, vc, cons, collect=collect)
     dec_acc, d_dec = _ramp_up_jerk(ve, vc, cons, collect=collect)
-    if acc is None or dec_acc is None:      # ramp did not converge -> reject
+    if not math.isfinite(d_acc) or not math.isfinite(d_dec):
         return None
     cruise_d = move_d - d_acc - d_dec
     if cruise_d < -1e-9:
         vc = max(_peak_velocity_jerk(vs, ve, move_d, cons), vs, ve)
         acc, d_acc = _ramp_up_jerk(vs, vc, cons, collect=collect)
         dec_acc, d_dec = _ramp_up_jerk(ve, vc, cons, collect=collect)
-        if acc is None or dec_acc is None:
+        if not math.isfinite(d_acc) or not math.isfinite(d_dec):
             return None
         cruise_d = move_d - d_acc - d_dec
         if cruise_d < -1e-6 * max(1.0, move_d):
@@ -336,7 +336,9 @@ def _emit_sharp(vs, vc, ve, move_d, cons):
         # Triangle: solve the peak where accel vs->vp and decel vp->ve fill
         # move_d exactly: 2*vp^2 - vs^2 - ve^2 = 2*a*move_d.
         vp2 = 0.5 * (2.0 * a * move_d + vs * vs + ve * ve)
-        vc = max(math.sqrt(max(vp2, 0.0)), vs, ve)
+        vc = math.sqrt(max(vp2, 0.0))
+        if vc < max(vs, ve) - 1e-9:
+            return []
         d_acc = (vc * vc - vs * vs) / (2.0 * a)
         d_dec = (vc * vc - ve * ve) / (2.0 * a)
         cruise_d = max(0.0, move_d - d_acc - d_dec)
