@@ -1,11 +1,11 @@
 # Standalone regression tests for unified-planner ToolHead integration.
 #
-# Run: klippy-env/bin/python klippy/extras/test_toolhead_unified.py
+# Run: klippy-env/bin/python test/test_toolhead_unified.py
 import os
 import sys
 import types
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 KLIPPY = os.path.join(ROOT, 'klippy')
 pkg = types.ModuleType('klippy')
 pkg.__path__ = [KLIPPY]

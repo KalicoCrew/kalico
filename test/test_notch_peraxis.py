@@ -5,7 +5,7 @@
 # with runtime-only dependencies stubbed so it can run standalone.
 import sys, types, math, os
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 KLIPPY = os.path.join(ROOT, 'klippy')
 pkg = types.ModuleType('klippy')
 pkg.__path__ = [KLIPPY]

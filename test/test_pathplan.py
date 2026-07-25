@@ -1,11 +1,12 @@
 # Invariant checks for pathplan.emit_profile (the "stepguard" invariant made
 # structural) plus basic sharp/jerk profile shape.
 #
-# Run: klippy-env/bin/python klippy/extras/test_pathplan.py
+# Run: klippy-env/bin/python test/test_pathplan.py
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(ROOT, 'klippy', 'extras'))
 import pathplan  # noqa: E402
 
 

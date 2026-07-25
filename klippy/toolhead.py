@@ -437,6 +437,9 @@ class ToolHead:
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
+        self.printer.register_event_handler(
+            "klippy:connect", self._handle_connect
+        )
         # Load some default modules
         modules = [
             "gcode_move",
@@ -449,7 +452,6 @@ class ToolHead:
         ]
         for module_name in modules:
             self.printer.load_object(config, module_name)
-        self._check_unified_extra_axis_support(config.error)
 
     def get_active_rails_for_axis(self, axis):
         # axis is 'x,y,z'
@@ -777,6 +779,10 @@ class ToolHead:
 
     def set_extruder(self, extruder, extrude_pos):
         # XXX - should use add_extra_axis
+        if self.unified_emit and not hasattr(extruder, "process_move_segment"):
+            raise self.printer.command_error(
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_segment" % (extruder.get_axis_gcode_id(),))
         prev_ea_trapq = self.extra_axes[0].get_trapq()
         if prev_ea_trapq in self.flush_trapqs:
             self.flush_trapqs.remove(prev_ea_trapq)
@@ -940,6 +946,9 @@ class ToolHead:
     def _handle_shutdown(self):
         self.can_pause = False
         self.lookahead.reset()
+
+    def _handle_connect(self):
+        self._check_unified_extra_axis_support(self.printer.command_error)
 
     def get_kinematics(self):
         return self.kin

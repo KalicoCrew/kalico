@@ -1,12 +1,13 @@
 # Lightweight performance benchmark for dense jerk/notch planning.
 #
-# Run: klippy-env/bin/python klippy/extras/test_pathplan_perf.py
+# Run: klippy-env/bin/python test/test_pathplan_perf.py
 import math
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(ROOT, 'klippy', 'extras'))
 import pathplan  # noqa: E402
 from test_pathplan import check_segs  # noqa: E402
 
