@@ -265,6 +265,16 @@ max_accel:
 #   direction-weighted scalar notch per move, so diagonal moves are a compromise
 #   between the X and Y frequencies. The default is to use unified_notch_freq for
 #   both axes.
+#unified_notch_max_freq: 0
+#   Highest frequency in Hz the notch may be raised to on moves too short to
+#   ramp at unified_notch_freq. 0 disables this and short moves hold their entry
+#   speed instead. Enabling it raises the throughput ceiling to
+#   unified_notch_max_freq * segment_length, but the zero then sits off the mode
+#   and ringing returns as sinc^2(pi * f_n / f): roughly 4% of unshaped at 1.2x
+#   unified_notch_freq, 17% at 1.5x, and 41% at 2x. Useful values are just above
+#   unified_notch_freq; far above it is equivalent to disabling shaping on short
+#   moves. Also capped internally at 1 / (4 * unified_jerk_dt), past which the
+#   emitted slices cannot resolve a ramp. The default is 0.
 #unified_max_jerk: 0
 #   Maximum jerk in mm/s^3 for normal jerk-limited ramps. 0 disables this cap.
 #   Values other than 0 must be at least 1000. In notch mode this cap must be

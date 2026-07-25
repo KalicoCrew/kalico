@@ -113,6 +113,7 @@ def make_unified_toolhead(**over):
     th.unified_notch_freq = 55.0
     th.unified_notch_freq_x = 55.0
     th.unified_notch_freq_y = 55.0
+    th.unified_notch_max_freq = 0.0
     th.extra_axes = []
     th.printer = FakePrinter()
     for k, v in over.items():

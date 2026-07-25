@@ -345,6 +345,18 @@ class ToolHead:
             )
         except ValueError as e:
             raise config.error(str(e))
+        # Runway adaptation. A notched ramp always lasts 2/f_n seconds, so it
+        # needs (v0+v1)/f_n of travel; a move shorter than that cannot change
+        # speed at all, which otherwise pins a chain of L-mm segments to about
+        # f_n*L mm/s no matter how high max_velocity/max_accel are. When that
+        # happens the notch can be RAISED to whatever does fit, up to this cap,
+        # so the move still moves. That is a TRADE: the zero leaves the mode, so
+        # ringing comes back roughly as sinc^2(pi*f_n/f) -- about 40% of
+        # unshaped at 2*f_n and 80% at 4*f_n. Hence 0 (off) is the default and
+        # useful values are just above unified_notch_freq, not far above it.
+        self.unified_notch_max_freq = config.getfloat(
+            "unified_notch_max_freq", 0.0, minval=0.0
+        )
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -357,6 +369,7 @@ class ToolHead:
         self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
         self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
         self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
+        self.orig_cfg["unified_notch_max_freq"] = self.unified_notch_max_freq
         self._unified_warned = set()
         self._unified_all_warned = False
         self.junction_deviation = self.max_accel_to_decel = 0
@@ -1137,7 +1150,24 @@ class ToolHead:
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             max_da=max_da,
+            notch_max_freq=self._notch_freq_cap(),
         )
+
+    def _notch_freq_cap(self):
+        # Ceiling the runway adaptation may raise the notch to. 0 = OFF: short
+        # moves hold their entry speed rather than being shaped on a wrong
+        # frequency. This is the default on purpose -- raising the zero away
+        # from the mode restores ringing fast (see docs/Jerk_Limiting.md), so
+        # adaptation is a deliberate speed-for-quality trade, not a free win.
+        # Also bounded by the emitter's slice resolution: a rise time shorter
+        # than a few jerk_dt is a step in all but name.
+        cap = getattr(self, "unified_notch_max_freq", 0.0)
+        if not cap:
+            return 0.0
+        dt = self.unified_jerk_dt
+        if dt > 0.0:
+            cap = min(cap, 0.25 / dt)
+        return cap
 
     def _uses_unified_reach(self, move):
         if (
@@ -1172,6 +1202,7 @@ class ToolHead:
             jerk,
             self.max_velocity,
             notch_freq=cons.notch_freq,
+            notch_max_freq=cons.notch_max_freq,
         )
         move._unified_reach_cache = (key, res)
         return res
@@ -1184,6 +1215,7 @@ class ToolHead:
         "unified_notch_freq",
         "unified_notch_freq_x",
         "unified_notch_freq_y",
+        "unified_notch_max_freq",
     )
 
     def _unified_state(self):
@@ -1363,13 +1395,8 @@ class ToolHead:
         # Leaving half-restored unified state behind would be worse than the
         # error itself.
         old_unified = self._unified_state()
-        self.unified_emit = self.orig_cfg["unified_emit"]
-        self.unified_max_jerk = self.orig_cfg["unified_max_jerk"]
-        self.unified_jerk_dt = self.orig_cfg["unified_jerk_dt"]
-        self.unified_max_da = self.orig_cfg["unified_max_da"]
-        self.unified_notch_freq = self.orig_cfg["unified_notch_freq"]
-        self.unified_notch_freq_x = self.orig_cfg["unified_notch_freq_x"]
-        self.unified_notch_freq_y = self.orig_cfg["unified_notch_freq_y"]
+        for name in self._UNIFIED_FIELDS:
+            setattr(self, name, self.orig_cfg[name])
         try:
             self._check_unified_extra_axis_support()
         except:
@@ -1387,6 +1414,7 @@ class ToolHead:
                 "unified_notch_freq: %.6f" % self.unified_notch_freq,
                 "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
                 "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
+                "unified_notch_max_freq: %.6f" % self.unified_notch_max_freq,
             )
         )
         if get_danger_options().log_velocity_limit_changes:
@@ -1422,7 +1450,9 @@ class ToolHead:
         "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
         "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
-        "direction (0 = fall back to NOTCH_FREQ). No args = report state."
+        "direction (0 = fall back to NOTCH_FREQ); NOTCH_MAX_FREQ lets short "
+        "moves raise the notch to fit their runway (Hz, 0 = off, trades "
+        "ringing for throughput). No args = report state."
     )
 
     def cmd_SET_UNIFIED(self, gcmd):
@@ -1432,6 +1462,7 @@ class ToolHead:
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
         notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
+        notch_max = gcmd.get_float("NOTCH_MAX_FREQ", None, minval=0.0)
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
@@ -1463,6 +1494,8 @@ class ToolHead:
                 self.unified_notch_freq_y = notch_y
             if max_da is not None:
                 self.unified_max_da = max_da
+            if notch_max is not None:
+                self.unified_notch_max_freq = notch_max
             # Enforce the same X/Y pair rule the config parser applies at
             # startup (_resolve_notch): notching one axis but not the other is
             # ambiguous, and setting only NOTCH_FREQ_X used to slip past it.
@@ -1480,6 +1513,7 @@ class ToolHead:
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
             " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
+            " notch_max_freq=%.2f"
             % (
                 self.unified_emit,
                 self.unified_max_jerk,
@@ -1487,6 +1521,7 @@ class ToolHead:
                 self.unified_notch_freq_x,
                 self.unified_notch_freq_y,
                 self.unified_max_da,
+                self.unified_notch_max_freq,
             )
         )
 

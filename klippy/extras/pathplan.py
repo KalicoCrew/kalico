@@ -57,6 +57,12 @@ class Constraints:
                   None/0 = fixed-jerk behaviour (max_jerk used verbatim).
                   See ramp_jerk() for the ideal law, and notch_loss_reasons()
                   for cases where the emitted profile no longer preserves it.
+    notch_max_freq
+               -> highest frequency (Hz) the notch may be RAISED to when a move
+                  is too short to fit a ramp at notch_freq. See
+                  adapted_notch_freq(). None/0, or any value <= notch_freq,
+                  disables the adaptation and short moves simply hold their
+                  entry speed.
     """
 
     def __init__(
@@ -67,6 +73,7 @@ class Constraints:
         jerk_dt=0.001,
         notch_freq=None,
         max_da=None,
+        notch_max_freq=None,
     ):
         self.a_const = a_const
         self.v_ceil = v_ceil
@@ -74,6 +81,7 @@ class Constraints:
         self.jerk_dt = jerk_dt
         self.notch_freq = notch_freq
         self.max_da = max_da
+        self.notch_max_freq = notch_max_freq
 
     def a_max(self, v):
         return self.a_const
@@ -125,6 +133,64 @@ class Constraints:
         return j if j > 0.0 else None
 
 
+def ramp_freq_for(v_sum, dist, notch_freq, notch_max_freq):
+    """Smallest notch frequency >= notch_freq whose ramps fit in `dist`.
+
+    A ramp v0 -> v1 under the notch law covers (v0+v1)/f of path distance, so
+    for a total `v_sum` of ramp endpoints the shortest distance the requested
+    f_n can do is v_sum/f_n. When the move is shorter than that, holding f_n
+    means the move cannot change speed AT ALL -- which is what pins the toolhead
+    to ~f_n*segment_length on short-segment geometry.
+
+    Rather than give up on shaping (a hard accel step) or give up on motion
+    (hold the entry speed), raise the frequency to exactly what fits:
+
+        f = clamp(v_sum/dist, notch_freq, notch_max_freq)
+
+    The ramp stays jerk-limited and keeps a shaper zero; the zero just sits
+    above the target mode, so it attenuates that mode less. The degradation is
+    continuous in `dist` -- as the move shrinks the zero slides smoothly up
+    toward the cap, instead of falling off a cliff at v_sum/f_n. f is never
+    lowered below notch_freq, so moves with room still get the exact target.
+
+    notch_max_freq is what keeps this honest: past it the rise time is shorter
+    than the emitter's slice resolution and the "ramp" is a step in all but
+    name. A cap <= notch_freq disables the adaptation entirely.
+    """
+    if not notch_freq:
+        return notch_freq
+    cap = notch_max_freq or 0.0
+    if cap <= notch_freq or dist <= 0.0:
+        return notch_freq
+    need = v_sum / dist
+    if need <= notch_freq:
+        return notch_freq
+    return min(need, cap)
+
+
+def adapted_notch_freq(vs, vc, ve, move_d, cons):
+    """Runway-adapted notch frequency for one whole move (accel + decel)."""
+    if not cons.notch_freq:
+        return cons.notch_freq
+    vc = max(vc, vs, ve)
+    # Accel ramp needs (vs+vc)/f, decel ramp needs (vc+ve)/f.
+    return ramp_freq_for(
+        vs + 2.0 * vc + ve, move_d, cons.notch_freq, cons.notch_max_freq
+    )
+
+
+def _with_notch(cons, notch_freq):
+    return Constraints(
+        a_const=cons.a_const,
+        v_ceil=cons.v_ceil,
+        max_jerk=cons.max_jerk,
+        jerk_dt=cons.jerk_dt,
+        notch_freq=notch_freq,
+        max_da=cons.max_da,
+        notch_max_freq=cons.notch_max_freq,
+    )
+
+
 def jerk_dist(v0, v1, accel, jerk, notch_freq=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
     # S-curve at constant max |accel| and max |jerk| (accel ramps 0 -> peak -> 0
@@ -159,7 +225,9 @@ def jerk_dist(v0, v1, accel, jerk, notch_freq=None):
     return 0.5 * (v0 + v1) * t
 
 
-def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
+def jerk_reach_v2(
+    u0, dist, accel, jerk, v_ceil, notch_freq=None, notch_max_freq=None
+):
     # Max u = v^2 reachable from v0=sqrt(u0) over path-distance `dist` under a
     # jerk-limited S-curve (constant max accel/jerk). Direction-symmetric
     # (forward accel == backward decel). Bisection on v1 over the O(1)
@@ -167,31 +235,46 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
     # integration). jerk None/0 (and no notch_freq) -> stock constant-accel
     # reach.
     #
-    # Bisection stays valid under the notch law: distance is (v0+v1)/f_n while
-    # a_peak is unsaturated and 0.5*(v0+v1)*(dv/A + 1/f_n) past that; both are
-    # monotonically increasing in v1.
+    # Bisection stays valid under the notch law: distance is (v0+v1)/f while
+    # a_peak is unsaturated and 0.5*(v0+v1)*(dv/A + 1/f) past that; both are
+    # monotonically increasing in v1. It stays valid under the runway-adapted
+    # frequency too: raising f only shortens the ramp, and f itself is
+    # non-decreasing in v1, so the distance is still monotone.
     if dist <= 0.0:
         return u0
     if accel <= 0.0 or ((jerk is None or jerk <= 0.0) and not notch_freq):
         return u0 + 2.0 * accel * dist
     v0 = math.sqrt(max(u0, 0.0))
+    # The frequency this move can actually ramp at is chosen per candidate
+    # speed (ramp_freq_for), bounded above by the cap. Everything below uses
+    # f_top for the "is any speed change possible at all" tests, since that is
+    # the most permissive frequency available.
+    f_top = notch_freq
     if notch_freq:
-        # Under the notch law EVERY ramp costs the same 2/f_n of TIME no matter
-        # how small dv is, so the ramp distance (v0+v1)/f_n does not go to zero
-        # as v1 -> v0: its infimum is 2*v0/f_n. A move shorter than that has no
-        # room for any speed change at all and reach is exactly u0. Testing that
-        # closed form up front is the common short-move case on sliced geometry
-        # and skips the whole bisection. (The saturated branch only costs MORE
-        # distance, so this stays a valid lower bound there too.)
-        if dist < 2.0 * v0 / notch_freq:
+        cap = notch_max_freq or 0.0
+        if cap > notch_freq:
+            f_top = cap
+        # Even at f_top a ramp costs (v0+v1)/f of distance, and that does not
+        # go to zero as v1 -> v0: its infimum is 2*v0/f_top. A move shorter
+        # than that has no room for any speed change and reach is exactly u0.
+        # This is the common short-move case, and testing it in closed form
+        # skips the whole bisection.
+        if dist < 2.0 * v0 / f_top:
             return u0
         if jerk:
             tri_dv_max = jerk / (notch_freq * notch_freq)
             sat_j = accel * notch_freq if accel > 0.0 else 0.0
             if jerk < sat_j:
                 v_ceil = min(v_ceil, v0 + tri_dv_max)
+
+    def _fits(v1):
+        f = notch_freq
+        if notch_freq:
+            f = ramp_freq_for(v0 + v1, dist, notch_freq, notch_max_freq)
+        return jerk_dist(v0, v1, accel, jerk, f) <= dist
+
     hi = max(v0, v_ceil)
-    if jerk_dist(v0, hi, accel, jerk, notch_freq) <= dist:
+    if _fits(hi):
         return hi * hi
     lo = v0
     # Converge to a velocity tolerance instead of burning a fixed iteration
@@ -201,7 +284,7 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
         if hi - lo <= 1e-4:
             break
         mid = 0.5 * (lo + hi)
-        if jerk_dist(v0, mid, accel, jerk, notch_freq) <= dist:
+        if _fits(mid):
             lo = mid
         else:
             hi = mid
@@ -461,10 +544,19 @@ def emit_profile(vs, vc, ve, move_d, cons):
     When cons.max_jerk (or cons.notch_freq) is set, acceleration is emitted as
     constant-accel slices whose per-slice changes are jerk bounded; on a move
     too short to jerk-limit, it falls back to the sharp constant-accel profile.
+
+    If the move is too short to ramp at cons.notch_freq, the notch is RAISED to
+    whatever does fit (see adapted_notch_freq) so the move can still change
+    speed. The lookahead applies the identical rule, so the cruise it asked for
+    is the cruise this renders.
     """
     if move_d <= 0.0:
         return []
     if cons.max_jerk or cons.notch_freq:
+        if cons.notch_freq:
+            f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
+            if f_eff != cons.notch_freq:
+                cons = _with_notch(cons, f_eff)
         segs = _emit_jerk(vs, vc, ve, move_d, cons)
         if segs is not None:
             return segs
@@ -474,7 +566,9 @@ def emit_profile(vs, vc, ve, move_d, cons):
 
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
-LOSS_REASONS = frozenset(("jerk_clamped", "insufficient_runway"))
+LOSS_REASONS = frozenset(
+    ("jerk_clamped", "insufficient_runway", "notch_raised")
+)
 
 
 def notch_loss_reasons(vs, vc, ve, move_d, cons):
@@ -489,6 +583,12 @@ def notch_loss_reasons(vs, vc, ve, move_d, cons):
     if not cons.notch_freq:
         return []
     reasons = set()
+    f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
+    if f_eff > cons.notch_freq:
+        # The move was too short to ramp at the target, so the zero slid up to
+        # fit. Motion is still shaped, just not on the requested mode.
+        reasons.add("notch_raised")
+        cons = _with_notch(cons, f_eff)
     for dv in (abs(vc - vs), abs(vc - ve)):
         if dv <= 1e-12:
             continue

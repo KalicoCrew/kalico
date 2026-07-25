@@ -208,9 +208,34 @@ printed at a known speed. Band spacing is the resonance period, so
   1 mm segments and 220 mm/s on 4 mm segments. Curve-heavy or high-resolution
   sliced geometry is therefore speed-limited by `f_n`, not by the machine.
 
-  This is inherent to per-move notched ramps, not a tuning problem. Raising
-  `f_n` above the real mode frequency trades shaping quality for throughput;
-  increasing slicer segment length raises the ceiling directly.
+  This is inherent to per-move notched ramps, not a tuning problem. Increasing
+  slicer segment length raises the ceiling directly.
+
+  `unified_notch_max_freq` buys throughput back, at a price. When a move is too
+  short to ramp at `f_n`, the notch is raised to whatever *does* fit (capped by
+  this setting) so the move can still change speed. Terminal speed becomes
+  `f_eff * segment_length`, so the gain is exactly linear in the cap. But the
+  zero has left the mode, and the residual response at `f_n` for a ramp shaped
+  at `f_eff` goes as `sinc^2(pi * f_n / f_eff)`:
+
+  | cap        | speed vs. off | residual ringing at `f_n` |
+  | ---------- | ------------- | ------------------------- |
+  | off        | 1.00x         | 0% (mode not excited)     |
+  | 1.2x `f_n` | 1.20x         | 3.6% of unshaped          |
+  | 1.5x `f_n` | 1.50x         | 17% of unshaped           |
+  | 2x `f_n`   | 2.00x         | 41% of unshaped           |
+  | 4x `f_n`   | 4.00x         | 81% of unshaped           |
+
+  So this is a straight speed-for-ringing trade with no free lunch, and it is
+  **off by default**. A ramp much shorter than the mode period looks like an
+  impulse to the mode, which is why a large cap is barely better than no
+  shaping at all. Useful values sit just above `f_n` — `1.2x` to `1.5x` buys a
+  fifth to a half more speed on fine detail while keeping residual ringing in
+  the single-to-low-double digits. Set it far above `f_n` and you have
+  effectively turned the feature off for short moves.
+
+  When adaptation raises the notch on a move, the planner logs the reason
+  `notch_raised` once, so you can tell whether it is actually engaging.
 
 ## How it works
 
