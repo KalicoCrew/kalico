@@ -1051,7 +1051,13 @@ class ToolHead:
         jerk = self.unified_max_jerk or None
         max_da = self.unified_max_da or None
         notch = self._move_notch_freq(move) or None
-        v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
+        if hasattr(move, "cruise_v"):
+            v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
+        else:
+            # Reverse lookahead calls this before set_junction() has created
+            # start_v/cruise_v/end_v. Use the move's configured cruise limit
+            # as the conservative ceiling for reach calculations.
+            v_ceil = math.sqrt(move.max_cruise_v2) + 1.0
         return pathplan.Constraints(
             a_const=move.accel,
             v_ceil=v_ceil,
