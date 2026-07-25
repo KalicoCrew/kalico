@@ -1,7 +1,7 @@
 # Tests for jerk limiting inside pathplan.emit_profile: the stepguard invariant
-# holds; acceleration is continuous (bounded |da/dt| on the controllable side,
-# tapering to ~0 at the phase boundaries); distance is conserved and endpoints
-# are hit; short moves fall back to sharp; disabled == sharp.
+# holds; acceleration changes are bounded by the discrete jerk step on the
+# controllable side; distance is conserved and endpoints are hit; short moves
+# fall back to sharp; disabled == sharp.
 #
 # Run: klippy-env/bin/python klippy/extras/test_pathplan_jerk.py
 import math
@@ -25,9 +25,10 @@ def max_abs_step(segs):
     return max(worst, prev_a)
 
 
-def make_cons(jerk=1.0e5, jerk_dt=0.001, a_const=8000.0):
+def make_cons(jerk=1.0e5, jerk_dt=0.001, a_const=8000.0, max_da=None):
     return pathplan.Constraints(a_const=a_const, v_ceil=400.0,
-                                max_jerk=jerk, jerk_dt=jerk_dt)
+                                max_jerk=jerk, jerk_dt=jerk_dt,
+                                max_da=max_da)
 
 
 def test_invariant_and_taper():
@@ -44,7 +45,7 @@ def test_invariant_and_taper():
         step = max_abs_step(segs)
         assert step <= 2.1 * J * dtj + 1e-6, ("accel step exceeded", step,
                                               2.1 * J * dtj)
-    print("  invariant + continuous-accel taper OK")
+    print("  invariant + bounded discrete accel taper OK")
 
 
 def test_jerk_widens_ramp_vs_sharp():
@@ -68,6 +69,21 @@ def test_short_move_falls_back_to_sharp():
     print("  short move falls back to sharp OK")
 
 
+def test_max_da_shrinks_jerk_step_dt():
+    loose = make_cons(jerk=1.0e5, jerk_dt=0.001, max_da=None)
+    capped = make_cons(jerk=1.0e5, jerk_dt=0.001, max_da=25.0)
+    loose_slices, _ = pathplan._ramp_up_jerk(0.0, 200.0, loose)
+    capped_slices, _ = pathplan._ramp_up_jerk(0.0, 200.0, capped)
+    assert len(capped_slices) > len(loose_slices), (
+        len(capped_slices), len(loose_slices))
+    prev = 0.0
+    for s in capped_slices:
+        da = s[5] - prev
+        assert da <= 25.0 + 1e-9, ("positive accel step exceeded max_da", da)
+        prev = s[5]
+    print("  max_da shrinks dt and caps positive accel steps OK")
+
+
 def test_disabled_matches_sharp():
     a = pathplan.emit_profile(0.0, 200.0, 50.0, 30.0,
                               pathplan.Constraints(a_const=8000.0,
@@ -81,6 +97,7 @@ def main():
     test_invariant_and_taper()
     test_jerk_widens_ramp_vs_sharp()
     test_short_move_falls_back_to_sharp()
+    test_max_da_shrinks_jerk_step_dt()
     test_disabled_matches_sharp()
     print("ALL PASS")
 

@@ -398,6 +398,9 @@ class PrinterExtruder:
         )
         self.last_position += axis_r * seg_dist
 
+    def sync_position(self, move, ea_index):
+        self.last_position = move.end_pos[ea_index]
+
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.0

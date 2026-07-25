@@ -1,16 +1,23 @@
 #!/usr/bin/env python
 # Unit test for the per-axis notch: config resolution/validation
 # (ToolHead._resolve_notch) and the direction-weighted blend
-# (ToolHead._move_notch_freq / _notch_on). Imports the REAL methods with the
-# C-extension dep stubbed.
+# (ToolHead._move_notch_freq / _notch_on). Imports the REAL toolhead module
+# with runtime-only dependencies stubbed so it can run standalone.
 import sys, types, math, os
 
-# Repo root (two levels up from klippy/extras/) so `klippy` imports as a package.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                                 '..', '..')))
-# chelper is a C extension only needed at runtime; stub it so importing the
-# toolhead module (hence the real ToolHead class) succeeds standalone.
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+KLIPPY = os.path.join(ROOT, 'klippy')
+pkg = types.ModuleType('klippy')
+pkg.__path__ = [KLIPPY]
+sys.modules['klippy'] = pkg
 sys.modules.setdefault('klippy.chelper', types.ModuleType('klippy.chelper'))
+kin_pkg = types.ModuleType('klippy.kinematics')
+kin_pkg.__path__ = [os.path.join(KLIPPY, 'kinematics')]
+sys.modules['klippy.kinematics'] = kin_pkg
+extruder = types.ModuleType('klippy.kinematics.extruder')
+extruder.DummyExtruder = object
+extruder.add_printer_objects = lambda config: None
+sys.modules['klippy.kinematics.extruder'] = extruder
 import klippy.toolhead as toolhead
 TH = toolhead.ToolHead
 

@@ -14,13 +14,14 @@ a move and back to zero at the end. Those instantaneous acceleration steps
 excite the machine's mechanical resonances, which show up as ringing or
 "ghosting" on printed surfaces.
 
-With jerk limiting enabled the planner instead ramps the acceleration up and
-back down at a bounded rate (the *jerk*), so acceleration is continuous. Each
-move's accel/decel phase becomes a short S-curve rather than a hard step.
+With jerk limiting enabled the planner instead emits short constant-acceleration
+slices whose acceleration changes are bounded by the configured jerk step. This
+is a discretized S-curve approximation rather than mathematically continuous
+acceleration.
 
-The lookahead is jerk-aware: it plans the boundary speeds that the jerk-limited
-emitter can actually reach, so no move is planned into a profile it cannot
-render.
+The lookahead is jerk-aware and conservative: it plans boundary speeds using an
+analytic model that slightly overestimates the distance required by the emitted
+slices, so it should not approve a profile the emitter cannot render.
 
 ## The notch law
 
@@ -49,9 +50,9 @@ a_peak   = dv * f_n          (linear in the velocity change)
 distance = (v0 + v1) / f_n   (the "runway" a ramp needs)
 ```
 
-Because peak acceleration is now `dv * f_n`, `max_accel` no longer governs
-ordinary moves — it only backstops moves too short to shape (see Limitations).
-Keep `max_accel` at the machine's real torque limit.
+The parked zero is exact only for the ideal, unsaturated triangular pulse. The
+emitted zero-order-held slices approximate it, and saturation, jerk clamping,
+or insufficient runway move the response away from the requested notch.
 
 ## Configuration
 
@@ -96,14 +97,21 @@ unified_notch_freq: 55
   cost of operating post-hoc on the committed path.
 
 - `unified_max_jerk` (default: 0)
-  Fixed jerk cap in mm/s^3. `0` = uncapped. When `unified_notch_freq` is set
-  this acts as a *ceiling* on the per-ramp jerk rather than the jerk itself.
-  Clamping the jerk down only lengthens the ramp (moves the zero below `f_n`),
-  so it is always safe; use it to bound peak acceleration at large `dv`.
+  Fixed jerk cap in mm/s^3. `0` = uncapped. Values other than `0` must be at
+  least `1000`. When `unified_notch_freq` is set this caps the normal per-ramp
+  jerk. Clamping reduces jerk and acceleration, but it moves the first zero
+  below `f_n`; it is not a guarantee of cancellation at the requested frequency.
+  Very short moves may use a bounded escape ramp above this cap while still
+  respecting `max_accel`.
+
+- `unified_max_da` (default: 0)
+  Optional cap in mm/s^2 on the positive acceleration step emitted between
+  slices. `0` disables the cap. When short-move fallback raises jerk, the
+  emitter shrinks slice time to keep jerk-up steps within this cap.
 
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a
-  smoother ramp and more motion-queue entries.
+  smoother ramp and more motion-queue entries. The minimum is `0.0001`.
 
 ## Live tuning
 
@@ -114,6 +122,7 @@ flushed first, so the change applies to subsequently planned moves):
 SET_UNIFIED ENABLE=1 NOTCH_FREQ=55
 SET_UNIFIED NOTCH_FREQ_X=70 NOTCH_FREQ_Y=55   # per-axis modes
 SET_UNIFIED MAX_JERK=400000
+SET_UNIFIED MAX_DA=100
 SET_UNIFIED                       # report current state
 ```
 
@@ -147,12 +156,20 @@ printed at a known speed. Band spacing is the resonance period, so
   profile (bounded by `max_accel`). Lower `f_n` needs more runway, so very fine
   detail on a low-frequency notch may not be shaped.
 
+- **Acceleration saturation.** Parking the first zero at `f_n` requires the
+  unsaturated condition `dv <= max_accel / f_n`. For example, at
+  `max_accel = 3000 mm/s^2` and `f_n = 55 Hz`, ramps with `dv` above about
+  `54.5 mm/s` saturate acceleration and no longer keep the first zero at
+  `55 Hz`.
+
+- **Homing and probing.** Homing/probing drip moves continue to use the standard
+  trapezoid path. `unified_planner` applies to normal queued motion.
+
 - **One zero.** The accel ramp provides a single shaper zero, so it cancels one
   mode. A second, well-separated mode is not addressed by this feature.
 
-- **Throughput.** Because `a_peak = dv * f_n` is typically below `max_accel`,
-  jerk-limited moves take longer than the equivalent trapezoid. This is the
-  cost of not exciting the mode.
+- **Throughput.** Jerk-limited moves often take longer than the equivalent
+  trapezoid. This is the cost of reducing high-frequency excitation.
 
 ## How it works
 

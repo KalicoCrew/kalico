@@ -244,6 +244,29 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
+#unified_planner: False
+#   Enable experimental jerk-limited motion for normal queued moves. Homing and
+#   probing drip moves continue to use the standard trapezoid profile. See
+#   docs/Jerk_Limiting.md for details. The default is False.
+#unified_notch_freq: 0
+#   Resonance frequency in Hz for the per-ramp notch law
+#   J = dv * unified_notch_freq^2. This applies one scalar path-speed notch to
+#   both X and Y. 0 disables the notch law. The default is 0.
+#unified_notch_freq_x: 0
+#unified_notch_freq_y: 0
+#   Optional per-axis resonance frequencies in Hz. These must be set together.
+#   The planner chooses one direction-weighted scalar notch per move, so
+#   diagonal moves are a compromise between the X and Y frequencies. The default
+#   is to use unified_notch_freq for both axes.
+#unified_max_jerk: 0
+#   Maximum jerk in mm/s^3 for normal jerk-limited ramps. 0 disables this cap.
+#   Values other than 0 must be at least 1000. Short moves may use a bounded
+#   escape ramp that exceeds this cap while still respecting max_accel. The
+#   default is 0.
+#unified_jerk_dt: 0.001
+#   Integration time step in seconds for emitted jerk-limited slices. Smaller
+#   values create more motion-queue entries. The minimum is 0.0001. The default
+#   is 0.001.
 ```
 
 ### [stepper]

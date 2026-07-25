@@ -90,10 +90,11 @@ class Move:
         # so every planned move stays jerk-feasible and the emitter never falls
         # to the sharp constant-accel fallback.
         th = self.toolhead
-        uj = th.unified_max_jerk if th.unified_emit else 0.0
+        unified_emit = getattr(th, "unified_emit", False)
+        uj = getattr(th, "unified_max_jerk", 0.0) if unified_emit else 0.0
         # Reach is rendered across prev_move's ramp, so notch on prev_move's
         # direction.
-        nf = th._move_notch_freq(prev_move) if th.unified_emit else 0.0
+        nf = th._move_notch_freq(prev_move) if unified_emit else 0.0
         if uj > 0.0 or nf > 0.0:
             prev_reach_v2 = pathplan.jerk_reach_v2(
                 prev_move.max_start_v2, prev_move.move_d, prev_move.accel, uj,
@@ -197,8 +198,9 @@ class LookAheadQueue:
         # jerk-feasible and the emitter never falls to the sharp constant-accel
         # fallback. The toolhead is reached via any queued move.
         th = queue[0].toolhead if queue else None
-        uj = th.unified_max_jerk if (th and th.unified_emit) else 0.0
-        notch_on = bool(th and th.unified_emit and th._notch_on())
+        unified_emit = bool(th and getattr(th, "unified_emit", False))
+        uj = getattr(th, "unified_max_jerk", 0.0) if unified_emit else 0.0
+        notch_on = bool(unified_emit and th._notch_on())
         jerk_on = uj > 0.0 or notch_on
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
@@ -325,18 +327,24 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
-        # Jerk-limited motion (opt-in). When enabled, each move's acceleration
-        # is rendered as a continuous jerk-limited ramp instead of a hard accel
-        # step, and the lookahead plans the boundary speeds that ramp can reach.
+        # Jerk-limited motion (opt-in). When enabled, each move is rendered as
+        # jerk-bounded constant-accel slices instead of one hard accel step, and
+        # the lookahead plans the boundary speeds that ramp can reach.
         self.unified_emit = config.getboolean("unified_planner", False)
         # Fixed jerk cap (mm/s^3). 0 = uncapped. With unified_notch_freq set it
         # is a CEILING on the per-ramp jerk rather than the jerk itself.
         self.unified_max_jerk = config.getfloat(
             "unified_max_jerk", 0.0, minval=0.0
         )
+        if 0.0 < self.unified_max_jerk < 1000.0:
+            raise config.error(
+                "unified_max_jerk must be 0 or at least 1000 mm/s^3")
         # Ramp integration time step (s).
         self.unified_jerk_dt = config.getfloat(
-            "unified_jerk_dt", 0.001, above=0.0
+            "unified_jerk_dt", 0.001, minval=0.0001
+        )
+        self.unified_max_da = config.getfloat(
+            "unified_max_da", 0.0, minval=0.0
         )
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
@@ -365,6 +373,14 @@ class ToolHead:
         self.orig_cfg["max_accel"] = self.max_accel
         self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
+        self.orig_cfg["unified_emit"] = self.unified_emit
+        self.orig_cfg["unified_max_jerk"] = self.unified_max_jerk
+        self.orig_cfg["unified_jerk_dt"] = self.unified_jerk_dt
+        self.orig_cfg["unified_max_da"] = self.unified_max_da
+        self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
+        self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
+        self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
+        self._unified_warned = set()
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -469,6 +485,7 @@ class ToolHead:
         ]
         for module_name in modules:
             self.printer.load_object(config, module_name)
+        self._check_unified_extra_axis_support(config.error)
 
     def get_active_rails_for_axis(self, axis):
         # axis is 'x,y,z'
@@ -549,12 +566,17 @@ class ToolHead:
             move_dur = move.accel_t + move.cruise_t + move.decel_t
             segs = None
             if self.unified_emit and move.is_kinematic_move:
+                cons = self._pathplan_cons(move)
                 # `or None` sends a degenerate empty profile back to the stock
                 # path rather than emitting a zero-duration move.
                 segs = pathplan.emit_profile(
-                    move.start_v, move.cruise_v, move.end_v, move.move_d,
-                    self._pathplan_cons(move)
+                    move.start_v, move.cruise_v, move.end_v, move.move_d, cons
                 ) or None
+                if segs is not None:
+                    self._warn_unified_profile(
+                        move, pathplan.notch_loss_reasons(
+                            move.start_v, move.cruise_v, move.end_v,
+                            move.move_d, cons))
             if segs is not None:
                 # Emit the jerk-limited profile as a chain of constant-accel
                 # slices, driving the toolhead trapq and each extra axis (the
@@ -582,15 +604,23 @@ class ToolHead:
                         a,
                     )
                     for e_index, ea in enumerate(self.extra_axes):
-                        if move.axes_d[e_index + 3] and hasattr(
-                            ea, "process_move_segment"
-                        ):
-                            ea.process_move_segment(
-                                t, move, e_index + 3, at, ct, dt, sv, cv, a,
-                                dist
-                            )
+                        if not move.axes_d[e_index + 3]:
+                            continue
+                        if not hasattr(ea, "process_move_segment"):
+                            raise self.printer.command_error(
+                                "unified_planner requires extra axis '%s' to"
+                                " implement process_move_segment"
+                                % (ea.get_axis_gcode_id(),))
+                        ea.process_move_segment(
+                            t, move, e_index + 3, at, ct, dt, sv, cv, a,
+                            dist
+                        )
                     t += at + ct + dt
                     pos += dist
+                for e_index, ea in enumerate(self.extra_axes):
+                    if (move.axes_d[e_index + 3]
+                            and hasattr(ea, "sync_position")):
+                        ea.sync_position(move, e_index + 3)
                 move_dur = t - next_move_time
             else:
                 if move.is_kinematic_move:
@@ -797,6 +827,10 @@ class ToolHead:
 
     def add_extra_axis(self, ea, axis_pos):
         self._flush_lookahead()
+        if self.unified_emit and not hasattr(ea, "process_move_segment"):
+            raise self.printer.command_error(
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_segment" % (ea.get_axis_gcode_id(),))
         self.extra_axes.append(ea)
         self.commanded_pos.append(axis_pos)
         ea_trapq = ea.get_trapq()
@@ -1042,6 +1076,7 @@ class ToolHead:
         # constant accel (the sharp-fallback ceiling); with a notch frequency
         # the emitter governs ordinary moves via a_peak = dv*f_n instead.
         jerk = self.unified_max_jerk or None
+        max_da = self.unified_max_da or None
         notch = self._move_notch_freq(move) or None
         v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
         return pathplan.Constraints(
@@ -1050,7 +1085,35 @@ class ToolHead:
             max_jerk=jerk,
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
+            max_da=max_da,
         )
+
+    def _check_unified_extra_axis_support(self, error_factory=None):
+        if not self.unified_emit:
+            return
+        for ea in self.extra_axes:
+            if hasattr(ea, "process_move_segment"):
+                continue
+            axis = ea.get_axis_gcode_id()
+            msg = ("unified_planner requires extra axis '%s' to implement"
+                   " process_move_segment" % (axis,))
+            if error_factory is not None:
+                raise error_factory(msg)
+            raise self.printer.command_error(msg)
+
+    def _warn_unified_profile(self, move, reasons):
+        if not reasons:
+            return
+        if not hasattr(self, "_unified_warned"):
+            self._unified_warned = set()
+        for reason in reasons:
+            if reason in self._unified_warned:
+                continue
+            self._unified_warned.add(reason)
+            logging.warning(
+                "unified_planner: target notch not preserved on move ending"
+                " at %.3f %.3f %.3f: %s",
+                move.end_pos[0], move.end_pos[1], move.end_pos[2], reason)
 
     def cmd_G4(self, gcmd):
         # Dwell
@@ -1180,11 +1243,26 @@ class ToolHead:
 
         self.square_corner_velocity = self.orig_cfg["square_corner_velocity"]
         self.min_cruise_ratio = self.orig_cfg["min_cruise_ratio"]
+        self.unified_emit = self.orig_cfg["unified_emit"]
+        self.unified_max_jerk = self.orig_cfg["unified_max_jerk"]
+        self.unified_jerk_dt = self.orig_cfg["unified_jerk_dt"]
+        self.unified_max_da = self.orig_cfg["unified_max_da"]
+        self.unified_notch_freq = self.orig_cfg["unified_notch_freq"]
+        self.unified_notch_freq_x = self.orig_cfg["unified_notch_freq_x"]
+        self.unified_notch_freq_y = self.orig_cfg["unified_notch_freq_y"]
+        self._check_unified_extra_axis_support()
         self._calc_junction_deviation()
         msg.extend(
             (
                 "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
                 "square_corner_velocity: %.6f" % self.square_corner_velocity,
+                "unified_planner: %d" % self.unified_emit,
+                "unified_max_jerk: %.6f" % self.unified_max_jerk,
+                "unified_jerk_dt: %.6f" % self.unified_jerk_dt,
+                "unified_max_da: %.6f" % self.unified_max_da,
+                "unified_notch_freq: %.6f" % self.unified_notch_freq,
+                "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
+                "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
             )
         )
         if get_danger_options().log_velocity_limit_changes:
@@ -1218,6 +1296,7 @@ class ToolHead:
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
         "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
         "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
+        "MAX_DA caps the emitted acceleration step per slice (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
         "direction (0 = fall back to NOTCH_FREQ). No args = report state."
     )
@@ -1225,34 +1304,52 @@ class ToolHead:
     def cmd_SET_UNIFIED(self, gcmd):
         en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
         jerk = gcmd.get_float("MAX_JERK", None, minval=0.0)
+        max_da = gcmd.get_float("MAX_DA", None, minval=0.0)
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
         notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
-        if en is not None:
-            self.unified_emit = bool(en)
-        if jerk is not None:
-            self.unified_max_jerk = jerk
-        if notch is not None:
-            # NOTCH_FREQ notches both axes; explicit NOTCH_FREQ_X/Y below win.
-            self.unified_notch_freq = notch
-            self.unified_notch_freq_x = notch
-            self.unified_notch_freq_y = notch
-        if notch_x is not None:
-            self.unified_notch_freq_x = notch_x
-        if notch_y is not None:
-            self.unified_notch_freq_y = notch_y
+        old = (self.unified_emit, self.unified_max_jerk,
+               self.unified_notch_freq, self.unified_notch_freq_x,
+               self.unified_notch_freq_y, self.unified_max_da)
+        try:
+            if en is not None:
+                self.unified_emit = bool(en)
+            if jerk is not None:
+                if 0.0 < jerk < 1000.0:
+                    raise gcmd.error(
+                        "MAX_JERK must be 0 or at least 1000 mm/s^3")
+                self.unified_max_jerk = jerk
+            if notch is not None:
+                # NOTCH_FREQ notches both axes; explicit NOTCH_FREQ_X/Y below
+                # win.
+                self.unified_notch_freq = notch
+                self.unified_notch_freq_x = notch
+                self.unified_notch_freq_y = notch
+            if notch_x is not None:
+                self.unified_notch_freq_x = notch_x
+            if notch_y is not None:
+                self.unified_notch_freq_y = notch_y
+            if max_da is not None:
+                self.unified_max_da = max_da
+            self._check_unified_extra_axis_support()
+        except:
+            (self.unified_emit, self.unified_max_jerk,
+             self.unified_notch_freq, self.unified_notch_freq_x,
+             self.unified_notch_freq_y, self.unified_max_da) = old
+            raise
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
-            " notch_freq_x=%.2f notch_freq_y=%.2f"
+            " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
             % (
                 self.unified_emit,
                 self.unified_max_jerk,
                 self.unified_notch_freq,
                 self.unified_notch_freq_x,
                 self.unified_notch_freq_y,
+                self.unified_max_da,
             )
         )
 

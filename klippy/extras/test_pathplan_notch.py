@@ -40,6 +40,21 @@ def ramp_stats(v0, v1, cons):
     return dur, a_peak, dist
 
 
+def zoh_accel_spectrum(slices, freq):
+    if freq <= 0.0:
+        return sum(s[5] * s[0] for s in slices)
+    w = 2.0 * math.pi * freq
+    re = im = t = 0.0
+    for s in slices:
+        dt = s[0]
+        a = s[5]
+        nt = t + dt
+        re += a * (math.sin(w * nt) - math.sin(w * t)) / w
+        im += a * (math.cos(w * nt) - math.cos(w * t)) / w
+        t = nt
+    return math.hypot(re, im)
+
+
 def test_zero_is_parked():
     # The accel pulse is a triangle: rise 0->a_peak over T_j, fall over T_j.
     # The shaper zero sits at 1/T_j, so it is the RISE time that must equal
@@ -77,15 +92,39 @@ def test_ramp_distance_law():
 
 def test_lookahead_matches_emitter():
     # jerk_dist() is what the lookahead plans with; _ramp_up_jerk() is what the
-    # emitter renders. Disagreement drops moves to the sharp fallback.
+    # emitter renders. The analytic model is conservative against the
+    # zero-order-held slices: it may under-use available runway, but it must not
+    # approve a distance shorter than the emitted slices need.
     cons = make_cons()
     for dv in DVS:
         v0, v1 = 10.0, 10.0 + dv
         _, _, dist = ramp_stats(v0, v1, cons)
         pred = pathplan.jerk_dist(v0, v1, A_CONST, None, notch_freq=FN)
-        assert abs(pred - dist) <= 0.06 * max(dist, 1e-9), (
-            "lookahead/emitter disagree", dv, pred, dist)
-    print("  jerk_dist agrees with integrated ramp OK")
+        assert pred >= dist - 1e-9, ("lookahead not conservative", dv,
+                                     pred, dist)
+        assert abs(pred - dist) <= 0.06 * max(pred, 1e-9), (
+            "lookahead/emitter gap too large", dv, pred, dist)
+    print("  jerk_dist conservatively bounds integrated ramp OK")
+
+
+def test_lookahead_conservative_across_dt_and_saturation():
+    cases = []
+    for a_const in (3000.0, 8000.0, A_CONST):
+        for jerk_dt in (0.001, 0.0005, 0.0002):
+            cases.append(make_cons(notch=55.0, a_const=a_const,
+                                   jerk_dt=jerk_dt))
+    for cons in cases:
+        for v0 in (0.0, 10.0, 50.0, 150.0):
+            for dv in (5.0, 20.0, 50.0, 100.0, 200.0):
+                slices, dist = pathplan._ramp_up_jerk(v0, v0 + dv, cons)
+                assert slices is not None
+                pred = pathplan.jerk_dist(v0, v0 + dv, cons.a_const,
+                                          cons.max_jerk,
+                                          notch_freq=cons.notch_freq)
+                assert pred >= dist - 1e-8, (
+                    "lookahead underestimates emitted distance", cons.a_const,
+                    cons.jerk_dt, v0, dv, pred, dist)
+    print("  jerk_dist stays conservative across dt/saturation cases OK")
 
 
 def test_reach_is_monotone_and_finite():
@@ -99,7 +138,8 @@ def test_reach_is_monotone_and_finite():
 
 
 def test_max_jerk_is_a_ceiling():
-    # Clamping J DOWN may only lengthen the ramp (zero moves BELOW f_n).
+    # Clamping J DOWN may only lengthen the ramp, but it does not preserve the
+    # target notch at f_n.
     free = make_cons(max_jerk=None)
     capped = make_cons(max_jerk=1.0e5)
     for dv in DVS:
@@ -108,6 +148,48 @@ def test_max_jerk_is_a_ceiling():
         assert d_cap >= d_free - 1e-6, ("ceiling shortened the ramp",
                                         dv, d_cap, d_free)
     print("  max_jerk clamps down only OK")
+
+
+def test_emitted_zoh_notch_response():
+    cons = make_cons(jerk_dt=0.0002)
+    slices, _ = pathplan._ramp_up_jerk(10.0, 110.0, cons)
+    dc = zoh_accel_spectrum(slices, 0.0)
+    at_notch = zoh_accel_spectrum(slices, FN) / dc
+    below = zoh_accel_spectrum(slices, FN * 0.75) / dc
+    above = zoh_accel_spectrum(slices, FN * 1.25) / dc
+    assert at_notch < 0.01, ("actual emitted notch too shallow", at_notch)
+    assert at_notch < below * 0.1, ("notch not below lower neighbor",
+                                    at_notch, below)
+    assert at_notch < above * 0.1, ("notch not below upper neighbor",
+                                    at_notch, above)
+    print("  emitted zero-order-hold spectrum has a near-zero at f_n OK")
+
+
+def test_zoh_notch_error_scales_with_dt():
+    vals = []
+    for dt in (0.001, 0.0005, 0.0002):
+        cons = make_cons(jerk_dt=dt)
+        slices, _ = pathplan._ramp_up_jerk(10.0, 110.0, cons)
+        vals.append(zoh_accel_spectrum(slices, FN)
+                    / zoh_accel_spectrum(slices, 0.0))
+    assert vals[0] > vals[1] > vals[2], vals
+    print("  emitted notch residual shrinks with jerk_dt OK")
+
+
+def test_notch_loss_reasons():
+    clean = make_cons()
+    assert pathplan.notch_loss_reasons(
+        0.0, 100.0, 0.0, 20.0, clean) == ["discrete_zero_order_hold"]
+    saturated = make_cons(notch=55.0, a_const=3000.0)
+    assert "accel_saturated" in pathplan.notch_loss_reasons(
+        0.0, 100.0, 0.0, 20.0, saturated)
+    clamped = make_cons(notch=55.0, max_jerk=100000.0)
+    assert "jerk_clamped" in pathplan.notch_loss_reasons(
+        0.0, 100.0, 0.0, 20.0, clamped)
+    short = make_cons()
+    assert "insufficient_runway" in pathplan.notch_loss_reasons(
+        0.0, 200.0, 0.0, 0.5, short)
+    print("  notch loss diagnostics report emitted-profile limits OK")
 
 
 def test_notch_off_is_noop():
@@ -207,8 +289,12 @@ def main():
     test_apeak_linear_in_dv()
     test_ramp_distance_law()
     test_lookahead_matches_emitter()
+    test_lookahead_conservative_across_dt_and_saturation()
     test_reach_is_monotone_and_finite()
     test_max_jerk_is_a_ceiling()
+    test_emitted_zoh_notch_response()
+    test_zoh_notch_error_scales_with_dt()
+    test_notch_loss_reasons()
     test_notch_off_is_noop()
     test_invariants_hold()
     test_chain_no_sharp_fallback()
