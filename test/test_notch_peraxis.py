@@ -8,28 +8,28 @@ import os
 import sys
 import types
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-KLIPPY = os.path.join(ROOT, 'klippy')
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+KLIPPY = os.path.join(ROOT, "klippy")
 STUB_MODULES = [
-    'klippy',
-    'klippy.chelper',
-    'klippy.kinematics',
-    'klippy.kinematics.extruder',
-    'klippy.toolhead',
+    "klippy",
+    "klippy.chelper",
+    "klippy.kinematics",
+    "klippy.kinematics.extruder",
+    "klippy.toolhead",
 ]
 saved_modules = {name: sys.modules.get(name) for name in STUB_MODULES}
-pkg = types.ModuleType('klippy')
+pkg = types.ModuleType("klippy")
 pkg.__path__ = [KLIPPY]
-sys.modules['klippy'] = pkg
-sys.modules.setdefault('klippy.chelper', types.ModuleType('klippy.chelper'))
-kin_pkg = types.ModuleType('klippy.kinematics')
-kin_pkg.__path__ = [os.path.join(KLIPPY, 'kinematics')]
-sys.modules['klippy.kinematics'] = kin_pkg
-extruder = types.ModuleType('klippy.kinematics.extruder')
+sys.modules["klippy"] = pkg
+sys.modules.setdefault("klippy.chelper", types.ModuleType("klippy.chelper"))
+kin_pkg = types.ModuleType("klippy.kinematics")
+kin_pkg.__path__ = [os.path.join(KLIPPY, "kinematics")]
+sys.modules["klippy.kinematics"] = kin_pkg
+extruder = types.ModuleType("klippy.kinematics.extruder")
 extruder.DummyExtruder = object
 extruder.add_printer_objects = lambda config: None
-sys.modules['klippy.kinematics.extruder'] = extruder
-toolhead = importlib.import_module('klippy.toolhead')
+sys.modules["klippy.kinematics.extruder"] = extruder
+toolhead = importlib.import_module("klippy.toolhead")
 for name in STUB_MODULES:
     if saved_modules[name] is None:
         sys.modules.pop(name, None)
@@ -41,8 +41,10 @@ TH = toolhead.ToolHead
 
 def check(failures, name, got, want, tol=1e-9):
     ok = abs(got - want) <= tol
-    print("  %-52s %s (got %.4f want %.4f)"
-          % (name, "OK" if ok else "FAIL", got, want))
+    print(
+        "  %-52s %s (got %.4f want %.4f)"
+        % (name, "OK" if ok else "FAIL", got, want)
+    )
     if not ok:
         failures.append(name)
 
@@ -81,32 +83,50 @@ def raises(shared, x, y):
 
 def run_checks():
     failures = []
-    s2 = math.sqrt(0.5)   # 45-degree unit component
+    s2 = math.sqrt(0.5)  # 45-degree unit component
 
     print("== _resolve_notch: config resolution + validation ==")
-    check_true(failures, "shared alone -> both axes",
-               TH._resolve_notch(55., None, None) == (55., 55.))
-    check_true(failures, "off (0, none, none) -> (0,0)",
-               TH._resolve_notch(0., None, None) == (0., 0.))
-    check_true(failures, "per-axis pair -> (x,y)",
-               TH._resolve_notch(0., 70., 60.) == (70., 60.))
-    check_true(failures, "per-axis overrides shared",
-               TH._resolve_notch(55., 70., 60.) == (70., 60.))
-    check_true(failures, "both equal pair ok",
-               TH._resolve_notch(0., 55., 55.) == (55., 55.))
-    check_true(failures, "x without y -> ValueError",
-               raises(55., 70., None))
-    check_true(failures, "y without x -> ValueError",
-               raises(0., None, 60.))
-    check_true(failures, "x set, y unset, no shared -> ValueError",
-               raises(0., 70., None))
+    check_true(
+        failures,
+        "shared alone -> both axes",
+        TH._resolve_notch(55.0, None, None) == (55.0, 55.0),
+    )
+    check_true(
+        failures,
+        "off (0, none, none) -> (0,0)",
+        TH._resolve_notch(0.0, None, None) == (0.0, 0.0),
+    )
+    check_true(
+        failures,
+        "per-axis pair -> (x,y)",
+        TH._resolve_notch(0.0, 70.0, 60.0) == (70.0, 60.0),
+    )
+    check_true(
+        failures,
+        "per-axis overrides shared",
+        TH._resolve_notch(55.0, 70.0, 60.0) == (70.0, 60.0),
+    )
+    check_true(
+        failures,
+        "both equal pair ok",
+        TH._resolve_notch(0.0, 55.0, 55.0) == (55.0, 55.0),
+    )
+    check_true(failures, "x without y -> ValueError", raises(55.0, 70.0, None))
+    check_true(failures, "y without x -> ValueError", raises(0.0, None, 60.0))
+    check_true(
+        failures,
+        "x set, y unset, no shared -> ValueError",
+        raises(0.0, 70.0, None),
+    )
 
     print("== off ==")
     o = mk(0.0, 0.0)
     check(failures, "both 0 -> 0", f(o, 1, 0), 0.0)
     check_true(failures, "_notch_on() false", not TH._notch_on(o))
 
-    print("== both equal (shared folded in) -> that freq for EVERY direction ==")
+    print(
+        "== both equal (shared folded in) -> that freq for EVERY direction =="
+    )
     o = mk(55.0, 55.0)
     check(failures, "pure-X", f(o, 1, 0), 55.0)
     check(failures, "pure-Y", f(o, 0, 1), 55.0)
@@ -120,17 +140,20 @@ def run_checks():
     check(failures, "pure-X -> fx", f(o, 1, 0), 60.0)
     check(failures, "pure-Y -> fy", f(o, 0, 1), 55.0)
     check(failures, "45deg  -> mean", f(o, s2, s2), 57.5)
-    check(failures, "X-dominant blend", f(o, 0.8, 0.6),
-          (60 * 0.8 + 55 * 0.6) / 1.4)
-    check(failures, "X+Z pure-X-in-plane -> fx",
-          f(o, 0.6, 0.0, 0.8), 60.0)
+    check(
+        failures,
+        "X-dominant blend",
+        f(o, 0.8, 0.6),
+        (60 * 0.8 + 55 * 0.6) / 1.4,
+    )
+    check(failures, "X+Z pure-X-in-plane -> fx", f(o, 0.6, 0.0, 0.8), 60.0)
 
     print("== diagonal within [min,max] and monotonic toward pure-X ==")
     o = mk(60.0, 55.0)
     bad = None
     prev = None
     mono = True
-    for deg in range(90, -1, -5):          # 90 (pure Y) -> 0 (pure X)
+    for deg in range(90, -1, -5):  # 90 (pure Y) -> 0 (pure X)
         r = math.radians(deg)
         v = f(o, math.cos(r), math.sin(r))
         if v < 55.0 - 1e-9 or v > 60.0 + 1e-9:

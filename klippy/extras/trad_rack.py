@@ -2368,6 +2368,7 @@ class TradRackToolHead(toolhead.ToolHead, object):
         self.unified_notch_freq_x = 0.0
         self.unified_notch_freq_y = 0.0
         self._unified_warned = set()
+        self._unified_all_warned = False
         self.junction_deviation = self.max_accel_to_decel = 0.0
         self._calc_junction_deviation()
         # Input stall detection

@@ -16,6 +16,20 @@
 # clamping, insufficient runway, and the sharp fallback do not preserve an
 # exact zero at the requested mode.
 #
+# THROUGHPUT CONSEQUENCE. Parking the zero fixes the ramp DURATION at 2/f_n
+# regardless of how small the speed change is, so a ramp always consumes
+# (v0+v1)/f_n of path distance. The distance is therefore discontinuous at
+# dv -> 0: it does not fall to zero but to 2*v0/f_n. A move shorter than that
+# cannot change speed at all, and since each move ramps back to a = 0 at its own
+# end, acceleration cannot be spread across a run of short segments. On a chain
+# of equal-length segments the toolhead converges to roughly
+#
+#     v_terminal ~= f_n * segment_length
+#
+# (55 Hz, 1 mm segments -> ~55 mm/s) no matter how high max_velocity/max_accel
+# are. This is inherent to per-move notched ramps, not a tuning problem. See
+# docs/Jerk_Limiting.md "Throughput" for the measured table.
+#
 # Pure (only `math`) and toolhead-decoupled so it is unit-testable in isolation;
 # the toolhead adapter supplies per-move constraints.
 #
@@ -45,8 +59,15 @@ class Constraints:
                   for cases where the emitted profile no longer preserves it.
     """
 
-    def __init__(self, a_const, v_ceil=1e9, max_jerk=None, jerk_dt=0.001,
-                 notch_freq=None, max_da=None):
+    def __init__(
+        self,
+        a_const,
+        v_ceil=1e9,
+        max_jerk=None,
+        jerk_dt=0.001,
+        notch_freq=None,
+        max_da=None,
+    ):
         self.a_const = a_const
         self.v_ceil = v_ceil
         self.max_jerk = max_jerk
@@ -155,6 +176,15 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
         return u0 + 2.0 * accel * dist
     v0 = math.sqrt(max(u0, 0.0))
     if notch_freq:
+        # Under the notch law EVERY ramp costs the same 2/f_n of TIME no matter
+        # how small dv is, so the ramp distance (v0+v1)/f_n does not go to zero
+        # as v1 -> v0: its infimum is 2*v0/f_n. A move shorter than that has no
+        # room for any speed change at all and reach is exactly u0. Testing that
+        # closed form up front is the common short-move case on sliced geometry
+        # and skips the whole bisection. (The saturated branch only costs MORE
+        # distance, so this stays a valid lower bound there too.)
+        if dist < 2.0 * v0 / notch_freq:
+            return u0
         if jerk:
             tri_dv_max = jerk / (notch_freq * notch_freq)
             sat_j = accel * notch_freq if accel > 0.0 else 0.0
@@ -164,7 +194,12 @@ def jerk_reach_v2(u0, dist, accel, jerk, v_ceil, notch_freq=None):
     if jerk_dist(v0, hi, accel, jerk, notch_freq) <= dist:
         return hi * hi
     lo = v0
+    # Converge to a velocity tolerance instead of burning a fixed iteration
+    # count: this runs on every move in the lookahead hot loop, and 1e-4 mm/s
+    # is far below anything the step generator can resolve.
     for _ in range(48):
+        if hi - lo <= 1e-4:
+            break
         mid = 0.5 * (lo + hi)
         if jerk_dist(v0, mid, accel, jerk, notch_freq) <= dist:
             lo = mid
@@ -233,7 +268,7 @@ def _decel_from_accel(acc_slices):
     # (0,0,dt, v_hi, v_hi, a, dist) (velocity v_hi -> v_lo). Reversed order so
     # the chain runs vc -> ve and stays velocity-continuous.
     dec = []
-    for (at, ct, dt, sv, cv, a, dist) in reversed(acc_slices):
+    for at, ct, dt, sv, cv, a, dist in reversed(acc_slices):
         dec.append((0.0, 0.0, at, cv, cv, a, dist))
     return dec
 
@@ -242,8 +277,11 @@ def _notch_peak_limit(vs, vc, ve, cons):
     if not cons.notch_freq:
         return vc
     if cons.max_jerk:
-        sat_j = (cons.a_const * cons.notch_freq
-                 if cons.a_const and cons.a_const > 0.0 else 0.0)
+        sat_j = (
+            cons.a_const * cons.notch_freq
+            if cons.a_const and cons.a_const > 0.0
+            else 0.0
+        )
         if not sat_j or cons.max_jerk < sat_j:
             dv_max = cons.max_jerk / (cons.notch_freq * cons.notch_freq)
             return min(vc, vs + dv_max, ve + dv_max)
@@ -256,14 +294,24 @@ def _peak_velocity_jerk(vs, ve, move_d, cons):
     # that connecting ramp overfills move_d (caller then falls back to sharp).
     lo = max(vs, ve)
     hi = _notch_peak_limit(vs, cons.v_ceil, ve, cons)
-    need_lo = (_ramp_up_jerk(vs, lo, cons, collect=False)[1]
-               + _ramp_up_jerk(ve, lo, cons, collect=False)[1])
+    need_lo = (
+        _ramp_up_jerk(vs, lo, cons, collect=False)[1]
+        + _ramp_up_jerk(ve, lo, cons, collect=False)[1]
+    )
     if need_lo >= move_d:
         return lo
+    # Each probe integrates TWO full ramps, so this is the most expensive thing
+    # in the emitter. Stop at a velocity tolerance rather than a fixed 32 steps;
+    # 1e-4 mm/s is well under step-generator resolution and typically halves the
+    # probe count.
     for _ in range(32):
+        if hi - lo <= 1e-4:
+            break
         mid = 0.5 * (lo + hi)
-        need = (_ramp_up_jerk(vs, mid, cons, collect=False)[1]
-                + _ramp_up_jerk(ve, mid, cons, collect=False)[1])
+        need = (
+            _ramp_up_jerk(vs, mid, cons, collect=False)[1]
+            + _ramp_up_jerk(ve, mid, cons, collect=False)[1]
+        )
         if need > move_d:
             hi = mid
         else:
@@ -278,9 +326,14 @@ def _with_jerk(cons, J):
     # short to fit it is infeasible at every J and the search would never
     # converge. Falling back to plain fixed-jerk is the right semantics: too
     # short to shape, so stop preserving the requested notch.
-    return Constraints(a_const=cons.a_const, v_ceil=cons.v_ceil,
-                       max_jerk=J, jerk_dt=cons.jerk_dt, notch_freq=None,
-                       max_da=cons.max_da)
+    return Constraints(
+        a_const=cons.a_const,
+        v_ceil=cons.v_ceil,
+        max_jerk=J,
+        jerk_dt=cons.jerk_dt,
+        notch_freq=None,
+        max_da=cons.max_da,
+    )
 
 
 def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
@@ -302,6 +355,12 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
         cruise_d = move_d - d_acc - d_dec
         if cruise_d < -1e-6 * max(1.0, move_d):
             return None
+        # Within that tolerance the two re-integrated ramps can overfill move_d
+        # by up to 1e-6*move_d (sub-nanometer at printer scale, orders of
+        # magnitude below one microstep). Clamping the cruise to zero leaves
+        # sum(dist) larger than move_d by that residual; the step compressor
+        # absorbs it, and trimming a slice instead would break the per-slice
+        # "trapq-implied distance == dist" invariant.
         cruise_d = max(0.0, cruise_d)
     if not collect:
         return []
@@ -332,24 +391,26 @@ def _emit_jerk(vs, vc, ve, move_d, cons):
     if not J0:
         J0 = cons.ramp_jerk(max(abs(vc - vs), abs(vc - ve)))
     if not J0:
-        return None                     # nothing to ramp -> caller does sharp
+        return None  # nothing to ramp -> caller does sharp
     hi = J0
     feasible_hi = False
-    for _ in range(40):                 # expand until feasible
+    for _ in range(40):  # expand until feasible
         hi *= 2.0
-        s = _emit_jerk_core(vs, vc, ve, move_d, _with_jerk(cons, hi),
-                            collect=False)
+        s = _emit_jerk_core(
+            vs, vc, ve, move_d, _with_jerk(cons, hi), collect=False
+        )
         if s is not None:
             feasible_hi = True
             break
     if not feasible_hi:
-        return None                     # truly degenerate -> caller does sharp
-    lo = hi * 0.5                        # last infeasible jerk
+        return None  # truly degenerate -> caller does sharp
+    lo = hi * 0.5  # last infeasible jerk
     best = hi
-    for _ in range(24):                 # bisection for the minimum feasible J'
+    for _ in range(24):  # bisection for the minimum feasible J'
         mid = 0.5 * (lo + hi)
-        s = _emit_jerk_core(vs, vc, ve, move_d, _with_jerk(cons, mid),
-                            collect=False)
+        s = _emit_jerk_core(
+            vs, vc, ve, move_d, _with_jerk(cons, mid), collect=False
+        )
         if s is not None:
             hi, best = mid, mid
         else:
@@ -395,7 +456,7 @@ def emit_profile(vs, vc, ve, move_d, cons):
     -- the tuple the toolhead/extruder trapq consume. Invariant-guaranteed by
     construction: non-negative times/speeds, no decel past zero, per-segment
     trapq-implied distance == dist, inter-segment velocity continuity, and
-    sum(dist) == move_d.
+    sum(dist) == move_d to within 1e-6*move_d (see _emit_jerk_core).
 
     When cons.max_jerk (or cons.notch_freq) is set, acceleration is emitted as
     constant-accel slices whose per-slice changes are jerk bounded; on a move
@@ -411,24 +472,45 @@ def emit_profile(vs, vc, ve, move_d, cons):
     return _emit_sharp(vs, vc, ve, move_d, cons)
 
 
+# Every reason notch_loss_reasons() can ever return. The toolhead uses this to
+# stop calling the diagnostic once it has reported all of them.
+LOSS_REASONS = frozenset(("jerk_clamped", "insufficient_runway"))
+
+
 def notch_loss_reasons(vs, vc, ve, move_d, cons):
-    """Return reasons the requested notch frequency is not preserved exactly."""
+    """Return reasons the requested notch frequency is not preserved exactly.
+
+    Reports only ACTIONABLE losses -- ones a config change can remove. The
+    zero-order-hold discretization of the ramp always perturbs the zero a
+    little; that is inherent to emitting the profile as constant-accel slices
+    (tighten it with a smaller `unified_jerk_dt`), so it is not reported here.
+    Flagging it unconditionally made every ordinary print log a warning.
+    """
     if not cons.notch_freq:
         return []
-    reasons = set(["discrete_zero_order_hold"])
+    reasons = set()
     for dv in (abs(vc - vs), abs(vc - ve)):
         if dv <= 1e-12:
             continue
         target_j = dv * cons.notch_freq * cons.notch_freq
         if cons.max_jerk:
-            sat_j = (cons.a_const * cons.notch_freq
-                     if cons.a_const and cons.a_const > 0.0 else 0.0)
+            sat_j = (
+                cons.a_const * cons.notch_freq
+                if cons.a_const and cons.a_const > 0.0
+                else 0.0
+            )
             required_j = min(target_j, sat_j) if sat_j else target_j
             if cons.max_jerk < required_j:
                 reasons.add("jerk_clamped")
-    req_d = (_ramp_up_jerk(vs, max(vc, vs), cons, collect=False)[1]
-             + _ramp_up_jerk(ve, max(vc, ve), cons, collect=False)[1])
-    if req_d > move_d + 1e-9 or _emit_jerk_core(vs, vc, ve, move_d,
-                                                cons) is None:
+    req_d = (
+        _ramp_up_jerk(vs, max(vc, vs), cons, collect=False)[1]
+        + _ramp_up_jerk(ve, max(vc, ve), cons, collect=False)[1]
+    )
+    # collect=False: this is a feasibility probe, so never build the slice list
+    # just to throw it away.
+    if (
+        req_d > move_d + 1e-9
+        or _emit_jerk_core(vs, vc, ve, move_d, cons, collect=False) is None
+    ):
         reasons.add("insufficient_runway")
     return sorted(reasons)

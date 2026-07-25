@@ -159,10 +159,13 @@ printed at a known speed. Band spacing is the resonance period, so
 ## Limitations
 
 - **Runway.** A jerk-limited ramp needs `(v0 + v1) / f_n` of travel to complete.
-  A move shorter than that cannot be fully shaped: it falls back to a bounded
-  fixed-jerk ramp, and if it is shorter still, to the stock constant-accel
-  profile (bounded by `max_accel`). Lower `f_n` needs more runway, so very fine
-  detail on a low-frequency notch may not be shaped.
+  Lower `f_n` needs more runway, so very fine detail on a low-frequency notch may
+  not be shaped. When a move is too short, the *planner* does not accelerate
+  across it at all — it holds the entry speed rather than emitting an unshaped
+  ramp. (The emitter does carry a fixed-jerk and then a constant-accel fallback,
+  but the lookahead never asks for a speed change it cannot shape, so in normal
+  queued motion those paths are not reached.) See **Throughput** below: this is
+  the dominant practical effect of the feature.
 
 - **Acceleration limit.** For `dv <= max_accel / f_n`, notch mode uses the
   triangular law `J = dv * f_n^2`. Above that, it uses a saturated trapezoid with
@@ -176,8 +179,38 @@ printed at a known speed. Band spacing is the resonance period, so
 - **One zero.** The accel ramp provides a single shaper zero, so it cancels one
   mode. A second, well-separated mode is not addressed by this feature.
 
-- **Throughput.** Jerk-limited moves often take longer than the equivalent
-  trapezoid. This is the cost of reducing high-frequency excitation.
+- **Throughput.** Jerk-limited moves take longer than the equivalent trapezoid,
+  and on short-segment geometry the cost is much larger than "a bit slower".
+
+  Parking the shaper zero fixes the ramp *duration* at `2 / f_n` no matter how
+  small the speed change is, so the ramp distance `(v0 + v1) / f_n` does **not**
+  fall to zero as `dv` does — its floor is `2 * v0 / f_n`. A move shorter than
+  that cannot change speed at all. Minimum move length needed to change speed,
+  at `f_n = 55`:
+
+  | current speed | runway needed |
+  | ------------- | ------------- |
+  | 20 mm/s       | 0.73 mm       |
+  | 50 mm/s       | 1.82 mm       |
+  | 100 mm/s      | 3.64 mm       |
+  | 200 mm/s      | 7.27 mm       |
+  | 300 mm/s      | 10.91 mm      |
+
+  Acceleration also cannot be spread across a run of short segments to get
+  around this, because each move's ramp returns to `a = 0` at its own end. So on
+  a chain of equal-length segments the toolhead converges to roughly
+
+  ```
+  v_terminal ~= f_n * segment_length
+  ```
+
+  regardless of `max_velocity` and `max_accel` — at `f_n = 55`, about 55 mm/s on
+  1 mm segments and 220 mm/s on 4 mm segments. Curve-heavy or high-resolution
+  sliced geometry is therefore speed-limited by `f_n`, not by the machine.
+
+  This is inherent to per-move notched ramps, not a tuning problem. Raising
+  `f_n` above the real mode frequency trades shaping quality for throughput;
+  increasing slicer segment length raises the ceiling directly.
 
 ## How it works
 

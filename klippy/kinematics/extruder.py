@@ -363,9 +363,19 @@ class PrinterExtruder:
         )
         self.last_position = move.end_pos[ea_index]
 
-    def process_move_segment(self, print_time, move, ea_index, accel_t,
-                             cruise_t, decel_t, start_v, cruise_v, accel,
-                             seg_dist):
+    def process_move_segment(
+        self,
+        print_time,
+        move,
+        ea_index,
+        accel_t,
+        cruise_t,
+        decel_t,
+        start_v,
+        cruise_v,
+        accel,
+        seg_dist,
+    ):
         # One velocity slice of `move` queued to the extruder trapq, mirroring
         # a jerk-limited toolhead slice emitted at the same print_time so the
         # extruder stays time-synced with the (non-trapezoidal) XY profile. Same

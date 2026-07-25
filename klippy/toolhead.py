@@ -201,7 +201,14 @@ class LookAheadQueue:
                         (smoothed_v2 + reachable_smoothed_v2) * 0.5,
                     )
                     if delayed:
-                        # Propagate peak_cruise_v2 to any delayed moves
+                        # Propagate peak_cruise_v2 to any delayed moves.
+                        #
+                        # No unified cruise clamp is needed here (unlike the
+                        # branch below): mc_v2 is min()'d with each delayed
+                        # move's own ms_v2, so cruise == start and the move has
+                        # no accel ramp to make jerk-feasible. Its decel to
+                        # min(me_v2, mc_v2) was already bounded by the reverse
+                        # sweep, which took me_v2 from _move_reach_v2().
                         if not update_flush_count and i < flush_count:
                             mc_v2 = peak_cruise_v2
                             for m, ms_v2, me_v2 in reversed(delayed):
@@ -302,14 +309,13 @@ class ToolHead:
         )
         if 0.0 < self.unified_max_jerk < 1000.0:
             raise config.error(
-                "unified_max_jerk must be 0 or at least 1000 mm/s^3")
+                "unified_max_jerk must be 0 or at least 1000 mm/s^3"
+            )
         # Ramp integration time step (s).
         self.unified_jerk_dt = config.getfloat(
             "unified_jerk_dt", 0.001, minval=0.0001
         )
-        self.unified_max_da = config.getfloat(
-            "unified_max_da", 0.0, minval=0.0
-        )
+        self.unified_max_da = config.getfloat("unified_max_da", 0.0, minval=0.0)
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
         # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
@@ -327,9 +333,16 @@ class ToolHead:
         #     given together (setting exactly one is a config error).
         nfx = config.getfloat("unified_notch_freq_x", None, minval=0.0)
         nfy = config.getfloat("unified_notch_freq_y", None, minval=0.0)
+        for name, f in (
+            ("unified_notch_freq", self.unified_notch_freq),
+            ("unified_notch_freq_x", nfx),
+            ("unified_notch_freq_y", nfy),
+        ):
+            self._check_notch_freq(f, name, config.error)
         try:
-            self.unified_notch_freq_x, self.unified_notch_freq_y = \
+            self.unified_notch_freq_x, self.unified_notch_freq_y = (
                 self._resolve_notch(self.unified_notch_freq, nfx, nfy)
+            )
         except ValueError as e:
             raise config.error(str(e))
         self.orig_cfg = {}
@@ -345,6 +358,7 @@ class ToolHead:
         self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
         self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
         self._unified_warned = set()
+        self._unified_all_warned = False
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -535,14 +549,31 @@ class ToolHead:
                 cons = self._pathplan_cons(move)
                 # `or None` sends a degenerate empty profile back to the stock
                 # path rather than emitting a zero-duration move.
-                segs = pathplan.emit_profile(
-                    move.start_v, move.cruise_v, move.end_v, move.move_d, cons
-                ) or None
-                if segs is not None:
+                segs = (
+                    pathplan.emit_profile(
+                        move.start_v,
+                        move.cruise_v,
+                        move.end_v,
+                        move.move_d,
+                        cons,
+                    )
+                    or None
+                )
+                # notch_loss_reasons() costs MORE than emit_profile() itself, so
+                # it must not run once every distinct reason has already been
+                # logged -- the dedup inside _warn_unified_profile is too late
+                # to help when the argument is evaluated first.
+                if segs is not None and not self._unified_all_warned:
                     self._warn_unified_profile(
-                        move, pathplan.notch_loss_reasons(
-                            move.start_v, move.cruise_v, move.end_v,
-                            move.move_d, cons))
+                        move,
+                        pathplan.notch_loss_reasons(
+                            move.start_v,
+                            move.cruise_v,
+                            move.end_v,
+                            move.move_d,
+                            cons,
+                        ),
+                    )
             if segs is not None:
                 # Emit the jerk-limited profile as a chain of constant-accel
                 # slices, driving the toolhead trapq and each extra axis (the
@@ -552,7 +583,7 @@ class ToolHead:
                 # next_move_time by the ACTUAL emitted duration.
                 t = next_move_time
                 pos = 0.0
-                for (at, ct, dt, sv, cv, a, dist) in segs:
+                for at, ct, dt, sv, cv, a, dist in segs:
                     self.trapq_append(
                         self.trapq,
                         t,
@@ -576,16 +607,17 @@ class ToolHead:
                             raise self.printer.command_error(
                                 "unified_planner requires extra axis '%s' to"
                                 " implement process_move_segment"
-                                % (ea.get_axis_gcode_id(),))
+                                % (ea.get_axis_gcode_id(),)
+                            )
                         ea.process_move_segment(
-                            t, move, e_index + 3, at, ct, dt, sv, cv, a,
-                            dist
+                            t, move, e_index + 3, at, ct, dt, sv, cv, a, dist
                         )
                     t += at + ct + dt
                     pos += dist
                 for e_index, ea in enumerate(self.extra_axes):
-                    if (move.axes_d[e_index + 3]
-                            and hasattr(ea, "sync_position")):
+                    if move.axes_d[e_index + 3] and hasattr(
+                        ea, "sync_position"
+                    ):
                         ea.sync_position(move, e_index + 3)
                 move_dur = t - next_move_time
             else:
@@ -782,7 +814,8 @@ class ToolHead:
         if self.unified_emit and not hasattr(extruder, "process_move_segment"):
             raise self.printer.command_error(
                 "unified_planner requires extra axis '%s' to implement"
-                " process_move_segment" % (extruder.get_axis_gcode_id(),))
+                " process_move_segment" % (extruder.get_axis_gcode_id(),)
+            )
         prev_ea_trapq = self.extra_axes[0].get_trapq()
         if prev_ea_trapq in self.flush_trapqs:
             self.flush_trapqs.remove(prev_ea_trapq)
@@ -800,7 +833,8 @@ class ToolHead:
         if self.unified_emit and not hasattr(ea, "process_move_segment"):
             raise self.printer.command_error(
                 "unified_planner requires extra axis '%s' to implement"
-                " process_move_segment" % (ea.get_axis_gcode_id(),))
+                " process_move_segment" % (ea.get_axis_gcode_id(),)
+            )
         self.extra_axes.append(ea)
         self.commanded_pos.append(axis_pos)
         ea_trapq = ea.get_trapq()
@@ -995,6 +1029,24 @@ class ToolHead:
         self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
+    # A notched ramp always lasts 2/f_n seconds and eats (v0+v1)/f_n of path
+    # distance, so a very low f_n does not just shape gently -- it stalls the
+    # machine. At 1 Hz a ramp is 2 s long and needs 100 mm of runway to reach
+    # 50 mm/s. No printer structural mode sits below this floor, and the values
+    # that land here in practice are typos (0.55 for 55).
+    MIN_NOTCH_FREQ = 5.0
+
+    @classmethod
+    def _check_notch_freq(cls, freq, name, error_factory):
+        if freq is None or freq <= 0.0:
+            return  # 0/unset = notch disabled
+        if freq < cls.MIN_NOTCH_FREQ:
+            raise error_factory(
+                "%s must be 0 or at least %.0f Hz (got %.4f); a notch below"
+                " that stalls the toolhead -- each ramp takes 2/f_n seconds"
+                % (name, cls.MIN_NOTCH_FREQ, freq)
+            )
+
     @staticmethod
     def _resolve_notch(shared, nfx, nfy):
         # Resolve the notch config into a per-axis pair (f_x, f_y).
@@ -1009,7 +1061,8 @@ class ToolHead:
                 "unified_notch_freq_x and unified_notch_freq_y must be set"
                 " together. Use unified_notch_freq to notch both axes at one"
                 " frequency, or set BOTH unified_notch_freq_x and"
-                " unified_notch_freq_y.")
+                " unified_notch_freq_y."
+            )
         if nfx is None:
             return shared, shared
         return nfx, nfy
@@ -1032,17 +1085,29 @@ class ToolHead:
         # [min(f_x,f_y), max(f_x,f_y)]) on diagonals. f_x / f_y are pre-resolved
         # at config time (_resolve_notch), so a single shared unified_notch_freq
         # yields that frequency for every direction.
+        #
+        # Memoized on the move: this is called from _uses_unified_reach, which
+        # runs on every lookahead reach probe (several per move per flush pass).
+        # Safe because the notch config can only change via SET_UNIFIED, which
+        # calls flush_step_generation() first and so retires every queued move.
+        f = getattr(move, "_unified_notch_f", None)
+        if f is not None:
+            return f
         fx = self.unified_notch_freq_x
         fy = self.unified_notch_freq_y
         if not fx and not fy:
-            return 0.0
-        rx = abs(move.axes_r[0])
-        ry = abs(move.axes_r[1])
-        w = rx + ry
-        if w <= 1e-12:
-            # No XY motion (Z/E-only): the path notch is direction-free.
-            return fx or fy
-        return (fx * rx + fy * ry) / w
+            f = 0.0
+        else:
+            rx = abs(move.axes_r[0])
+            ry = abs(move.axes_r[1])
+            w = rx + ry
+            if w <= 1e-12:
+                # No XY motion (Z/E-only): the path notch is direction-free.
+                f = fx or fy
+            else:
+                f = (fx * rx + fy * ry) / w
+        move._unified_notch_f = f
+        return f
 
     def _pathplan_cons(self, move):
         # Build the pathplan.Constraints for one move. a_const is the move's
@@ -1068,7 +1133,10 @@ class ToolHead:
         )
 
     def _uses_unified_reach(self, move):
-        if not getattr(self, "unified_emit", False) or not move.is_kinematic_move:
+        if (
+            not getattr(self, "unified_emit", False)
+            or not move.is_kinematic_move
+        ):
             return False
         return self.unified_max_jerk > 0.0 or self._move_notch_freq(move) > 0.0
 
@@ -1076,10 +1144,47 @@ class ToolHead:
         if not self._uses_unified_reach(move):
             return start_v2 + move.delta_v2
         cons = self._pathplan_cons(move)
+        # Memoize the last solve for this move. LookAheadQueue.flush probes the
+        # same move up to three times per pass (once in the reverse sweep, twice
+        # more in the unified cruise clamp) and repeats next_end_v2, so a
+        # one-entry cache removes most of the calls. cons.v_ceil is part of the
+        # key because it changes once set_junction() has run on this move.
+        key = (start_v2, cons.v_ceil)
+        cached = getattr(move, "_unified_reach_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         jerk = cons.max_jerk or 0.0
-        return pathplan.jerk_reach_v2(
-            start_v2, move.move_d, move.accel, jerk, self.max_velocity,
-            notch_freq=cons.notch_freq)
+        # cons.v_ceil deliberately unused here: it is the EMITTER's per-move
+        # ceiling (this move's own cruise target). Reachability asks how fast
+        # the toolhead could arrive, so it is bounded by the machine limit;
+        # move.max_cruise_v2 is applied separately by the caller.
+        res = pathplan.jerk_reach_v2(
+            start_v2,
+            move.move_d,
+            move.accel,
+            jerk,
+            self.max_velocity,
+            notch_freq=cons.notch_freq,
+        )
+        move._unified_reach_cache = (key, res)
+        return res
+
+    _UNIFIED_FIELDS = (
+        "unified_emit",
+        "unified_max_jerk",
+        "unified_jerk_dt",
+        "unified_max_da",
+        "unified_notch_freq",
+        "unified_notch_freq_x",
+        "unified_notch_freq_y",
+    )
+
+    def _unified_state(self):
+        return tuple(getattr(self, n) for n in self._UNIFIED_FIELDS)
+
+    def _restore_unified_state(self, state):
+        for name, value in zip(self._UNIFIED_FIELDS, state):
+            setattr(self, name, value)
 
     def _check_unified_extra_axis_support(self, error_factory=None):
         if not self.unified_emit:
@@ -1088,8 +1193,10 @@ class ToolHead:
             if hasattr(ea, "process_move_segment"):
                 continue
             axis = ea.get_axis_gcode_id()
-            msg = ("unified_planner requires extra axis '%s' to implement"
-                   " process_move_segment" % (axis,))
+            msg = (
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_segment" % (axis,)
+            )
             if error_factory is not None:
                 raise error_factory(msg)
             raise self.printer.command_error(msg)
@@ -1106,7 +1213,15 @@ class ToolHead:
             logging.warning(
                 "unified_planner: target notch not preserved on move ending"
                 " at %.3f %.3f %.3f: %s",
-                move.end_pos[0], move.end_pos[1], move.end_pos[2], reason)
+                move.end_pos[0],
+                move.end_pos[1],
+                move.end_pos[2],
+                reason,
+            )
+        # Once every possible reason has been reported there is nothing left to
+        # learn, so the caller can stop paying for the diagnostic entirely.
+        if self._unified_warned >= pathplan.LOSS_REASONS:
+            self._unified_all_warned = True
 
     def cmd_G4(self, gcmd):
         # Dwell
@@ -1236,6 +1351,11 @@ class ToolHead:
 
         self.square_corner_velocity = self.orig_cfg["square_corner_velocity"]
         self.min_cruise_ratio = self.orig_cfg["min_cruise_ratio"]
+        # Restore under rollback: extra axes can be added after startup, so the
+        # support check can fail here even though the original config was valid.
+        # Leaving half-restored unified state behind would be worse than the
+        # error itself.
+        old_unified = self._unified_state()
         self.unified_emit = self.orig_cfg["unified_emit"]
         self.unified_max_jerk = self.orig_cfg["unified_max_jerk"]
         self.unified_jerk_dt = self.orig_cfg["unified_jerk_dt"]
@@ -1243,7 +1363,11 @@ class ToolHead:
         self.unified_notch_freq = self.orig_cfg["unified_notch_freq"]
         self.unified_notch_freq_x = self.orig_cfg["unified_notch_freq_x"]
         self.unified_notch_freq_y = self.orig_cfg["unified_notch_freq_y"]
-        self._check_unified_extra_axis_support()
+        try:
+            self._check_unified_extra_axis_support()
+        except:
+            self._restore_unified_state(old_unified)
+            raise
         self._calc_junction_deviation()
         msg.extend(
             (
@@ -1304,17 +1428,22 @@ class ToolHead:
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
-        old = (self.unified_emit, self.unified_max_jerk,
-               self.unified_notch_freq, self.unified_notch_freq_x,
-               self.unified_notch_freq_y, self.unified_max_da)
+        old = self._unified_state()
         try:
             if en is not None:
                 self.unified_emit = bool(en)
             if jerk is not None:
                 if 0.0 < jerk < 1000.0:
                     raise gcmd.error(
-                        "MAX_JERK must be 0 or at least 1000 mm/s^3")
+                        "MAX_JERK must be 0 or at least 1000 mm/s^3"
+                    )
                 self.unified_max_jerk = jerk
+            for name, f in (
+                ("NOTCH_FREQ", notch),
+                ("NOTCH_FREQ_X", notch_x),
+                ("NOTCH_FREQ_Y", notch_y),
+            ):
+                self._check_notch_freq(f, name, gcmd.error)
             if notch is not None:
                 # NOTCH_FREQ notches both axes; explicit NOTCH_FREQ_X/Y below
                 # win.
@@ -1327,11 +1456,19 @@ class ToolHead:
                 self.unified_notch_freq_y = notch_y
             if max_da is not None:
                 self.unified_max_da = max_da
+            # Enforce the same X/Y pair rule the config parser applies at
+            # startup (_resolve_notch): notching one axis but not the other is
+            # ambiguous, and setting only NOTCH_FREQ_X used to slip past it.
+            if bool(self.unified_notch_freq_x) != bool(
+                self.unified_notch_freq_y
+            ):
+                raise gcmd.error(
+                    "NOTCH_FREQ_X and NOTCH_FREQ_Y must both be set or both be"
+                    " 0. Use NOTCH_FREQ to notch both axes at one frequency."
+                )
             self._check_unified_extra_axis_support()
         except:
-            (self.unified_emit, self.unified_max_jerk,
-             self.unified_notch_freq, self.unified_notch_freq_x,
-             self.unified_notch_freq_y, self.unified_max_da) = old
+            self._restore_unified_state(old)
             raise
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"

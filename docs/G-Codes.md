@@ -1997,7 +1997,9 @@ toggles jerk-limited emission for normal queued moves. `MAX_JERK` sets the
 normal-path jerk cap in mm/s^3 (`0` disables the cap). `MAX_DA` caps the
 positive emitted acceleration step between slices in mm/s^2 (`0` disables the
 cap). `NOTCH_FREQ` sets one scalar notch frequency in Hz. `NOTCH_FREQ_X` and
-`NOTCH_FREQ_Y` set per-axis frequencies; they should be changed together. With
+`NOTCH_FREQ_Y` set per-axis frequencies; they must end up either both non-zero
+or both zero, matching the config-time rule. Non-zero notch frequencies must be
+at least 5 Hz. If any parameter is rejected, none of the settings change. With
 no parameters, the command reports the current settings. See
 [Jerk_Limiting.md](Jerk_Limiting.md) and the
 [printer config section](Config_Reference.md#printer) for details.

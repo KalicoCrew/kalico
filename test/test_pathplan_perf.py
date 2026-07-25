@@ -6,8 +6,8 @@ import os
 import sys
 import time
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, os.path.join(ROOT, 'klippy', 'extras'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(ROOT, "klippy", "extras"))
 import pathplan  # noqa: E402
 from test_pathplan import check_segs  # noqa: E402
 
@@ -19,15 +19,24 @@ def bench_reach(iterations=2000):
         v0 = (i % 180) * 0.7
         dist = 0.4 + (i % 37) * 0.18
         nf = 44.0 + (i % 5) * 3.0
-        acc += pathplan.jerk_reach_v2(v0 * v0, dist, 8000.0, 250000.0,
-                                      600.0, notch_freq=nf)
+        acc += pathplan.jerk_reach_v2(
+            v0 * v0, dist, 8000.0, 250000.0, 600.0, notch_freq=nf
+        )
     return time.perf_counter() - start, acc
 
 
+def _cons():
+    return pathplan.Constraints(
+        a_const=8000.0,
+        v_ceil=600.0,
+        max_jerk=250000.0,
+        jerk_dt=0.001,
+        notch_freq=55.0,
+    )
+
+
 def bench_emit(iterations=400):
-    cons = pathplan.Constraints(a_const=8000.0, v_ceil=600.0,
-                                max_jerk=250000.0, jerk_dt=0.001,
-                                notch_freq=55.0)
+    cons = _cons()
     start = time.perf_counter()
     seg_count = 0
     dist_sum = 0.0
@@ -44,18 +53,78 @@ def bench_emit(iterations=400):
     return time.perf_counter() - start, seg_count, dist_sum
 
 
+def bench_emit_short(iterations=400):
+    # The moves the 8-36 mm bench above never reaches: sub-millimetre segments
+    # at speed, where the requested cruise does NOT fit the runway. These take
+    # the _peak_velocity_jerk bisection (two full ramp integrations per probe)
+    # and then the jerk-escalation search -- by far the most expensive path in
+    # the emitter, and the COMMON case on real sliced geometry.
+    cons = _cons()
+    start = time.perf_counter()
+    seg_count = 0
+    for i in range(iterations):
+        vs = 40.0 + float(i % 90)
+        move_d = 0.15 + float(i % 12) * 0.07  # 0.15 - 0.92 mm
+        # Keep (vs, ve) inside the constant-accel reach so the endpoints are
+        # something a real lookahead could hand us; only the CRUISE is out of
+        # reach, which is what forces the expensive peak search.
+        span = 2.0 * cons.a_const * move_d
+        frac = -0.9 + 0.2 * float(i % 10)
+        ve = math.sqrt(max(0.0, vs * vs + span * frac))
+        vc = max(vs, ve) + 60.0
+        segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
+        assert segs, (vs, vc, ve, move_d)
+        check_segs(segs, move_d, vs, ve, "perf_short[%d]" % (i,))
+        seg_count += len(segs)
+    return time.perf_counter() - start, seg_count
+
+
+def bench_loss_reasons(iterations=400):
+    # The diagnostic the toolhead calls alongside emit_profile. It re-runs a
+    # feasibility probe, so it must stay CHEAPER than the emit it annotates --
+    # it used to cost ~1.7x emit_profile because it built and discarded a full
+    # slice list.
+    cons = _cons()
+    start = time.perf_counter()
+    count = 0
+    for i in range(iterations):
+        vs = float((i * 7) % 40)
+        ve = float((i * 11) % 40)
+        vc = max(vs, ve) + 20.0 + float(i % 120)
+        move_d = 8.0 + float(i % 80) * 0.35
+        reasons = pathplan.notch_loss_reasons(vs, vc, ve, move_d, cons)
+        for r in reasons:
+            assert r in pathplan.LOSS_REASONS, r
+        count += len(reasons)
+    return time.perf_counter() - start, count
+
+
 def main():
     reach_t, reach_acc = bench_reach()
     emit_t, seg_count, dist_sum = bench_emit()
+    short_t, short_segs = bench_emit_short()
+    loss_t, loss_count = bench_loss_reasons()
     assert math.isfinite(reach_acc)
     assert seg_count > 0
     assert dist_sum > 0.0
+    assert short_segs > 0
     print("reach: %.4fs for 2000 reach solves" % (reach_t,))
     print("emit:  %.4fs for 400 profiles (%d slices)" % (emit_t, seg_count))
+    print(
+        "short: %.4fs for 400 sub-mm profiles (%d slices)"
+        % (short_t, short_segs)
+    )
+    print(
+        "loss:  %.4fs for 400 diagnostics (%d reasons)" % (loss_t, loss_count)
+    )
     # Loose guardrail: this is a regression tripwire, not a machine-specific
     # microbenchmark target.
     assert reach_t < 2.0, ("reach benchmark too slow", reach_t)
     assert emit_t < 5.0, ("emit benchmark too slow", emit_t)
+    assert short_t < 8.0, ("short-move benchmark too slow", short_t)
+    # Relative guardrail: the diagnostic must never again cost more than the
+    # emit it describes.
+    assert loss_t < emit_t, ("loss diagnostic slower than emit", loss_t, emit_t)
     print("ALL PASS")
 
 

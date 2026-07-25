@@ -253,13 +253,18 @@ max_accel:
 #   J = dv * unified_notch_freq^2. This applies one scalar path-speed notch to
 #   both X and Y. If that triangular law would exceed max_accel, the planner
 #   uses a saturated ramp with J = max_accel * unified_notch_freq and a
-#   constant-acceleration plateau. 0 disables the notch law. The default is 0.
+#   constant-acceleration plateau. 0 disables the notch law. Values other than 0
+#   must be at least 5 Hz: every ramp lasts 2 / unified_notch_freq seconds, so a
+#   very low frequency stalls the toolhead rather than shaping it gently. Note
+#   that this frequency also caps throughput on short-segment geometry - see the
+#   Throughput section of docs/Jerk_Limiting.md. The default is 0.
 #unified_notch_freq_x: 0
 #unified_notch_freq_y: 0
-#   Optional per-axis resonance frequencies in Hz. These must be set together.
-#   The planner chooses one direction-weighted scalar notch per move, so
-#   diagonal moves are a compromise between the X and Y frequencies. The default
-#   is to use unified_notch_freq for both axes.
+#   Optional per-axis resonance frequencies in Hz. These must be set together,
+#   and are subject to the same 5 Hz minimum. The planner chooses one
+#   direction-weighted scalar notch per move, so diagonal moves are a compromise
+#   between the X and Y frequencies. The default is to use unified_notch_freq for
+#   both axes.
 #unified_max_jerk: 0
 #   Maximum jerk in mm/s^3 for normal jerk-limited ramps. 0 disables this cap.
 #   Values other than 0 must be at least 1000. In notch mode this cap must be
