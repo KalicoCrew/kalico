@@ -9,8 +9,10 @@
 # a_peak scales linearly with dv; ramp distance is (v0+v1)/f_n; the LOOKAHEAD
 # twin jerk_dist agrees with the emitter's integrated distance (else moves get
 # planned into the sharp fallback); jerk_reach_v2 stays monotone; max_jerk
-# preserves the target notch by limiting dv; notch_freq unset is a no-op; the
-# stepguard invariants hold; and a full chain plans with zero sharp fallbacks.
+# preserves the target notch by limiting dv only when the jerk ceiling is too
+# low; saturated ramps use a designed max-accel plateau; notch_freq unset is a
+# no-op; the stepguard invariants hold; and a full chain plans with zero sharp
+# fallbacks.
 #
 # Run: klippy-env/bin/python test/test_pathplan_notch.py
 import math
@@ -182,39 +184,56 @@ def test_notch_loss_reasons():
     assert pathplan.notch_loss_reasons(
         0.0, 100.0, 0.0, 20.0, clean) == ["discrete_zero_order_hold"]
     saturated = make_cons(notch=55.0, a_const=3000.0)
-    assert "accel_saturated" in pathplan.notch_loss_reasons(
-        0.0, 100.0, 0.0, 20.0, saturated)
+    assert pathplan.notch_loss_reasons(
+        0.0, 100.0, 0.0, 20.0, saturated) == [
+            "discrete_zero_order_hold"]
     capped = make_cons(notch=55.0, max_jerk=100000.0)
     reasons = pathplan.notch_loss_reasons(0.0, 100.0, 0.0, 20.0, capped)
-    assert "jerk_clamped" not in reasons, reasons
+    assert "jerk_clamped" in reasons, reasons
+    capped_sat = make_cons(notch=55.0, max_jerk=100000.0, a_const=3000.0)
+    assert "jerk_clamped" in pathplan.notch_loss_reasons(
+        0.0, 100.0, 0.0, 20.0, capped_sat)
     short = make_cons()
     assert "insufficient_runway" in pathplan.notch_loss_reasons(
         0.0, 200.0, 0.0, 0.5, short)
     print("  notch loss diagnostics report emitted-profile limits OK")
 
 
-def test_notch_peak_clamps_to_unsaturated_accel():
+def test_notch_saturated_trapezoid_reaches_requested_peak():
     cons = make_cons(notch=55.0, a_const=3000.0, jerk_dt=0.0002)
-    dv_max = cons.a_const / cons.notch_freq
     segs = pathplan.emit_profile(0.0, 200.0, 0.0, 30.0, cons)
     assert segs
     peak_v = max(max(s[3], s[4]) for s in segs)
     peak_a = max(s[5] for s in segs)
-    assert peak_v <= dv_max + 1e-3, (peak_v, dv_max)
+    assert peak_v >= 199.0, peak_v
     assert peak_a <= cons.a_const + 1e-6, (peak_a, cons.a_const)
-    assert "accel_saturated" in pathplan.notch_loss_reasons(
-        0.0, 200.0, 0.0, 30.0, cons)
-    print("  notch peak clamps to max_accel/f_n to avoid saturation OK")
+    assert pathplan.notch_loss_reasons(
+        0.0, 200.0, 0.0, 30.0, cons) == ["discrete_zero_order_hold"]
+    print("  saturated notch reaches requested peak while capping accel OK")
 
 
-def test_notch_reach_clamps_to_unsaturated_accel():
+def test_saturated_emitted_zoh_notch_response():
+    cons = make_cons(notch=55.0, a_const=3000.0, jerk_dt=0.0002)
+    slices, _ = pathplan._ramp_up_jerk(0.0, 200.0, cons)
+    assert slices is not None
+    dc = zoh_accel_spectrum(slices, 0.0)
+    at_notch = zoh_accel_spectrum(slices, 55.0) / dc
+    below = zoh_accel_spectrum(slices, 55.0 * 0.75) / dc
+    above = zoh_accel_spectrum(slices, 55.0 * 1.25) / dc
+    assert at_notch < 0.01, ("saturated emitted notch too shallow", at_notch)
+    assert at_notch < below * 0.1, (at_notch, below)
+    assert at_notch < above * 0.1, (at_notch, above)
+    print("  saturated emitted ZOH spectrum has a near-zero at f_n OK")
+
+
+def test_notch_reach_uses_saturated_plateau():
     accel = 3000.0
     notch = 55.0
     u = pathplan.jerk_reach_v2(0.0, 1000.0, accel, None, 500.0,
                                notch_freq=notch)
     v = math.sqrt(u)
-    assert v <= accel / notch + 1e-6, (v, accel / notch)
-    print("  notch reach clamps to unsaturated velocity delta OK")
+    assert v > accel / notch + 1.0, (v, accel / notch)
+    print("  notch reach uses designed saturated plateau OK")
 
 
 def test_notch_reach_clamps_to_max_jerk():
@@ -332,8 +351,9 @@ def main():
     test_emitted_zoh_notch_response()
     test_zoh_notch_error_scales_with_dt()
     test_notch_loss_reasons()
-    test_notch_peak_clamps_to_unsaturated_accel()
-    test_notch_reach_clamps_to_unsaturated_accel()
+    test_notch_saturated_trapezoid_reaches_requested_peak()
+    test_saturated_emitted_zoh_notch_response()
+    test_notch_reach_uses_saturated_plateau()
     test_notch_reach_clamps_to_max_jerk()
     test_notch_off_is_noop()
     test_invariants_hold()

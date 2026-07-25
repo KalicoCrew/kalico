@@ -251,7 +251,9 @@ max_accel:
 #unified_notch_freq: 0
 #   Resonance frequency in Hz for the per-ramp notch law
 #   J = dv * unified_notch_freq^2. This applies one scalar path-speed notch to
-#   both X and Y. 0 disables the notch law. The default is 0.
+#   both X and Y. If that triangular law would exceed max_accel, the planner
+#   uses a saturated ramp with J = max_accel * unified_notch_freq and a
+#   constant-acceleration plateau. 0 disables the notch law. The default is 0.
 #unified_notch_freq_x: 0
 #unified_notch_freq_y: 0
 #   Optional per-axis resonance frequencies in Hz. These must be set together.
@@ -260,11 +262,11 @@ max_accel:
 #   is to use unified_notch_freq for both axes.
 #unified_max_jerk: 0
 #   Maximum jerk in mm/s^3 for normal jerk-limited ramps. 0 disables this cap.
-#   Values other than 0 must be at least 1000. In notch mode this limits ramp
-#   velocity change to unified_max_jerk / unified_notch_freq^2, slowing the move
-#   instead of moving the notch frequency. Short moves may use a bounded escape
-#   ramp that exceeds this cap while still respecting max_accel. The default is
-#   0.
+#   Values other than 0 must be at least 1000. In notch mode this cap must be
+#   high enough for the selected triangular or saturated law; otherwise lookahead
+#   slows the move instead of moving the notch frequency. Short moves may use a
+#   bounded escape ramp that exceeds this cap while still respecting max_accel.
+#   The default is 0.
 #unified_max_da: 0
 #   Optional cap in mm/s^2 on positive jerk-up acceleration changes between
 #   emitted slices. 0 disables this cap. The default is 0.

@@ -50,20 +50,17 @@ a_peak   = dv * f_n          (linear in the velocity change)
 distance = (v0 + v1) / f_n   (the "runway" a ramp needs)
 ```
 
-The parked zero is exact only for the ideal, unsaturated triangular pulse. When
-`max_accel` is finite, notch mode limits the velocity change of each ramp to
-`max_accel / f_n`; if `unified_max_jerk` is set, it also limits each ramp to
-`unified_max_jerk / f_n^2`. Moves that would exceed either bound are slowed
-instead of clipping the acceleration pulse or lowering the notch frequency. The
+When `dv > max_accel / f_n`, the triangular pulse would exceed `max_accel`.
+Notch mode then switches to a designed saturated trapezoid: it sets
+`J = max_accel * f_n`, holds the ramp edge time at `1/f_n`, and adds a
+constant-acceleration plateau for the remaining velocity change. The ideal ramp
+edge still has a zero at `f_n` while the configured acceleration limit is
+honored.
+
+If `unified_max_jerk` is set too low for the required triangular or saturated
+law, the planner limits ramp `dv` instead of lowering the notch frequency. The
 emitted zero-order-held slices still approximate the ideal pulse, and
 insufficient runway moves the response away from the requested notch.
-
-For notch tuning, set `max_accel` high enough that it does not unintentionally
-become the active limit. Many users will want an intentionally high
-`max_accel` value while testing this feature, then use `unified_notch_freq`,
-`unified_max_jerk`, and mechanical testing to set the real behavior. If
-`max_accel` is left at a conservative printing value, the planner may slow large
-velocity changes to preserve the unsaturated notch law.
 
 ## Configuration
 
@@ -109,8 +106,9 @@ unified_notch_freq: 55
 
 - `unified_max_jerk` (default: 0)
   Fixed jerk cap in mm/s^3. `0` = uncapped. Values other than `0` must be at
-  least `1000`. When `unified_notch_freq` is set this caps the normal per-ramp
-  jerk by limiting ramp `dv` to `unified_max_jerk / f_n^2`; this slows the move
+  least `1000`. When `unified_notch_freq` is set this cap must be high enough
+  for the selected law: `dv * f_n^2` while triangular, or `max_accel * f_n` once
+  the ramp saturates `max_accel`. If it is lower, lookahead slows the move
   rather than moving the first zero below `f_n`. Very short moves may use a
   bounded escape ramp above this cap while still respecting `max_accel`.
 
@@ -166,11 +164,11 @@ printed at a known speed. Band spacing is the resonance period, so
   profile (bounded by `max_accel`). Lower `f_n` needs more runway, so very fine
   detail on a low-frequency notch may not be shaped.
 
-- **Acceleration limit.** Parking the first zero at `f_n` requires
-  `dv <= max_accel / f_n`. For example, at `max_accel = 3000 mm/s^2` and
-  `f_n = 55 Hz`, each ramp is limited to about `54.5 mm/s` of velocity change.
-  Set `max_accel` high enough that this limit does not interfere unless you
-  deliberately want it to slow the move.
+- **Acceleration limit.** For `dv <= max_accel / f_n`, notch mode uses the
+  triangular law `J = dv * f_n^2`. Above that, it uses a saturated trapezoid with
+  `J = max_accel * f_n` and a constant-acceleration plateau. This preserves the
+  ideal ramp-edge zero at `f_n` while honoring `max_accel`, but large velocity
+  changes take longer than they would with an unlimited acceleration setting.
 
 - **Homing and probing.** Homing/probing drip moves continue to use the standard
   trapezoid path. `unified_planner` applies to normal queued motion.
