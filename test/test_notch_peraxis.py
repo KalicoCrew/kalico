@@ -1,7 +1,14 @@
 # Unit test for the per-axis notch: config resolution/validation
-# (ToolHead._resolve_notch) and the direction-weighted blend
-# (ToolHead._move_notch_freq / _notch_on). Imports the REAL toolhead module
-# with runtime-only dependencies stubbed so it can run standalone.
+# (ToolHead._resolve_notch) and per-move target selection
+# (ToolHead._move_notch_pair / _move_notch_freq / _notch_on). Imports the REAL
+# toolhead module with runtime-only dependencies stubbed so it can run
+# standalone.
+#
+# Naming two different modes selects a two-zero (trapezoidal) ramp that nulls
+# BOTH on every axis, so the target no longer depends on heading -- see
+# test_notch_dual.py for the law itself. This file checks that the toolhead
+# resolves the config to the right pair, degenerates to the single-zero case
+# when f_x == f_y, and gets the Z-coupling cases right.
 import importlib
 import math
 import os
@@ -106,6 +113,16 @@ def f(o, rx, ry, rz=0.0):
     return TH._move_notch_freq(o, FakeMove(rx, ry, rz))
 
 
+def pair(o, rx, ry, rz=0.0):
+    return TH._move_notch_pair(o, FakeMove(rx, ry, rz))
+
+
+def f_eq(f_lo, f_hi):
+    # The equivalent (harmonic-mean) frequency of a two-zero pair -- what
+    # governs ramp distance and runway.
+    return 2.0 / (1.0 / f_lo + 1.0 / f_hi)
+
+
 def raises(shared, x, y):
     try:
         TH._resolve_notch(shared, x, y)
@@ -177,8 +194,10 @@ def run_checks():
     o = mk(60.0, 55.0)
     check(failures, "Z-only per-axis -> off", f(o, 0, 0, 1), 0.0)
     # A Z move with ANY real XY component is still shaped: that component does
-    # excite the modes.
-    check(failures, "tiny X + Z -> fx", f(o, 1e-6, 0.0, 1.0), 60.0)
+    # excite the modes. With two modes named it gets both zeros.
+    check(
+        failures, "tiny X + Z -> pair", f(o, 1e-6, 0.0, 1.0), f_eq(55.0, 60.0)
+    )
 
     print("== no XY motion, Z COUPLED (CoreXZ/delta) -> keep shaping ==")
     # On CoreXZ (A = x + z, B = x - z), delta and polar, a Z-only move drives
@@ -187,39 +206,51 @@ def run_checks():
     o = mk(55.0, 55.0, z_coupled=True)
     check(failures, "Z-only coupled  -> on", f(o, 0, 0, 1), 55.0)
     o = mk(60.0, 55.0, z_coupled=True)
-    check(failures, "Z-only coupled per-axis", f(o, 0, 0, 1), 60.0)
+    check(
+        failures,
+        "Z-only coupled per-axis",
+        f(o, 0, 0, 1),
+        f_eq(55.0, 60.0),
+    )
     # Unknown kinematics must fall on the safe side: keep shaping.
     o = mk(55.0, 55.0, rails=None)
     check(failures, "unknown kin -> on", f(o, 0, 0, 1), 55.0)
 
-    print("== per-axis: fx=60, fy=55 ==")
+    print("== per-axis: fx=60, fy=55 -> BOTH zeros, on every heading ==")
+    # Naming two modes asks for a trapezoidal ramp rect(1/60) * rect(1/55),
+    # whose spectrum nulls 55 AND 60. Both zeros land on both axes (a_i = r_i*a),
+    # so unlike the old single-zero blend the target does not depend on heading.
     o = mk(60.0, 55.0)
-    check(failures, "pure-X -> fx", f(o, 1, 0), 60.0)
-    check(failures, "pure-Y -> fy", f(o, 0, 1), 55.0)
-    check(failures, "45deg  -> mean", f(o, s2, s2), 57.5)
-    check(
-        failures,
-        "X-dominant blend",
-        f(o, 0.8, 0.6),
-        (60 * 0.8 + 55 * 0.6) / 1.4,
+    check_true(failures, "pure-X -> pair", pair(o, 1, 0) == (55.0, 60.0))
+    check_true(failures, "pure-Y -> pair", pair(o, 0, 1) == (55.0, 60.0))
+    check_true(failures, "45deg  -> pair", pair(o, s2, s2) == (55.0, 60.0))
+    check_true(
+        failures, "X+Z    -> pair", pair(o, 0.6, 0.0, 0.8) == (55.0, 60.0)
     )
-    check(failures, "X+Z pure-X-in-plane -> fx", f(o, 0.6, 0.0, 0.8), 60.0)
+    # The scalar the planner uses is the pair's harmonic mean: a ramp costs
+    # 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq, the single-notch formula.
+    check(failures, "f_eq is the harmonic mean", f(o, 1, 0), f_eq(55.0, 60.0))
 
-    print("== diagonal within [min,max] and monotonic toward pure-X ==")
+    print(
+        "== the pair is heading-independent (this is what lets spans link) =="
+    )
     o = mk(60.0, 55.0)
+    vals = set()
     bad = None
-    prev = None
-    mono = True
-    for deg in range(90, -1, -5):  # 90 (pure Y) -> 0 (pure X)
+    for deg in range(0, 360, 5):
         r = math.radians(deg)
         v = f(o, math.cos(r), math.sin(r))
+        vals.add(v)
         if v < 55.0 - 1e-9 or v > 60.0 + 1e-9:
             bad = (deg, v)
-        if prev is not None and v < prev - 1e-9:
-            mono = False
-        prev = v
-    check_true(failures, "all angles in [55,60]", bad is None)
-    check_true(failures, "f increases toward pure-X", mono)
+    check_true(failures, "one target for all 72 headings", len(vals) == 1)
+    check_true(failures, "f_eq inside [55,60]", bad is None)
+
+    print("== f_x == f_y degenerates to the single-zero triangle ==")
+    o = mk(55.0, 55.0)
+    check_true(failures, "equal pair", pair(o, s2, s2) == (55.0, 55.0))
+    # Exactly f, not 2/(1/f+1/f): span linking compares this between moves.
+    check_true(failures, "f_eq is exactly f", f(o, s2, s2) == 55.0)
     return failures
 
 

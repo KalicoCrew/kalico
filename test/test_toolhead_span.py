@@ -225,6 +225,64 @@ def test_span_keeps_the_zero_on_fn():
     )
 
 
+def test_span_keeps_BOTH_zeros_with_per_axis_modes():
+    # The toolhead -> pathplan seam, end to end: per-axis modes must reach the
+    # emitter as a PAIR (_move_notch_pair -> Constraints.notch_freq2) and the
+    # spanning ramp must come back with a null on each of them.
+    #
+    # Spanning and two zeros interact, so this is worth checking together rather
+    # than trusting each in isolation: the span is emitted as ONE profile over
+    # the whole run and then split into per-move buckets, and it is that single
+    # long pulse -- not any per-move fragment -- that has to carry both nulls.
+    f_x, f_y = 55.0, 70.0
+    th = make_toolhead(span=True)
+    th.unified_notch_freq = 0.0
+    th.unified_notch_freq_x = f_x
+    th.unified_notch_freq_y = f_y
+    moves = plan_chain(th, 60)
+
+    cons = th._pathplan_cons(moves[0])
+    assert (cons.notch_lo, cons.notch_hi) == (f_x, f_y), (
+        "per-axis modes did not reach the emitter as a pair",
+        cons.notch_lo,
+        cons.notch_hi,
+    )
+
+    segs = span_profile(th, moves)
+    assert segs is not None, "no spanning profile was emitted"
+    pulse = []
+    for seg in segs:
+        if seg[0] <= 0.0:
+            break
+        pulse.append(seg)
+    assert len(pulse) > 1, "no spanning accel pulse"
+    dc = accel_spectrum(pulse, 0.0)
+    assert dc > 1e-6, ("degenerate pulse", dc)
+    at_x = accel_spectrum(pulse, f_x) / dc
+    at_y = accel_spectrum(pulse, f_y) / dc
+    assert at_x < 0.02, ("no null at f_x", at_x)
+    assert at_y < 0.02, ("no null at f_y", at_y)
+    # Not just a long quiet pulse: well below the pair, the same pulse carries
+    # most of its energy.
+    #
+    # The probe is deliberately at f_x/2 and not between the two zeros. 55 and
+    # 70 Hz are close enough that |sinc(f/55)*sinc(f/70)| stays small across the
+    # whole gap -- about 0.014 at the midpoint against a 0.007-0.009 ZOH floor
+    # at the zeros themselves. That shallow ratio is the pair working, not a
+    # missing null, so asserting on it would only measure the discretization.
+    off_notch = accel_spectrum(pulse, 0.5 * f_x) / dc
+    assert off_notch > 20.0 * max(at_x, at_y), (off_notch, at_x, at_y)
+    # The ramp lasts 1/f_x + 1/f_y, not 2/f_n for either mode alone.
+    rise = math.fsum(s[0] for s in pulse)
+    want = 1.0 / f_x + 1.0 / f_y
+    assert abs(rise - want) < 0.1 * want, ("ramp is not 1/f_x + 1/f_y", rise)
+    print(
+        "  spanning pulse over %d moves: rise %.4f s (1/f_x+1/f_y = %.4f),"
+        " |A|/|A(0)| = %.5f at %g Hz and %.5f at %g Hz OK"
+        % (len(moves), rise, want, at_x, f_x, at_y, f_y)
+    )
+
+
 def test_span_buckets_conserve_distance_and_velocity():
     th = make_toolhead(span=True)
     moves = plan_chain(th, 40)
@@ -457,11 +515,15 @@ def test_span_follows_a_curve():
     )
 
 
-def test_span_notch_tolerance_does_not_accumulate():
-    # With distinct per-axis modes, the direction-weighted target changes a
-    # little at every segment of a curve. Comparing adjacent moves lets those
-    # small changes accumulate indefinitely even though the whole run is
-    # emitted at its first move's target.
+def test_span_notch_target_is_constant_along_a_curve():
+    # The single-zero blend placed the zero at a direction-weighted mean, so on
+    # a curve the target crept at EVERY segment; spans then had to bound that
+    # drift against the run's first move or it accumulated without limit.
+    #
+    # Two zeros remove the cause rather than bounding it. rect(1/f_hi) *
+    # rect(1/f_lo) nulls both modes on both axes, so the ramp shape -- and the
+    # target the span compares -- no longer depends on heading at all. The drift
+    # bound is asserted here as ZERO, not merely within SPAN_NOTCH_REL_TOL.
     th = make_toolhead(span=True)
     th.unified_notch_freq = 0.0
     th.unified_notch_freq_x = 55.0
@@ -476,8 +538,19 @@ def test_span_notch_tolerance_does_not_accumulate():
         laq.add_move(toolhead.Move(th, pos, nxt, FEED))
         pos = nxt
     moves = laq.flush()
+    targets = {th._move_notch_freq(m) for m in moves}
+    assert len(targets) == 1, ("notch target varies along the curve", targets)
+    pairs = {th._move_notch_pair(m) for m in moves}
+    assert pairs == {(55.0, 70.0)}, pairs
+    # And so the curve is not split by the notch check at all.
     groups = list(th._span_groups(moves))
-    assert len(groups) > 1, "the changing notch target never split the curve"
+    assert len(groups) == 1, (
+        "constant notch target still split the curve",
+        len(groups),
+    )
+    assert len(groups[0][0]) == len(moves)
+    # The pinning that bounded the old drift is still enforced, so it stays
+    # correct if a heading-dependent target is ever reintroduced.
     for group, _peak, _cap in groups:
         first_f = th._move_notch_freq(group[0])
         for move in group:
@@ -489,7 +562,10 @@ def test_span_notch_tolerance_does_not_accumulate():
                 move_f,
                 rel,
             )
-    print("  per-axis notch drift stays bounded within every curve span OK")
+    print(
+        "  per-axis notch target constant over %d curve segments (%.4f Hz) OK"
+        % (len(moves), targets.pop())
+    )
 
 
 def test_span_survives_direction_dependent_accel():
@@ -557,13 +633,14 @@ def test_span_off_is_a_noop():
 def main():
     test_span_beats_the_runway_floor()
     test_span_keeps_the_zero_on_fn()
+    test_span_keeps_BOTH_zeros_with_per_axis_modes()
     test_span_buckets_conserve_distance_and_velocity()
     test_turning_axis_keeps_its_null()
     test_span_angle_limit_is_enforced()
     test_lazy_flush_keeps_velocity_continuous()
     test_corner_breaks_the_span()
     test_span_follows_a_curve()
-    test_span_notch_tolerance_does_not_accumulate()
+    test_span_notch_target_is_constant_along_a_curve()
     test_span_survives_direction_dependent_accel()
     test_span_off_is_a_noop()
     print("ALL PASS")

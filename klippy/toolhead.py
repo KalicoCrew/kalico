@@ -488,10 +488,11 @@ class ToolHead:
             "unified_notch_freq", 0.0, minval=0.0
         )
         # Optional PER-AXIS notch. A jerk-limited accel ramp shapes the SCALAR
-        # path speed, so its single spectral zero lands on both axes at once
-        # (a_x, a_y are the same a(t) scaled by the move's unit direction). Two
-        # independent zeros are impossible on one move; the target is instead
-        # chosen per move, weighted by direction (see _move_notch_freq).
+        # path speed, so a_x and a_y are the same a(t) scaled by the move's unit
+        # direction -- one pulse serving both axes. That still admits TWO zeros,
+        # because zeros multiply under convolution: a trapezoidal a(t) built as
+        # rect(1/f_hi) * rect(1/f_lo) nulls both modes on every axis regardless
+        # of heading (see _move_notch_pair / pathplan.Constraints.ramp_jerk).
         #   - unified_notch_freq alone notches BOTH axes at that frequency.
         #   - unified_notch_freq_x AND _y set the per-axis modes; they must be
         #     given together (setting exactly one is a config error).
@@ -1360,35 +1361,52 @@ class ToolHead:
         return bool(self.unified_notch_freq_x or self.unified_notch_freq_y)
 
     def _move_notch_freq(self, move):
-        # Direction-weighted notch frequency (Hz) for one move; 0.0 = off.
+        # Scalar notch frequency (Hz) for one move; 0.0 = off.
         #
-        # A jerk-limited accel ramp shapes the SCALAR path speed, so its single
-        # spectral zero lands on both axes at once: a_x(t) = rx*a(t) and
-        # a_y(t) = ry*a(t) share one zero. Two independent per-axis zeros are
-        # impossible on a single move; we pick ONE target, weighted by how much
-        # each axis moves:
-        #     f = (f_x*|rx| + f_y*|ry|) / (|rx| + |ry|)
-        # -> f_x on pure-X, f_y on pure-Y, a weighted mean (within
-        # [min(f_x,f_y), max(f_x,f_y)]) on diagonals. f_x / f_y are pre-resolved
-        # at config time (_resolve_notch), so a single shared unified_notch_freq
-        # yields that frequency for every direction.
+        # This is the EQUIVALENT frequency of the move's notch pair -- their
+        # harmonic mean -- which is what governs ramp distance and runway
+        # ((v0+v1)/f_eq) everywhere in the planner. With one zero the pair is
+        # (f, f) and f_eq is just f, so every runway formula is unchanged.
+        f_lo, f_hi = self._move_notch_pair(move)
+        if not f_lo or f_lo == f_hi:
+            # Exact, not just close: 2/(1/f + 1/f) does not always round-trip to
+            # f, and callers compare this value between moves to decide whether
+            # one ramp may span them.
+            return f_lo
+        return 2.0 / (1.0 / f_lo + 1.0 / f_hi)
+
+    def _move_notch_pair(self, move):
+        # The (f_lo, f_hi) pair of mode frequencies this move's ramp nulls;
+        # (0.0, 0.0) = off.
+        #
+        # A jerk-limited accel ramp shapes the SCALAR path speed, so the axes
+        # see a_x(t) = rx*a(t) and a_y(t) = ry*a(t) -- one pulse, scaled. That
+        # does NOT mean one zero: a(t) = rect(1/f_hi) * rect(1/f_lo) is a
+        # trapezoid with exact zeros at BOTH frequencies, and every axis
+        # inherits both. So naming two modes IS the request for two zeros:
+        # unified_notch_freq_x != unified_notch_freq_y selects the trapezoid,
+        # and the ramp shape then stops depending on heading entirely (see
+        # pathplan.Constraints.ramp_jerk).
+        #
+        # There is no separate enable. f_x == f_y collapses the trapezoid back
+        # to the triangle by construction, so the shared unified_notch_freq --
+        # folded into both axes at config time by _resolve_notch -- yields the
+        # single-zero ramp for every direction with no special case anywhere.
         #
         # Memoized on the move: this is called from _uses_unified_reach, which
         # runs on every lookahead reach probe (several per move per flush pass).
         # Safe because the notch config can only change via SET_UNIFIED, which
         # calls flush_step_generation() first and so retires every queued move.
-        f = getattr(move, "_unified_notch_f", None)
-        if f is not None:
-            return f
+        pair = getattr(move, "_unified_notch_pair", None)
+        if pair is not None:
+            return pair
+        f = None
         fx = self.unified_notch_freq_x
         fy = self.unified_notch_freq_y
         if not fx and not fy:
             f = 0.0
         else:
-            rx = abs(move.axes_r[0])
-            ry = abs(move.axes_r[1])
-            w = rx + ry
-            if w <= 1e-12:
+            if abs(move.axes_r[0]) + abs(move.axes_r[1]) <= 1e-12:
                 # No XY motion (Z-only or extrude-only). Whether that means
                 # "nothing to cancel" depends on the kinematics.
                 #
@@ -1407,20 +1425,23 @@ class ToolHead:
                 # stays zero only to first order: belt-stiffness or motor-lag
                 # asymmetry leaves a residual common-mode term that couples
                 # straight into the XY mode. Keep shaping there.
-                if self._z_couples_xy():
-                    f = fx or fy
-                else:
+                if not self._z_couples_xy():
                     f = 0.0
-            elif fx == fy:
-                # Exact, not just close: the direction-weighted blend below
-                # returns 54.99999999999999 for some headings where both axes
-                # ask for 55, and callers that compare targets between moves
-                # would see two different notches on one continuous curve.
-                f = fx
-            else:
-                f = (fx * rx + fy * ry) / w
-        move._unified_notch_f = f
-        return f
+                elif not (fx and fy):
+                    f = fx or fy
+                # else: fall through to the pair -- a coupled Z move excites
+                # whatever the belts carry, so null both modes.
+            elif not (fx and fy):
+                # Only one axis names a mode, so there is no second zero to
+                # place. (_resolve_notch rejects this at config time; SET_UNIFIED
+                # can transiently produce it before its own pair check runs.)
+                f = fx or fy
+        if f is not None:
+            pair = (f, f)
+        else:
+            pair = (min(fx, fy), max(fx, fy))
+        move._unified_notch_pair = pair
+        return pair
 
     def _pathplan_cons(self, move, v_ceil=None, a_const=None):
         # Build the pathplan.Constraints for one move. a_const is the move's
@@ -1430,7 +1451,9 @@ class ToolHead:
         # run rather than this one move.
         jerk = self.unified_max_jerk or None
         max_da = self.unified_max_da or None
-        notch = self._move_notch_freq(move) or None
+        f_lo, f_hi = self._move_notch_pair(move)
+        notch = f_lo or None
+        notch2 = f_hi or None
         if v_ceil is not None:
             pass
         elif hasattr(move, "cruise_v"):
@@ -1448,6 +1471,7 @@ class ToolHead:
             notch_freq=notch,
             max_da=max_da,
             notch_max_freq=self._notch_freq_cap(),
+            notch_freq2=notch2,
         )
 
     def _notch_freq_cap(self):
@@ -1573,6 +1597,7 @@ class ToolHead:
             self.max_velocity,
             notch_freq=cons.notch_freq,
             notch_max_freq=cons.notch_max_freq,
+            notch_freq2=cons.notch_freq2,
         )
         move._unified_reach_cache = (key, res)
         return res
@@ -1843,8 +1868,9 @@ class ToolHead:
         "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
         "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
         "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
-        "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
-        "direction (0 = fall back to NOTCH_FREQ); NOTCH_MAX_FREQ lets short "
+        "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes, nulled together "
+        "in one trapezoidal ramp (0 = fall back to NOTCH_FREQ); "
+        "NOTCH_MAX_FREQ lets short "
         "moves raise the notch to fit their runway (Hz, 0 = off, trades "
         "ringing for throughput); SPAN_RAMPS=0/1 lets one ramp span a run of "
         "near-collinear moves so short segments get a runway without moving "

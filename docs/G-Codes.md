@@ -1999,7 +1999,10 @@ normal-path jerk cap in mm/s^3 (`0` disables the cap). `MAX_DA` caps the
 positive emitted acceleration step between slices in mm/s^2 (`0` disables the
 cap). `NOTCH_FREQ` sets one scalar notch frequency in Hz. `NOTCH_FREQ_X` and
 `NOTCH_FREQ_Y` set per-axis frequencies; they must end up either both non-zero
-or both zero, matching the config-time rule. Non-zero notch frequencies must be
+or both zero, matching the config-time rule. Setting them to two *different*
+values makes each ramp a trapezoid that nulls both modes at once, on both axes
+and in every direction; setting them equal is identical to `NOTCH_FREQ`, which
+makes flipping between the two a direct A/B. Non-zero notch frequencies must be
 at least 5 Hz. `NOTCH_MAX_FREQ` lets moves too short to ramp at `NOTCH_FREQ`
 raise the notch to whatever fits (`0` disables it); this trades ringing for
 throughput, so it is useful for A/B testing a value just above `NOTCH_FREQ`.

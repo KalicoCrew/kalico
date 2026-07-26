@@ -261,9 +261,15 @@ max_accel:
 #unified_notch_freq_x: 0
 #unified_notch_freq_y: 0
 #   Optional per-axis resonance frequencies in Hz. These must be set together,
-#   and are subject to the same 5 Hz minimum. The planner chooses one
-#   direction-weighted scalar notch per move, so diagonal moves are a compromise
-#   between the X and Y frequencies. The default is to use unified_notch_freq for
+#   and are subject to the same 5 Hz minimum. Naming two different modes selects
+#   a two-zero ramp: the accel pulse becomes a trapezoid whose spectrum nulls
+#   BOTH frequencies, on both axes, in every direction - there is no separate
+#   enable, and no diagonal compromise. Each ramp then lasts
+#   1/f_x + 1/f_y seconds instead of 2 / unified_notch_freq, and its peak
+#   acceleration is set by the LOWER of the two. If that peak would exceed
+#   max_accel, only one zero fits and the planner keeps whichever of the two
+#   modes it helps more, reporting the loss. Setting the two equal is identical
+#   to setting unified_notch_freq. The default is to use unified_notch_freq for
 #   both axes.
 #unified_notch_max_freq: 0
 #   Highest frequency in Hz the notch may be raised to on moves too short to

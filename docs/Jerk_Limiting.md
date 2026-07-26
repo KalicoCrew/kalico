@@ -81,28 +81,14 @@ unified_notch_freq: 55
   `J = dv * f_n^2`. `0` disables the notch law (a fixed jerk is used instead).
 
 - `unified_notch_freq_x`, `unified_notch_freq_y` (default: 0)
-  Optional per-axis notch modes in Hz. The ramp shapes the *scalar path speed*,
-  so its single spectral zero lands on both axes at once (`a_x` and `a_y` are the
-  same `a(t)` scaled by the move's direction) — two independent per-axis zeros
-  cannot coexist on one move. The target is therefore chosen per move, weighted
-  by direction:
-
-  ```
-  f = (f_x*|rx| + f_y*|ry|) / (|rx| + |ry|)
-  ```
-
-  giving `f_x` on a pure-X move, `f_y` on a pure-Y move, and a weighted mean
-  (always within `[min(f_x,f_y), max(f_x,f_y)]`) on diagonals. Use this when X
-  and Y have different measured modes — e.g. a bed-slinger whose heavy Y rings
-  low and lighter X higher: each axis is shaped on its own mode where it
-  dominates the move, instead of running everything at the single worst mode.
-  These two must be set **together** — setting exactly one is a config error
-  (use `unified_notch_freq` to notch both axes at one frequency, or set both
-  `_x` and `_y`). Omitting both reproduces the single-`unified_notch_freq`
-  behaviour exactly. Diagonals remain a compromise (one zero per move) — that
-  irreducible coupling is what
-  per-axis *input shaping*, which filters each axis independently, avoids at the
-  cost of operating post-hoc on the committed path.
+  Optional per-axis notch modes in Hz. Setting two **different** modes selects a
+  two-zero ramp — see [Two modes in one ramp](#two-modes-in-one-ramp) below.
+  There is no separate enable: `f_x == f_y` is exactly `unified_notch_freq`, and
+  omitting both reproduces it too. These two must be set **together** — setting
+  exactly one is a config error (use `unified_notch_freq` to notch both axes at
+  one frequency, or set both `_x` and `_y`). Use this when X and Y have
+  different measured modes — e.g. a bed-slinger whose heavy Y rings low and
+  lighter X higher.
 
 - `unified_max_jerk` (default: 0)
   Fixed jerk cap in mm/s^3. `0` = uncapped. Values other than `0` must be at
@@ -120,6 +106,63 @@ unified_notch_freq: 55
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a
   smoother ramp and more motion-queue entries. The minimum is `0.0001`.
+
+### Two modes in one ramp
+
+The ramp shapes the *scalar path speed*, so both axes see the same `a(t)` scaled
+by the move's direction: `a_x = rx*a(t)`, `a_y = ry*a(t)`. That is often read as
+"one move can only null one frequency", and it is why this used to place a single
+zero at a direction-weighted mean of `f_x` and `f_y` — landing it on **neither**
+mode on a diagonal.
+
+It is not true. Spectral zeros multiply under convolution, and the single-zero
+triangle is already `rect(1/f_n) * rect(1/f_n)`. Widening one rect makes the
+pulse a **trapezoid**:
+
+```
+a(t)   = rect(1/f_hi) * rect(1/f_lo)
+|A(f)| = |sinc(f/f_hi) * sinc(f/f_lo)|      -> exact zeros at BOTH modes
+```
+
+and since both axes share that `a(t)`, both axes get both zeros, on every
+heading. Concretely, for `f_x = 55`, `f_y = 75`, `dv = 200 mm/s` (residual is
+`|A(f)|/|a|₁`, so `0` is a perfect null):
+
+| ramp | duration | peak accel | residual @55 | residual @75 |
+|---|---|---|---|---|
+| one zero @55 | 36.3 ms | 10997 | **0.0003** | 0.0451 |
+| one zero @75 | 26.6 ms | 14995 | 0.1044 | **0.0004** |
+| one zero @65 (the old blend) | 30.7 ms | 12998 | 0.0306 | 0.0162 |
+| **two zeros, 55 + 75** | **31.4 ms** | **11000** | **0.0004** | **0.0003** |
+
+The blend leaves 3.1% at X and 1.6% at Y; the trapezoid leaves ~0.04% at both,
+for 2% more ramp time and 15% *less* peak acceleration. The laws are
+
+```
+J        = dv * f_lo * f_hi           T_rise  = 1/f_hi
+a_peak   = dv * f_lo                  T_total = 1/f_lo + 1/f_hi
+distance = 0.5*(v0+v1) * T_total
+```
+
+which collapse term-by-term to the single-zero triangle when `f_lo == f_hi`.
+Runway and throughput are governed by the pair's **harmonic mean**
+`f_eq = 2/(1/f_lo + 1/f_hi)` wherever this document says `f_n`.
+
+Two consequences worth knowing:
+
+- Ramp shape no longer depends on heading, so cross-move spanning links along a
+  curve on geometry alone (see `unified_span_ramps`).
+- If `a_peak = dv * f_lo` would exceed `max_accel`, the plateau is forced wider
+  than `1/f_lo` and only **one** zero fits. Recovering both would need a
+  third-order (S-edge) pulse the emitter cannot render, so the planner keeps the
+  zero on whichever mode it helps more — which of the two that is depends on
+  `dv`, so it is decided per ramp — and logs `second_notch_saturated` when a mode
+  is genuinely left excited. Raising `max_accel`, or spanning the ramp across
+  more moves so each `dv` is smaller, removes it.
+
+Per-axis *input shaping* still differs: it filters each axis independently and so
+is not bound to a shared pulse at all, at the cost of operating post-hoc on the
+committed path.
 
 ## Live tuning
 
@@ -303,4 +346,5 @@ slices through the existing trapezoid motion queue and step compression — ther
 are no firmware or MCU changes. The extruder is driven slice-by-slice in
 lock-step with the toolhead so pressure advance integrates the real velocity
 profile. The planning math lives in `klippy/extras/pathplan.py` and is covered
-by `test_pathplan.py`, `test_pathplan_jerk.py`, and `test_pathplan_notch.py`.
+by `test_pathplan.py`, `test_pathplan_jerk.py`, `test_pathplan_notch.py`,
+and `test_notch_dual.py`.
