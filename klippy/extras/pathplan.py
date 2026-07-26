@@ -564,6 +564,87 @@ def emit_profile(vs, vc, ve, move_d, cons):
     return _emit_sharp(vs, vc, ve, move_d, cons)
 
 
+def _split_segment(seg, d1):
+    """Split one slice at path-distance d1 into (first, second).
+
+    Preserves the trapq invariant exactly: each piece's implied distance equals
+    its recorded dist, and the pieces are velocity-continuous with each other.
+    """
+    at, ct, dt, sv, cv, a, dist = seg
+    d2 = dist - d1
+    if at > 0.0:
+        # Accel slice: sv -> cv at +a. d(t) = sv*t + a*t^2/2.
+        if a > 0.0:
+            t1 = (math.sqrt(max(sv * sv + 2.0 * a * d1, 0.0)) - sv) / a
+        else:
+            t1 = d1 / sv if sv > 0.0 else 0.0
+        t1 = min(max(t1, 0.0), at)
+        v1 = sv + a * t1
+        return (
+            (t1, 0.0, 0.0, sv, v1, a, d1),
+            (at - t1, 0.0, 0.0, v1, cv, a, d2),
+        )
+    if dt > 0.0:
+        # Decel slice: starts at cv, v(t) = cv - a*t. d(t) = cv*t - a*t^2/2.
+        if a > 0.0:
+            disc = max(cv * cv - 2.0 * a * d1, 0.0)
+            t1 = (cv - math.sqrt(disc)) / a
+        else:
+            t1 = d1 / cv if cv > 0.0 else 0.0
+        t1 = min(max(t1, 0.0), dt)
+        v1 = cv - a * t1
+        return (
+            (0.0, 0.0, t1, cv, cv, a, d1),
+            (0.0, 0.0, dt - t1, v1, v1, a, d2),
+        )
+    # Cruise slice at cv.
+    t1 = d1 / cv if cv > 0.0 else 0.0
+    return (
+        (0.0, t1, 0.0, cv, cv, 0.0, d1),
+        (0.0, max(ct - t1, 0.0), 0.0, cv, cv, 0.0, d2),
+    )
+
+
+def split_segments(segs, lengths):
+    """Cut one profile into per-move slice lists at cumulative `lengths`.
+
+    A jerk ramp that spans several moves is emitted ONCE, over the run's total
+    distance, so the accel pulse keeps its shape (and therefore its zero)
+    across move boundaries. The toolhead still needs the slices bucketed per
+    move, because each move carries its own direction and extra-axis ratios.
+    Slices straddling a boundary are split with _split_segment, so every
+    bucket's distances sum to exactly that move's length.
+    """
+    out = [[] for _ in lengths]
+    if not lengths:
+        return out
+    i = 0
+    remaining = lengths[0]
+    for seg in segs:
+        d = seg[6]
+        while d > 0.0:
+            if i >= len(out) - 1 and remaining <= 0.0:
+                # Numerical spill past the last boundary: keep it in the last
+                # bucket rather than dropping distance on the floor.
+                out[-1].append(seg)
+                d = 0.0
+                break
+            if d <= remaining + 1e-12 or i >= len(out) - 1:
+                out[i].append(seg)
+                remaining -= d
+                d = 0.0
+            else:
+                first, second = _split_segment(seg, remaining)
+                out[i].append(first)
+                d -= remaining
+                seg = second
+                remaining = 0.0
+            if remaining <= 1e-12 and i < len(out) - 1:
+                i += 1
+                remaining = lengths[i]
+    return out
+
+
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
 LOSS_REASONS = frozenset(

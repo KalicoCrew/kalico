@@ -275,6 +275,30 @@ max_accel:
 #   unified_notch_freq; far above it is equivalent to disabling shaping on short
 #   moves. Also capped internally at 1 / (4 * unified_jerk_dt), past which the
 #   emitted slices cannot resolve a ramp. The default is 0.
+#unified_span_ramps: True
+#   Allow one jerk-limited ramp to span a run of consecutive near-collinear
+#   moves instead of starting and ending at zero acceleration inside every move.
+#   This is the other answer to the same short-segment problem
+#   unified_notch_max_freq addresses, and unlike that one it does NOT move the
+#   spectral zero: the ramp keeps its shape and its rise time, so it still
+#   cancels unified_notch_freq exactly. The runway becomes the run's length
+#   rather than one segment's, which lifts a 0.2 mm segment chain at 55 Hz from
+#   about 11 mm/s to the requested feedrate. A run breaks at any direction
+#   change beyond unified_span_max_angle, at any change of acceleration or notch
+#   target, and wherever a corner or feedrate limit would be exceeded, so a run
+#   is never planned faster than the per-move plan allowed. Boundary speeds are
+#   additionally capped by the stock constant-acceleration reach, so every move
+#   stays individually feasible at max_accel. The default is True.
+#unified_span_max_angle: 2.0
+#   Largest heading change in degrees that one ramp may span. The ramp shapes
+#   the scalar path speed, so the axes see it scaled by the move direction;
+#   turning part-way through a ramp leaves the turning axis a truncated pulse,
+#   which has no null at the mode. The residual it leaves there is about
+#   2 * sin(angle / 2) * 0.159, against the roughly 0.0066 the emitter's own
+#   discretization already leaves - so 2 degrees costs nothing measurable,
+#   5 degrees is about twice that floor and 18 degrees about eight times it.
+#   Raise it only to span coarser geometry, and expect ringing in return.
+#   The default is 2.0.
 #unified_max_jerk: 0
 #   Maximum jerk in mm/s^3 for normal jerk-limited ramps. 0 disables this cap.
 #   Values other than 0 must be at least 1000. In notch mode this cap must be

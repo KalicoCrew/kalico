@@ -58,6 +58,22 @@ class Move:
         self.max_smoothed_v2 = 0.0
         self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
         self.next_junction_v2 = 999999999.9
+        # Ramp-spanning state (unified planner, see SPAN_MAX_ANGLE). A notched
+        # accel ramp always costs 2/f_n seconds of travel, so forcing it to
+        # start and end at a==0 inside every move floors the reachable speed
+        # at about f_n*move_d. Spanning lets ONE ramp cover a run of moves, so
+        # the runway is the run's distance -- the ramp shape, and therefore its
+        # spectral zero, is unchanged.
+        #   max_junction_v2 -- the geometric junction limit (corner/cruise/extra
+        #     axis), WITHOUT the reachability term. It is the speed a spanning
+        #     ramp may pass through this junction at.
+        #   span_start_v2 / span_start_d -- the speed at the start of the accel
+        #     run this move belongs to, and the path distance from there to the
+        #     start of this move.
+        self.max_junction_v2 = 999999999.9
+        self.span_start_v2 = 0.0
+        self.span_start_d = 0.0
+        self.span_link = False
 
     def limit_speed(self, speed, accel):
         speed2 = speed**2
@@ -85,17 +101,6 @@ class Move:
             for e_index, ea in enumerate(self.toolhead.extra_axes)
         ]
         th = self.toolhead
-        prev_reach_v2 = th._move_reach_v2(prev_move, prev_move.max_start_v2)
-        max_start_v2 = min(
-            [
-                self.max_cruise_v2,
-                prev_move.max_cruise_v2,
-                prev_move.next_junction_v2,
-                prev_reach_v2,
-            ]
-            + ea_v2
-        )
-        # Find max velocity using "approximated centripetal velocity"
         axes_r = self.axes_r
         prev_axes_r = prev_move.axes_r
         junction_cos_theta = -(
@@ -103,6 +108,35 @@ class Move:
             + axes_r[1] * prev_axes_r[1]
             + axes_r[2] * prev_axes_r[2]
         )
+        # Reachability into this junction. With ramp spanning the accel event
+        # is allowed to have started before prev_move, so the runway is the
+        # whole run rather than prev_move alone. It is still capped by the
+        # STOCK constant-accel reach over prev_move: that keeps every move
+        # individually feasible at max_accel, so the sharp fallback (and the
+        # non-unified trapezoid) remains valid for every move the span planner
+        # touches.
+        span_link = th._span_link_ok(prev_move, self, junction_cos_theta)
+        if span_link:
+            prev_reach_v2 = min(
+                th._span_reach_v2(
+                    prev_move,
+                    prev_move.span_start_v2,
+                    prev_move.span_start_d + prev_move.move_d,
+                ),
+                prev_move.max_start_v2 + prev_move.delta_v2,
+            )
+        else:
+            prev_reach_v2 = th._move_reach_v2(prev_move, prev_move.max_start_v2)
+        max_junction_v2 = min(
+            [
+                self.max_cruise_v2,
+                prev_move.max_cruise_v2,
+                prev_move.next_junction_v2,
+            ]
+            + ea_v2
+        )
+        max_start_v2 = min(max_junction_v2, prev_reach_v2)
+        # Find max velocity using "approximated centripetal velocity"
         sin_theta_d2 = math.sqrt(max(0.5 * (1.0 - junction_cos_theta), 0.0))
         cos_theta_d2 = math.sqrt(max(0.5 * (1.0 + junction_cos_theta), 0.0))
         one_minus_sin_theta_d2 = 1.0 - sin_theta_d2
@@ -115,18 +149,31 @@ class Move:
             quarter_tan_theta_d2 = 0.25 * sin_theta_d2 / cos_theta_d2
             move_centripetal_v2 = self.delta_v2 * quarter_tan_theta_d2
             pmove_centripetal_v2 = prev_move.delta_v2 * quarter_tan_theta_d2
-            max_start_v2 = min(
-                max_start_v2,
+            max_junction_v2 = min(
+                max_junction_v2,
                 move_jd_v2,
                 pmove_jd_v2,
                 move_centripetal_v2,
                 pmove_centripetal_v2,
             )
+            max_start_v2 = min(max_start_v2, max_junction_v2)
         # Apply limits
+        self.max_junction_v2 = max_junction_v2
         self.max_start_v2 = max_start_v2
         self.max_smoothed_v2 = min(
             max_start_v2, prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2
         )
+        # Carry the accel run forward while the junction itself is not what
+        # binds. When the geometry (a corner, a slower feedrate) holds this
+        # junction below what the ramp could reach, the accel event genuinely
+        # restarts here and so does the span.
+        self.span_link = span_link
+        if span_link and max_start_v2 >= prev_reach_v2 - 1e-9:
+            self.span_start_v2 = prev_move.span_start_v2
+            self.span_start_d = prev_move.span_start_d + prev_move.move_d
+        else:
+            self.span_start_v2 = max_start_v2
+            self.span_start_d = 0.0
 
     def set_junction(self, start_v2, cruise_v2, end_v2):
         # Determine accel, cruise, and decel portions of the move distance
@@ -146,6 +193,31 @@ class Move:
 
 
 LOOKAHEAD_FLUSH_TIME = 0.250
+
+# Ramp spanning: two consecutive moves may share one accel ramp only if the
+# path barely turns between them.
+#
+# A ramp shapes the SCALAR path speed; the axes see a_x = rx*a(t). If the
+# direction changes at time t_c while a(t) is still nonzero, the turning axis
+# sees a TRUNCATED pulse, a(t)*u(t - t_c), scaled by the change in direction:
+#     a_x(t) = r1x*a(t) + (r2x - r1x) * a(t)*u(t - t_c)
+# The first term keeps the zero. The second does not -- a truncated triangle
+# has no null at f_n. Numerically integrating the ideal pulse gives
+# |A_tail(f_n)| / |a|_1 <= 0.159, worst at t_c on the accel peak, so the
+# residual left on the turning axis is about
+#     |r2 - r1| * 0.159,   with |r2 - r1| = 2*sin(theta/2)
+# against the ~0.0066 the emitter's ZOH discretization already leaves there.
+# That puts 18 degrees at 7.5x the existing floor -- far too coarse -- while
+# 2 degrees lands at 0.8x, under the noise already present:
+#     0.5 deg -> 0.2x    2 deg -> 0.8x     10 deg -> 4.2x
+#     1.0 deg -> 0.4x    5 deg -> 2.1x     18 deg -> 7.5x
+# Hence a 2 degree default, tunable via unified_span_max_angle for anyone who
+# wants to trade that residual for spanning across coarser geometry.
+SPAN_MAX_ANGLE = 2.0
+# Largest RELATIVE difference in notch target between two moves of one run.
+SPAN_NOTCH_REL_TOL = 0.01
+# Velocity continuity tolerance (mm/s) for joining two moves into one span.
+SPAN_V_EPS = 1e-6
 
 
 # Class to track a list of pending move requests and to facilitate
@@ -179,9 +251,31 @@ class LookAheadQueue:
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
         # The toolhead is reached via any queued move.
         th = queue[0].toolhead if queue else None
+        unified = th is not None and getattr(th, "unified_emit", False)
+        # Mirror of Move.span_start_* for the DECEL side: the speed the run
+        # must be down to by its far (downstream) end, and how much of that run
+        # lies past the end of the move being examined.
+        span_end_v2 = 0.0
+        span_after_d = 0.0
+        next_move = None
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            reachable_start_v2 = th._move_reach_v2(move, next_end_v2)
+            if next_move is None or not next_move.span_link:
+                # No shared ramp across this junction: the decel run this move
+                # feeds ends where the next move begins.
+                span_end_v2 = next_end_v2
+                span_after_d = 0.0
+            span_total_d = span_after_d + move.move_d
+            if span_after_d > 0.0:
+                # Same cap as the accel side: never plan a boundary speed the
+                # stock constant-accel trapezoid could not also honour, so the
+                # sharp fallback stays valid for every move in the run.
+                reachable_start_v2 = min(
+                    th._span_reach_v2(move, span_end_v2, span_total_d),
+                    next_end_v2 + move.delta_v2,
+                )
+            else:
+                reachable_start_v2 = th._move_reach_v2(move, next_end_v2)
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -193,7 +287,33 @@ class LookAheadQueue:
                 ):
                     # This move can decelerate or this is a full accel
                     # move after a full decel move
-                    if update_flush_count and peak_cruise_v2:
+                    if (
+                        update_flush_count
+                        and peak_cruise_v2
+                        and (
+                            not unified or start_v2 >= move.max_start_v2 - 1e-9
+                        )
+                    ):
+                        # A lazy flush emits queue[:i] now and replans the rest
+                        # once more moves arrive, so the split is only sound if
+                        # THIS move's start speed can no longer change. Adding
+                        # moves can only push the eventual stop further away,
+                        # which only ever RAISES reachable_start_v2, while
+                        # max_start_v2 was fixed at add_move() time -- so the
+                        # speed is settled exactly when it has already reached
+                        # that cap.
+                        #
+                        # Stock gets this for free: it picks the split from the
+                        # smoothed chain, which uses the same constant-accel law
+                        # as the real one, so "smoothed and settled" implies
+                        # "settled". Under the notch law the real chain
+                        # decelerates far more slowly than smooth_delta_v2
+                        # suggests, so the smoothed proxy declares a move
+                        # settled while it is still reach-limited hundreds of
+                        # moves deep in a decel ramp. Splitting there emitted a
+                        # boundary at 264 mm/s that the replan then raised to
+                        # 300 -- a 36 mm/s step, i.e. an infinite-accel impulse
+                        # in exactly the band the notch exists to keep quiet.
                         flush_count = i
                         update_flush_count = False
                     peak_cruise_v2 = min(
@@ -229,11 +349,23 @@ class LookAheadQueue:
                         # the emitted profile stays jerk-feasible. Must use the
                         # SAME jerk law as the emitter or the clamp lets through
                         # a cruise the emitter cannot ramp to, forcing the sharp
-                        # fallback.
+                        # fallback. Under spanning the emitter ramps over the
+                        # whole run, so the clamp gets the run's runway too --
+                        # otherwise the clamp, not the ramp, becomes the cliff.
+                        fwd_d = move.span_start_d + move.move_d
+                        if fwd_d > move.move_d:
+                            accel_reach_v2 = min(
+                                th._span_reach_v2(
+                                    move, move.span_start_v2, fwd_d
+                                ),
+                                start_v2 + move.delta_v2,
+                            )
+                        else:
+                            accel_reach_v2 = th._move_reach_v2(move, start_v2)
                         cruise_v2 = min(
                             cruise_v2,
-                            th._move_reach_v2(move, start_v2),
-                            th._move_reach_v2(move, next_end_v2),
+                            accel_reach_v2,
+                            reachable_start_v2,
                         )
                         # Restore the identity the stock planner gets for free.
                         # With constant accel, reachable_start_v2 is exactly
@@ -262,6 +394,14 @@ class LookAheadQueue:
             else:
                 # Delay calculating this move until peak_cruise_v2 is known
                 delayed.append((move, start_v2, next_end_v2))
+            if start_v2 < reachable_start_v2 - 1e-9:
+                # The junction, not the ramp, is what binds here, so the decel
+                # event does not need to reach any further upstream.
+                span_end_v2 = start_v2
+                span_after_d = 0.0
+            else:
+                span_after_d = span_total_d
+            next_move = move
             next_end_v2 = start_v2
             next_smoothed_v2 = smoothed_v2
         if update_flush_count or not flush_count:
@@ -376,6 +516,20 @@ class ToolHead:
         self.unified_notch_max_freq = config.getfloat(
             "unified_notch_max_freq", 0.0, minval=0.0
         )
+        # Ramp spanning. The other answer to the same runway problem, and the
+        # one that does NOT move the zero: let a single notched ramp cover a
+        # run of consecutive near-collinear moves, so the runway is the run's
+        # length instead of one segment's. The ramp keeps its shape, so the
+        # zero stays exactly on unified_notch_freq; only the requirement that
+        # acceleration start and end at zero INSIDE every move is dropped.
+        self.unified_span_ramps = config.getboolean("unified_span_ramps", True)
+        # Largest heading change (degrees) one ramp may span. See SPAN_MAX_ANGLE
+        # for where the default comes from: it holds the residual left on the
+        # turning axis at or below the emitter's own discretization floor.
+        self.unified_span_max_angle = config.getfloat(
+            "unified_span_max_angle", SPAN_MAX_ANGLE, minval=0.0, maxval=90.0
+        )
+        self._sync_span_cos()
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -389,6 +543,8 @@ class ToolHead:
         self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
         self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
         self.orig_cfg["unified_notch_max_freq"] = self.unified_notch_max_freq
+        self.orig_cfg["unified_span_ramps"] = self.unified_span_ramps
+        self.orig_cfg["unified_span_max_angle"] = self.unified_span_max_angle
         self._unified_warned = set()
         self._unified_all_warned = False
         self.junction_deviation = self.max_accel_to_decel = 0
@@ -560,6 +716,119 @@ class ToolHead:
                 self.print_time,
             )
 
+    def _emit_slices(self, move, segs, next_move_time):
+        # Push one move's constant-accel slices into the toolhead trapq and
+        # into every extra axis, and return the time the move ends at.
+        t = next_move_time
+        pos = 0.0
+        for at, ct, dt, sv, cv, a, dist in segs:
+            self.trapq_append(
+                self.trapq,
+                t,
+                at,
+                ct,
+                dt,
+                move.start_pos[0] + move.axes_r[0] * pos,
+                move.start_pos[1] + move.axes_r[1] * pos,
+                move.start_pos[2] + move.axes_r[2] * pos,
+                move.axes_r[0],
+                move.axes_r[1],
+                move.axes_r[2],
+                sv,
+                cv,
+                a,
+            )
+            for e_index, ea in enumerate(self.extra_axes):
+                if not move.axes_d[e_index + 3]:
+                    continue
+                if not hasattr(ea, "process_move_segment"):
+                    raise self.printer.command_error(
+                        "unified_planner requires extra axis '%s' to"
+                        " implement process_move_segment"
+                        % (ea.get_axis_gcode_id(),)
+                    )
+                ea.process_move_segment(
+                    t, move, e_index + 3, at, ct, dt, sv, cv, a, dist
+                )
+            t += at + ct + dt
+            pos += dist
+        for e_index, ea in enumerate(self.extra_axes):
+            if move.axes_d[e_index + 3] and hasattr(ea, "sync_position"):
+                ea.sync_position(move, e_index + 3)
+        return t
+
+    def _span_groups(self, moves):
+        # Split the flush batch into runs of moves that may share one ramp.
+        # Yields (group, peak_v, cap_v): the moves, the highest cruise any of
+        # them planned, and the highest speed the run may pass through without
+        # violating a member's own feedrate limit or an interior junction.
+        if not self.unified_span_ramps or not self.unified_emit:
+            return
+        group = []
+        peak = cap = 0.0
+        for move in moves:
+            usable = move.is_kinematic_move and self._uses_unified_reach(move)
+            if group and usable:
+                new_cap = min(
+                    cap,
+                    math.sqrt(move.max_cruise_v2),
+                    math.sqrt(move.max_junction_v2),
+                )
+                new_peak = max(peak, move.cruise_v)
+                # The run is rendered as ONE trapezoid, so every speed it
+                # passes through must be allowed everywhere along it: the cap
+                # has to clear the run's own planned peak as well as the start
+                # and end speeds the neighbouring moves expect. When it does
+                # not, the run breaks here and each side is emitted on its own
+                # -- never slower than the per-move plan.
+                if (
+                    move.span_link
+                    and abs(group[-1].end_v - move.start_v) <= SPAN_V_EPS
+                    and new_cap
+                    >= max(new_peak, group[0].start_v, move.end_v) - SPAN_V_EPS
+                ):
+                    group.append(move)
+                    cap = new_cap
+                    peak = new_peak
+                    continue
+                if len(group) > 1:
+                    yield group, peak, cap
+            group = [move] if usable else []
+            if usable:
+                cap = min(math.sqrt(move.max_cruise_v2), self.max_velocity)
+                peak = move.cruise_v
+        if len(group) > 1:
+            yield group, peak, cap
+
+    def _span_buckets(self, moves):
+        # Render each multi-move run from ONE profile and cut it back up into
+        # per-move slice lists. Returns {id(move): segs} for the moves that got
+        # a spanning profile; every other move falls through to the ordinary
+        # per-move emit.
+        out = {}
+        for group, peak, cap in self._span_groups(moves):
+            first, last = group[0], group[-1]
+            vs, ve = first.start_v, last.end_v
+            vc = max(min(peak, cap), vs, ve)
+            total_d = math.fsum([m.move_d for m in group])
+            cons = self._pathplan_cons(first, v_ceil=vc + 1.0)
+            segs = pathplan.emit_profile(vs, vc, ve, total_d, cons)
+            if not segs:
+                # Degenerate profile: leave the run to the per-move path.
+                continue
+            if not self._unified_all_warned:
+                self._warn_unified_profile(
+                    last,
+                    pathplan.notch_loss_reasons(vs, vc, ve, total_d, cons),
+                )
+            buckets = pathplan.split_segments(segs, [m.move_d for m in group])
+            if not all(buckets):
+                # A move that got no slice would be emitted with zero duration.
+                continue
+            for move, bucket in zip(group, buckets):
+                out[id(move)] = bucket
+        return out
+
     def _process_lookahead(self, lazy=False):
         moves = self.lookahead.flush(lazy=lazy)
         if not moves:
@@ -572,9 +841,13 @@ class ToolHead:
             self._calc_print_time()
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
+        # Ramp spanning renders a run of moves from ONE profile, so the moves
+        # are walked in groups. Without spanning every group is a single move
+        # and this is the stock one-move-at-a-time loop.
+        spans = self._span_buckets(moves)
         for move in moves:
-            segs = None
-            if self.unified_emit and move.is_kinematic_move:
+            segs = spans.get(id(move))
+            if segs is None and self.unified_emit and move.is_kinematic_move:
                 cons = self._pathplan_cons(move)
                 # `or None` sends a degenerate empty profile back to the stock
                 # path rather than emitting a zero-duration move.
@@ -610,48 +883,7 @@ class ToolHead:
                 # profile. The profile's duration differs from the nominal
                 # trapezoid (a_peak = dv*f_n < max_accel), so advance
                 # next_move_time by the ACTUAL emitted duration.
-                t = next_move_time
-                pos = 0.0
-                for at, ct, dt, sv, cv, a, dist in segs:
-                    self.trapq_append(
-                        self.trapq,
-                        t,
-                        at,
-                        ct,
-                        dt,
-                        move.start_pos[0] + move.axes_r[0] * pos,
-                        move.start_pos[1] + move.axes_r[1] * pos,
-                        move.start_pos[2] + move.axes_r[2] * pos,
-                        move.axes_r[0],
-                        move.axes_r[1],
-                        move.axes_r[2],
-                        sv,
-                        cv,
-                        a,
-                    )
-                    for e_index, ea in enumerate(self.extra_axes):
-                        if not move.axes_d[e_index + 3]:
-                            continue
-                        if not hasattr(ea, "process_move_segment"):
-                            raise self.printer.command_error(
-                                "unified_planner requires extra axis '%s' to"
-                                " implement process_move_segment"
-                                % (ea.get_axis_gcode_id(),)
-                            )
-                        ea.process_move_segment(
-                            t, move, e_index + 3, at, ct, dt, sv, cv, a, dist
-                        )
-                    t += at + ct + dt
-                    pos += dist
-                for e_index, ea in enumerate(self.extra_axes):
-                    if move.axes_d[e_index + 3] and hasattr(
-                        ea, "sync_position"
-                    ):
-                        ea.sync_position(move, e_index + 3)
-                # The emitted profile's duration differs from the nominal
-                # trapezoid (a_peak = dv*f_n < max_accel), so advance by the
-                # slice chain's own accumulated end time.
-                next_move_time = t
+                next_move_time = self._emit_slices(move, segs, next_move_time)
             else:
                 if move.is_kinematic_move:
                     self.trapq_append(
@@ -1166,19 +1398,29 @@ class ToolHead:
                     f = fx or fy
                 else:
                     f = 0.0
+            elif fx == fy:
+                # Exact, not just close: the direction-weighted blend below
+                # returns 54.99999999999999 for some headings where both axes
+                # ask for 55, and callers that compare targets between moves
+                # would see two different notches on one continuous curve.
+                f = fx
             else:
                 f = (fx * rx + fy * ry) / w
         move._unified_notch_f = f
         return f
 
-    def _pathplan_cons(self, move):
+    def _pathplan_cons(self, move, v_ceil=None):
         # Build the pathplan.Constraints for one move. a_const is the move's
         # constant accel (the sharp-fallback ceiling); with a notch frequency
         # the emitter governs ordinary moves via a_peak = dv*f_n instead.
+        # v_ceil is overridden when the constraints describe a whole spanning
+        # run rather than this one move.
         jerk = self.unified_max_jerk or None
         max_da = self.unified_max_da or None
         notch = self._move_notch_freq(move) or None
-        if hasattr(move, "cruise_v"):
+        if v_ceil is not None:
+            pass
+        elif hasattr(move, "cruise_v"):
             v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
         else:
             # Reverse lookahead calls this before set_junction() has created
@@ -1247,16 +1489,52 @@ class ToolHead:
             return False
         return self.unified_max_jerk > 0.0 or self._move_notch_freq(move) > 0.0
 
-    def _move_reach_v2(self, move, start_v2):
+    def _span_link_ok(self, prev_move, move, junction_cos_theta):
+        # May these two consecutive moves share ONE accel ramp? Only structure
+        # is decided here (direction, accel, notch target); how fast the ramp
+        # may actually pass through the junction is a separate question that
+        # Move.max_junction_v2 answers.
+        if not getattr(self, "unified_span_ramps", False):
+            return False
+        min_cos = getattr(self, "unified_span_min_cos", None)
+        if min_cos is None:
+            min_cos = math.cos(math.radians(SPAN_MAX_ANGLE))
         if not self._uses_unified_reach(move):
-            return start_v2 + move.delta_v2
+            return False
+        if not self._uses_unified_reach(prev_move):
+            return False
+        if move.accel != prev_move.accel:
+            return False
+        f_move = self._move_notch_freq(move)
+        f_prev = self._move_notch_freq(prev_move)
+        # Compare with a tolerance rather than exactly. With per-axis notches
+        # the target is direction-weighted, so it drifts CONTINUOUSLY along a
+        # curve and no two segments of an arc ever agree exactly. The run is
+        # rendered at the first move's target, so what matters is how far the
+        # others sit from it: a triangular pulse whose zero is off by a
+        # fraction e leaves about sinc^2(pi*(1+e)) at the mode -- 1e-4 at 1%
+        # and 2e-3 at 5%, both under the ~0.0066 the emitter's own
+        # discretization already leaves. 1% keeps it negligible and lands in
+        # the same place as the 2 degree heading limit for a typical per-axis
+        # spread.
+        if abs(f_move - f_prev) > SPAN_NOTCH_REL_TOL * max(f_move, f_prev):
+            return False
+        # junction_cos_theta is the NEGATED dot product of the unit directions.
+        return -junction_cos_theta >= min_cos
+
+    def _span_reach_v2(self, move, start_v2, dist):
+        # Max v^2 reachable from start_v2 over `dist` of path under this move's
+        # ramp law. `dist` is a parameter rather than move.move_d because one
+        # ramp may span a run of moves (see SPAN_MAX_ANGLE).
+        if not self._uses_unified_reach(move):
+            return start_v2 + 2.0 * dist * move.accel
         cons = self._pathplan_cons(move)
         # Memoize the last solve for this move. LookAheadQueue.flush probes the
         # same move up to three times per pass (once in the reverse sweep, twice
         # more in the unified cruise clamp) and repeats next_end_v2, so a
         # one-entry cache removes most of the calls. cons.v_ceil is part of the
         # key because it changes once set_junction() has run on this move.
-        key = (start_v2, cons.v_ceil)
+        key = (start_v2, cons.v_ceil, dist)
         cached = getattr(move, "_unified_reach_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -1267,7 +1545,7 @@ class ToolHead:
         # move.max_cruise_v2 is applied separately by the caller.
         res = pathplan.jerk_reach_v2(
             start_v2,
-            move.move_d,
+            dist,
             move.accel,
             jerk,
             self.max_velocity,
@@ -1276,6 +1554,11 @@ class ToolHead:
         )
         move._unified_reach_cache = (key, res)
         return res
+
+    def _move_reach_v2(self, move, start_v2):
+        if not self._uses_unified_reach(move):
+            return start_v2 + move.delta_v2
+        return self._span_reach_v2(move, start_v2, move.move_d)
 
     _UNIFIED_FIELDS = (
         "unified_emit",
@@ -1286,6 +1569,8 @@ class ToolHead:
         "unified_notch_freq_x",
         "unified_notch_freq_y",
         "unified_notch_max_freq",
+        "unified_span_ramps",
+        "unified_span_max_angle",
     )
 
     def _unified_state(self):
@@ -1294,6 +1579,15 @@ class ToolHead:
     def _restore_unified_state(self, state):
         for name, value in zip(self._UNIFIED_FIELDS, state):
             setattr(self, name, value)
+        self._sync_span_cos()
+
+    def _sync_span_cos(self):
+        # unified_span_min_cos is DERIVED from unified_span_max_angle. Keep it
+        # out of _UNIFIED_FIELDS (which is saved/restored against orig_cfg) and
+        # recompute it whenever the angle moves, so the two can never disagree.
+        self.unified_span_min_cos = math.cos(
+            math.radians(self.unified_span_max_angle)
+        )
 
     def _check_unified_extra_axis_support(self, error_factory=None):
         if not self.unified_emit:
@@ -1465,8 +1759,14 @@ class ToolHead:
         # Leaving half-restored unified state behind would be worse than the
         # error itself.
         old_unified = self._unified_state()
-        for name in self._UNIFIED_FIELDS:
-            setattr(self, name, self.orig_cfg[name])
+        # Go through _restore_unified_state rather than setattr-ing the fields
+        # here: it is the one place that re-derives unified_span_min_cos from
+        # the restored angle. A second, hand-rolled restore path is exactly how
+        # the derived value goes stale -- reporting 2 degrees while planning
+        # kept accepting 18.
+        self._restore_unified_state(
+            tuple(self.orig_cfg[n] for n in self._UNIFIED_FIELDS)
+        )
         try:
             self._check_unified_extra_axis_support()
         except:
@@ -1485,6 +1785,8 @@ class ToolHead:
                 "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
                 "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
                 "unified_notch_max_freq: %.6f" % self.unified_notch_max_freq,
+                "unified_span_ramps: %d" % self.unified_span_ramps,
+                "unified_span_max_angle: %.6f" % self.unified_span_max_angle,
             )
         )
         if get_danger_options().log_velocity_limit_changes:
@@ -1522,7 +1824,11 @@ class ToolHead:
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes blended by move "
         "direction (0 = fall back to NOTCH_FREQ); NOTCH_MAX_FREQ lets short "
         "moves raise the notch to fit their runway (Hz, 0 = off, trades "
-        "ringing for throughput). No args = report state."
+        "ringing for throughput); SPAN_RAMPS=0/1 lets one ramp span a run of "
+        "near-collinear moves so short segments get a runway without moving "
+        "the zero; SPAN_MAX_ANGLE caps the heading change one ramp may span "
+        "(degrees, larger trades ringing on the turning axis for spanning "
+        "coarser geometry). No args = report state."
     )
 
     def cmd_SET_UNIFIED(self, gcmd):
@@ -1533,6 +1839,10 @@ class ToolHead:
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
         notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
         notch_max = gcmd.get_float("NOTCH_MAX_FREQ", None, minval=0.0)
+        span = gcmd.get_int("SPAN_RAMPS", None, minval=0, maxval=1)
+        span_ang = gcmd.get_float(
+            "SPAN_MAX_ANGLE", None, minval=0.0, maxval=90.0
+        )
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
@@ -1566,6 +1876,11 @@ class ToolHead:
                 self.unified_max_da = max_da
             if notch_max is not None:
                 self.unified_notch_max_freq = notch_max
+            if span is not None:
+                self.unified_span_ramps = bool(span)
+            if span_ang is not None:
+                self.unified_span_max_angle = span_ang
+            self._sync_span_cos()
             # Enforce the same X/Y pair rule the config parser applies at
             # startup (_resolve_notch): notching one axis but not the other is
             # ambiguous, and setting only NOTCH_FREQ_X used to slip past it.
@@ -1583,7 +1898,7 @@ class ToolHead:
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
             " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
-            " notch_max_freq=%.2f"
+            " notch_max_freq=%.2f span_ramps=%d span_max_angle=%.2f"
             % (
                 self.unified_emit,
                 self.unified_max_jerk,
@@ -1592,6 +1907,8 @@ class ToolHead:
                 self.unified_notch_freq_y,
                 self.unified_max_da,
                 self.unified_notch_max_freq,
+                self.unified_span_ramps,
+                self.unified_span_max_angle,
             )
         )
 

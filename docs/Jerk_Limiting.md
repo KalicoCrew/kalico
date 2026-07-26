@@ -196,22 +196,81 @@ printed at a known speed. Band spacing is the resonance period, so
   | 200 mm/s      | 7.27 mm       |
   | 300 mm/s      | 10.91 mm      |
 
-  Acceleration also cannot be spread across a run of short segments to get
-  around this, because each move's ramp returns to `a = 0` at its own end. So on
-  a chain of equal-length segments the toolhead converges to roughly
+  With `unified_span_ramps` off, acceleration also cannot be spread across a run
+  of short segments to get around this, because each move's ramp returns to
+  `a = 0` at its own end. On a chain of equal-length segments the toolhead then
+  converges to roughly
 
   ```
   v_terminal ~= f_n * segment_length
   ```
 
   regardless of `max_velocity` and `max_accel` — at `f_n = 55`, about 55 mm/s on
-  1 mm segments and 220 mm/s on 4 mm segments. Curve-heavy or high-resolution
+  1 mm segments and 11 mm/s on 0.2 mm segments. Curve-heavy or high-resolution
   sliced geometry is therefore speed-limited by `f_n`, not by the machine.
 
-  This is inherent to per-move notched ramps, not a tuning problem. Increasing
-  slicer segment length raises the ceiling directly.
+  **`unified_span_ramps` (on by default) removes this ceiling without moving the
+  zero.** The floor is not a property of the notch law — it is a property of
+  requiring the ramp to start and end at `a = 0` *inside every move*. Drop that
+  requirement and let one ramp span a run of consecutive near-collinear moves,
+  and the runway is the run's length instead of a single segment's. The ramp
+  itself is unchanged: same `2 / f_n` rise, same triangular `a(t)`, same zero
+  sitting exactly on `f_n`. Measured on the emitted acceleration waveform of a
+  spanning profile at `f_n = 55` Hz, `|A(f_n)| / |A(0)| = 0.0066`, against `0.41`
+  at `f_n / 2` — the null is still on the mode and still sharp.
 
-  `unified_notch_max_freq` buys throughput back, at a price. When a move is too
+  Terminal speed on a chain of collinear segments, requested feedrate 300 mm/s,
+  `f_n = 55`, `max_accel = 20000`:
+
+  | segment | spanning off | spanning on |
+  | ------- | ------------ | ----------- |
+  | 0.1 mm  | 5.5 mm/s     | 300 mm/s    |
+  | 0.2 mm  | 11 mm/s      | 300 mm/s    |
+  | 0.5 mm  | 27.5 mm/s    | 300 mm/s    |
+  | 1 mm    | 55 mm/s      | 300 mm/s    |
+  | 2 mm    | 110 mm/s     | 300 mm/s    |
+  | 5 mm    | 275 mm/s     | 300 mm/s    |
+
+  A run breaks at any direction change beyond `unified_span_max_angle`, at any
+  change of acceleration or notch target, and wherever a corner or feedrate
+  limit would be exceeded — so a run is never planned faster than the per-move
+  plan already allowed at every point along it.
+
+  That angle limit matters more than it looks. The ramp shapes the *scalar*
+  path speed, and the axes see `a_x = rx·a(t)`. If the heading changes at time
+  `t_c` while `a(t)` is still non-zero, the turning axis gets
+
+  ```
+  a_x(t) = r1x·a(t) + (r2x - r1x)·a(t)·u(t - t_c)
+  ```
+
+  The first term keeps the zero; the second is a *truncated* triangle, which
+  has no null at `f_n`. Integrating the ideal pulse gives
+  `|A_tail(f_n)| / |a|₁ ≤ 0.159` (worst when the turn lands on the acceleration
+  peak), so the residual left on the turning axis is about `2·sin(θ/2)·0.159` —
+  measured against the ~0.0066 the emitter's own ZOH discretization already
+  leaves on a straight run:
+
+  | heading change | residual at `f_n` | vs. straight-run floor |
+  | -------------- | ----------------- | ---------------------- |
+  | 0.5°           | 0.0014            | 0.2x                   |
+  | 2° (default)   | 0.0058            | 0.9x                   |
+  | 5°             | 0.014             | 2.1x                   |
+  | 18°            | 0.051             | 7.8x                   |
+
+  This is why the default is 2° and not the much coarser angle a "nearly
+  collinear" intuition suggests. A scalar-only spectrum cannot see any of this,
+  which is why the test measures each axis separately. Boundary speeds are additionally
+  capped by the stock constant-acceleration reach, which keeps every move
+  individually feasible at `max_accel` and so keeps the constant-accel fallback
+  valid everywhere. Set `unified_span_ramps: False` for the strict per-move
+  behaviour.
+
+  Slicing at a longer segment length also raises the per-move ceiling directly,
+  and is the only lever if spanning is disabled.
+
+  `unified_notch_max_freq` is the other lever, and unlike spanning it does move
+  the zero. It buys throughput back, at a price. When a move is too
   short to ramp at `f_n`, the notch is raised to whatever *does* fit (capped by
   this setting) so the move can still change speed. Terminal speed becomes
   `f_eff * segment_length`, so the gain is exactly linear in the cap. But the
