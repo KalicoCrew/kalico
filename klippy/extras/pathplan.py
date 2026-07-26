@@ -16,15 +16,25 @@
 # clamping, insufficient runway, and the sharp fallback do not preserve an
 # exact zero at the requested mode.
 #
-# THROUGHPUT CONSEQUENCE. Parking the zero fixes the ramp DURATION at 2/f_n
-# regardless of how small the speed change is, so a ramp always consumes
-# (v0+v1)/f_n of path distance. The distance is therefore discontinuous at
-# dv -> 0: it does not fall to zero but to 2*v0/f_n. A move shorter than that
+# TWO MODES. A machine whose X and Y modes differ can null BOTH in the same
+# ramp, because spectral zeros multiply under convolution and the triangle above
+# is already rect(1/f_n) * rect(1/f_n). Widening one rect gives a TRAPEZOID,
+# rect(1/f_hi) * rect(1/f_lo), with exact zeros at f_lo AND f_hi -- and since
+# every axis sees the same a(t) scaled by the move's direction, every axis gets
+# both. Set notch_freq2 to ask for it; see Constraints.ramp_jerk. f_lo == f_hi
+# collapses every formula below back to the single-zero triangle, so there is no
+# separate code path.
+#
+# THROUGHPUT CONSEQUENCE. Parking the zeros fixes the ramp DURATION at
+# 1/f_lo + 1/f_hi (that is 2/f_n with one zero) regardless of how small the speed
+# change is, so a ramp always consumes (v0+v1)/f_eq of path distance, where f_eq
+# is the pair's harmonic mean. The distance is therefore discontinuous at
+# dv -> 0: it does not fall to zero but to 2*v0/f_eq. A move shorter than that
 # cannot change speed at all, and since each move ramps back to a = 0 at its own
 # end, acceleration cannot be spread across a run of short segments. On a chain
 # of equal-length segments the toolhead converges to roughly
 #
-#     v_terminal ~= f_n * segment_length
+#     v_terminal ~= f_eq * segment_length
 #
 # (55 Hz, 1 mm segments -> ~55 mm/s) no matter how high max_velocity/max_accel
 # are. This is inherent to per-move notched ramps, not a tuning problem. See
@@ -57,6 +67,10 @@ class Constraints:
                   None/0 = fixed-jerk behaviour (max_jerk used verbatim).
                   See ramp_jerk() for the ideal law, and notch_loss_reasons()
                   for cases where the emitted profile no longer preserves it.
+    notch_freq2
+               -> SECOND mode frequency (Hz) to null in the same ramp. None/0,
+                  or equal to notch_freq, gives the single-zero triangle. See
+                  ramp_jerk() for the two-zero law.
     notch_max_freq
                -> highest frequency (Hz) the notch may be RAISED to when a move
                   is too short to fit a ramp at notch_freq. See
@@ -74,6 +88,7 @@ class Constraints:
         notch_freq=None,
         max_da=None,
         notch_max_freq=None,
+        notch_freq2=None,
     ):
         self.a_const = a_const
         self.v_ceil = v_ceil
@@ -82,9 +97,46 @@ class Constraints:
         self.notch_freq = notch_freq
         self.max_da = max_da
         self.notch_max_freq = notch_max_freq
+        self.notch_freq2 = notch_freq2
+        # Derived pair. A ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), so it
+        # lasts notch_period = 1/f_lo + 1/f_hi and covers
+        # 0.5*(v0+v1)*notch_period of path. Writing that as (v0+v1)/notch_f_eq
+        # -- f_eq the HARMONIC mean of the pair -- makes every distance and
+        # runway formula in this module identical to the single-notch ones,
+        # where f_lo == f_hi == f_eq == notch_freq and notch_period == 2/f_n.
+        f1 = notch_freq or 0.0
+        f2 = notch_freq2 or f1
+        if not f1:
+            self.notch_lo = self.notch_hi = 0.0
+            self.notch_period = 0.0
+            self.notch_f_eq = 0.0
+        else:
+            self.notch_lo = min(f1, f2)
+            self.notch_hi = max(f1, f2)
+            self.notch_period = 1.0 / self.notch_lo + 1.0 / self.notch_hi
+            self.notch_f_eq = 2.0 / self.notch_period
 
     def a_max(self, v):
         return self.a_const
+
+    def ramp_accel_cap(self, dv):
+        """Peak |accel| (mm/s^2) the two-zero law allows for ONE ramp of |dv|.
+
+        The trapezoid rect(1/f_hi) * rect(1/f_lo) has area dv and base
+        1/f_hi + 1/f_lo, so its plateau height is dv/max_width = dv*f_lo. That
+        cap is what CREATES the plateau -- without it the integrator would keep
+        rising and render a triangle, which nulls only one frequency.
+
+        None means "no notch-imposed cap": in single-notch mode the triangle's
+        peak (dv*f_n) falls out of the jerk law by itself, and capping there
+        would be a no-op at best.
+        """
+        if not self.notch_freq or self.notch_lo >= self.notch_hi:
+            return None
+        dv = abs(dv)
+        if dv <= 1e-12:
+            return None
+        return dv * self.notch_lo
 
     def ramp_jerk(self, dv):
         """Jerk (mm/s^3) for ONE ramp of size |dv| (mm/s).
@@ -121,16 +173,117 @@ class Constraints:
         max_jerk, when set in notch mode, limits the allowed ramp dv if the cap
         is lower than the jerk needed by either law. It does not lower the notch
         frequency to fit the cap.
+
+        TWO zeros (notch_freq2 set and different). One scalar ramp shapes every
+        axis at once -- a_i(t) = r_i*a(t) -- so a single zero has to serve both
+        modes, and on a diagonal a direction-weighted compromise lands it on
+        neither. It does not have to: spectral zeros MULTIPLY under convolution,
+        and the triangle above is already rect(1/f_n) * rect(1/f_n). Widen one
+        of the two rects and the pulse nulls two frequencies at once:
+
+            a(t) = rect(1/f_hi) * rect(1/f_lo)     (a TRAPEZOID, not a triangle)
+            |A(f)| = |sinc(f/f_hi) * sinc(f/f_lo)| -> exact zeros at BOTH
+
+        Matching that shape to this integrator needs the rise edge to reach the
+        plateau in 1/f_hi, i.e. a_peak/J = 1/f_hi with a_peak = dv*f_lo:
+
+            J = dv * f_lo * f_hi   ->   T_rise  = 1/f_hi
+                                        a_peak  = dv * f_lo   (ramp_accel_cap)
+                                        T_total = 1/f_lo + 1/f_hi
+                                        distance= 0.5*(v0+v1)*T_total
+
+        f_lo == f_hi collapses every line of that back to the triangle, so the
+        single-zero case is not a special case in the code -- it is this one.
+        The trapezoid is only ~2% longer than a triangle at the two modes'
+        weighted mean while leaving ~0.04% at each mode instead of 3%/1.6%, and
+        its peak accel is LOWER (set by f_lo, not the mean).
+
+        Past accel saturation the plateau is forced wider than 1/f_lo -- its
+        width is dv/A -- and no choice of J recovers BOTH zeros, because the
+        shape needed there is third order (an S-edge) rather than the constant
+        jerk this integrator renders. The rise edge still holds one zero;
+        sat_rise_freq() picks which mode to spend it on, and
+        notch_loss_reasons() reports the loss.
         """
         dv = abs(dv)
         if not self.notch_freq or dv <= 1e-12:
             return self.max_jerk
         a = self.a_const
-        if a and a > 0.0 and dv > a / self.notch_freq:
-            j = a * self.notch_freq
+        f_lo, f_hi = self.notch_lo, self.notch_hi
+        if a and a > 0.0 and dv > a / f_lo:
+            j = a * sat_rise_freq(dv, a, f_lo, f_hi)
         else:
-            j = dv * self.notch_freq * self.notch_freq
+            j = dv * f_lo * f_hi
         return j if j > 0.0 else None
+
+
+def _sinc(x):
+    # sin(pi*x)/(pi*x); the normalized sinc, so the zeros sit on the integers.
+    if abs(x) < 1e-12:
+        return 1.0
+    y = math.pi * x
+    return math.sin(y) / y
+
+
+def sat_rise_freq(dv, accel, f_lo, f_hi):
+    """Which zero to keep when accel saturation costs us the other one.
+
+    Below saturation the ramp is rect(1/f_hi) * rect(1/f_lo) and nulls both
+    modes. Past it the plateau is no longer ours to choose -- its width is
+    forced to dv/A -- so the pulse is rect(T_rise) * rect(dv/A) and only T_rise
+    is free. Its zeros land on k/T_rise and k*A/dv, leaving
+
+        residual(f) = |sinc(f*T_rise) * sinc(f*dv/A)|
+
+    Pinning T_rise to one mode by fiat is arbitrarily bad: whether f_lo or f_hi
+    is the better place to spend the one remaining zero depends on where the
+    forced A/dv zero and its harmonics happen to fall, which moves with dv. So
+    evaluate both candidates and keep whichever leaves the QUIETER worse mode.
+    Ties go to f_lo -- the lower mode displaces more for the same acceleration
+    (x ~ a/w^2), so it is the one to protect when there is nothing to choose.
+
+    Returns f_lo/f_hi unchanged when the pair is degenerate or unsaturated,
+    which makes this a no-op on single-notch machines.
+    """
+    return _sat_rise(dv, accel, f_lo, f_hi)[0]
+
+
+def _sat_rise(dv, accel, f_lo, f_hi):
+    # (chosen rise frequency, worst residual it leaves). See sat_rise_freq.
+    if f_lo >= f_hi:
+        return f_lo, 0.0
+    t_flat = dv / accel
+    best_f, best_worst = None, None
+    for f_rise in (f_lo, f_hi):
+        t_rise = 1.0 / f_rise
+        worst = max(
+            abs(_sinc(f * t_rise) * _sinc(f * t_flat)) for f in (f_lo, f_hi)
+        )
+        if best_worst is None or worst < best_worst:
+            best_f, best_worst = f_rise, worst
+    return best_f, best_worst
+
+
+# How much residual at a mode counts as actually LOSING that zero, for
+# reporting purposes. The emitter's zero-order hold already leaves a few times
+# 1e-4 at a parked zero, so this sits an order of magnitude above the floor:
+# below it the forced A/dv zero (or one of its harmonics) happened to land near
+# enough to the second mode that nothing was really lost, and warning would be
+# noise.
+SECOND_NOTCH_EPS = 0.01
+
+
+def _pair_for(f_eq, ratio):
+    """Expand an equivalent (harmonic-mean) frequency back into its pair.
+
+    The pair (f_lo, f_hi = ratio*f_lo) with harmonic mean f_eq satisfies
+    2/f_eq = 1/f_lo + 1/f_hi, so f_lo = f_eq*(1 + 1/ratio)/2. ratio == 1.0
+    returns (f_eq, f_eq), i.e. the single-zero case unchanged.
+    """
+    if ratio <= 1.0:
+        return f_eq, f_eq
+    f_lo = 0.5 * f_eq * (1.0 + 1.0 / ratio)
+    return f_lo, f_lo * ratio
 
 
 def ramp_freq_for(v_sum, dist, notch_freq, notch_max_freq):
@@ -169,29 +322,39 @@ def ramp_freq_for(v_sum, dist, notch_freq, notch_max_freq):
 
 
 def adapted_notch_freq(vs, vc, ve, move_d, cons):
-    """Runway-adapted notch frequency for one whole move (accel + decel)."""
+    """Runway-adapted EQUIVALENT frequency for one whole move (accel + decel).
+
+    Returns an f_eq (see Constraints), not a mode frequency: with two zeros the
+    pair is raised together, keeping their ratio -- and so both zeros' relative
+    placement -- while the ramp shortens to fit. _with_notch() expands it back.
+    """
     if not cons.notch_freq:
-        return cons.notch_freq
+        return cons.notch_f_eq
     vc = max(vc, vs, ve)
-    # Accel ramp needs (vs+vc)/f, decel ramp needs (vc+ve)/f.
+    # Accel ramp needs (vs+vc)/f_eq, decel ramp needs (vc+ve)/f_eq.
     return ramp_freq_for(
-        vs + 2.0 * vc + ve, move_d, cons.notch_freq, cons.notch_max_freq
+        vs + 2.0 * vc + ve, move_d, cons.notch_f_eq, cons.notch_max_freq
     )
 
 
-def _with_notch(cons, notch_freq):
+def _with_notch(cons, f_eq):
+    # f_eq is a harmonic-mean frequency; expand it back into the pair at this
+    # move's ratio so both zeros move together.
+    ratio = cons.notch_hi / cons.notch_lo if cons.notch_lo else 1.0
+    f_lo, f_hi = _pair_for(f_eq, ratio)
     return Constraints(
         a_const=cons.a_const,
         v_ceil=cons.v_ceil,
         max_jerk=cons.max_jerk,
         jerk_dt=cons.jerk_dt,
-        notch_freq=notch_freq,
+        notch_freq=f_lo,
         max_da=cons.max_da,
         notch_max_freq=cons.notch_max_freq,
+        notch_freq2=f_hi,
     )
 
 
-def jerk_dist(v0, v1, accel, jerk, notch_freq=None):
+def jerk_dist(v0, v1, accel, jerk, notch_freq=None, notch_freq2=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
     # S-curve at constant max |accel| and max |jerk| (accel ramps 0 -> peak -> 0
     # so a(t) is continuous in the ideal law). Closed form: distance = mean
@@ -204,16 +367,31 @@ def jerk_dist(v0, v1, accel, jerk, notch_freq=None):
     if dv <= 1e-12:
         return 0.0
     if notch_freq:
-        # Per-ramp jerk law, mirrored from Constraints.ramp_jerk. In the ideal
-        # non-saturating case this collapses to total ramp time 2/f_n and
-        # distance = (v0+v1)/f_n. Past accel saturation, use the designed
-        # trapezoid J=A*f_n so the ramp edge, not the total duration, keeps the
-        # zero at f_n.
-        if accel > 0.0 and dv > accel / notch_freq:
-            j = accel * notch_freq
+        # Per-ramp law, mirrored from Constraints.ramp_jerk. Both zeros survive
+        # while the plateau is the notch's own (a_peak = dv*f_lo <= accel), and
+        # then the duration is EXACTLY 1/f_lo + 1/f_hi -- independent of dv, and
+        # equal to the single-notch 2/f_n when f_lo == f_hi. Past saturation the
+        # plateau widens to dv/A and the rise edge keeps its zero on f_hi.
+        f_lo = min(notch_freq, notch_freq2 or notch_freq)
+        f_hi = max(notch_freq, notch_freq2 or notch_freq)
+        saturated = accel > 0.0 and dv > accel / f_lo
+        if saturated:
+            f_rise = sat_rise_freq(dv, accel, f_lo, f_hi)
+            t = dv / accel + 1.0 / f_rise
         else:
-            j = dv * notch_freq * notch_freq
-        jerk = min(j, jerk) if jerk else j
+            t = 1.0 / f_lo + 1.0 / f_hi
+        if jerk:
+            # A max_jerk ceiling below the law's jerk stretches the rise edge;
+            # fall back to the generic form so the estimate stays conservative.
+            j = accel * f_rise if saturated else dv * f_lo * f_hi
+            if jerk < j:
+                return _jerk_dist_generic(v0, v1, dv, accel, jerk)
+        return 0.5 * (v0 + v1) * t
+    return _jerk_dist_generic(v0, v1, dv, accel, jerk)
+
+
+def _jerk_dist_generic(v0, v1, dv, accel, jerk):
+    # Fixed-jerk S-curve: triangular a(t) below saturation, trapezoidal above.
     if jerk is None or jerk <= 0.0 or accel <= 0.0:
         return abs(v1 * v1 - v0 * v0) / (2.0 * accel)
     if dv <= accel * accel / jerk:
@@ -226,7 +404,14 @@ def jerk_dist(v0, v1, accel, jerk, notch_freq=None):
 
 
 def jerk_reach_v2(
-    u0, dist, accel, jerk, v_ceil, notch_freq=None, notch_max_freq=None
+    u0,
+    dist,
+    accel,
+    jerk,
+    v_ceil,
+    notch_freq=None,
+    notch_max_freq=None,
+    notch_freq2=None,
 ):
     # Max u = v^2 reachable from v0=sqrt(u0) over path-distance `dist` under a
     # jerk-limited S-curve (constant max accel/jerk). Direction-symmetric
@@ -250,9 +435,19 @@ def jerk_reach_v2(
     # f_top for the "is any speed change possible at all" tests, since that is
     # the most permissive frequency available.
     f_top = notch_freq
+    ratio = 1.0
     if notch_freq:
+        # Distances are governed by the pair's HARMONIC mean (Constraints
+        # docstring): a ramp costs 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq,
+        # which is the single-notch formula with f_eq == notch_freq. Adaptation
+        # scales the pair, so track the pair through its ratio.
+        f_lo = min(notch_freq, notch_freq2 or notch_freq)
+        f_hi = max(notch_freq, notch_freq2 or notch_freq)
+        ratio = f_hi / f_lo
+        f_eq = 2.0 / (1.0 / f_lo + 1.0 / f_hi)
+        f_top = f_eq
         cap = notch_max_freq or 0.0
-        if cap > notch_freq:
+        if cap > f_eq:
             f_top = cap
         # Even at f_top a ramp costs (v0+v1)/f of distance, and that does not
         # go to zero as v1 -> v0: its infimum is 2*v0/f_top. A move shorter
@@ -262,16 +457,21 @@ def jerk_reach_v2(
         if dist < 2.0 * v0 / f_top:
             return u0
         if jerk:
-            tri_dv_max = jerk / (notch_freq * notch_freq)
-            sat_j = accel * notch_freq if accel > 0.0 else 0.0
+            tri_dv_max = jerk / (f_lo * f_hi)
+            sat_j = accel * f_hi if accel > 0.0 else 0.0
             if jerk < sat_j:
                 v_ceil = min(v_ceil, v0 + tri_dv_max)
+        notch_freq = f_eq
 
     def _fits(v1):
         f = notch_freq
         if notch_freq:
             f = ramp_freq_for(v0 + v1, dist, notch_freq, notch_max_freq)
-        return jerk_dist(v0, v1, accel, jerk, f) <= dist
+        if not f:
+            return jerk_dist(v0, v1, accel, jerk, f) <= dist
+        # f is an f_eq; expand it back into the pair it stands for.
+        f_a, f_b = _pair_for(f, ratio)
+        return jerk_dist(v0, v1, accel, jerk, f_a, f_b) <= dist
 
     hi = max(v0, v_ceil)
     if _fits(hi):
@@ -310,6 +510,10 @@ def _ramp_up_jerk(v0, v1, cons, collect=True):
     dt0 = cons.jerk_dt
     if cons.max_da is not None and J is not None and J > 0.0:
         dt0 = min(dt0, cons.max_da / J)
+    # Two-zero mode caps the plateau at dv*f_lo, which is what turns the
+    # triangle into the trapezoid that nulls both modes. None in single-zero
+    # mode, where the peak already lands there on its own.
+    a_notch = cons.ramp_accel_cap(v1 - v0)
     slices = [] if collect else None
     total = 0.0
     if v1 <= v0 + 1e-12 or J is None or J <= 0.0:
@@ -326,6 +530,8 @@ def _ramp_up_jerk(v0, v1, cons, collect=True):
         a_curve = cons.a_max(v)
         if a_curve is None or a_curve <= 0.0:
             a_curve = cons.a_const if cons.a_const else 1e30
+        if a_notch is not None and a_notch < a_curve:
+            a_curve = a_notch
         a_brake = math.sqrt(2.0 * J * rem)
         a_new = min(a_curve, a_brake, a + J * dt0)
         if a_new <= 0.0:
@@ -360,13 +566,15 @@ def _notch_peak_limit(vs, vc, ve, cons):
     if not cons.notch_freq:
         return vc
     if cons.max_jerk:
+        # Unsaturated law is J = dv*f_lo*f_hi, so a jerk ceiling caps the ramp
+        # dv at max_jerk/(f_lo*f_hi); saturated it is J = A*f_hi.
         sat_j = (
-            cons.a_const * cons.notch_freq
+            cons.a_const * cons.notch_hi
             if cons.a_const and cons.a_const > 0.0
             else 0.0
         )
         if not sat_j or cons.max_jerk < sat_j:
-            dv_max = cons.max_jerk / (cons.notch_freq * cons.notch_freq)
+            dv_max = cons.max_jerk / (cons.notch_lo * cons.notch_hi)
             return min(vc, vs + dv_max, ve + dv_max)
     return vc
 
@@ -555,7 +763,7 @@ def emit_profile(vs, vc, ve, move_d, cons):
     if cons.max_jerk or cons.notch_freq:
         if cons.notch_freq:
             f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
-            if f_eff != cons.notch_freq:
+            if f_eff != cons.notch_f_eq:
                 cons = _with_notch(cons, f_eff)
         segs = _emit_jerk(vs, vc, ve, move_d, cons)
         if segs is not None:
@@ -648,7 +856,12 @@ def split_segments(segs, lengths):
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
 LOSS_REASONS = frozenset(
-    ("jerk_clamped", "insufficient_runway", "notch_raised")
+    (
+        "jerk_clamped",
+        "insufficient_runway",
+        "notch_raised",
+        "second_notch_saturated",
+    )
 )
 
 
@@ -665,18 +878,38 @@ def notch_loss_reasons(vs, vc, ve, move_d, cons):
         return []
     reasons = set()
     f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
-    if f_eff > cons.notch_freq:
+    if f_eff > cons.notch_f_eq:
         # The move was too short to ramp at the target, so the zero slid up to
         # fit. Motion is still shaped, just not on the requested mode.
         reasons.add("notch_raised")
         cons = _with_notch(cons, f_eff)
+    two_zero = cons.notch_hi > cons.notch_lo
     for dv in (abs(vc - vs), abs(vc - ve)):
         if dv <= 1e-12:
             continue
-        target_j = dv * cons.notch_freq * cons.notch_freq
+        saturated = (
+            cons.a_const
+            and cons.a_const > 0.0
+            and dv > cons.a_const / cons.notch_lo
+        )
+        if two_zero and saturated:
+            # a_peak would have to be dv*f_lo to keep the plateau exactly
+            # 1/f_lo wide; max_accel is lower, so the plateau widens to dv/A
+            # and only one zero is ours to place (sat_rise_freq). Report it
+            # only when a mode is genuinely left excited -- the forced A/dv
+            # zero sometimes covers the other mode anyway. Fixable by raising
+            # max_accel, or by spanning the ramp across more moves so each dv
+            # is smaller.
+            _f, worst = _sat_rise(
+                dv, cons.a_const, cons.notch_lo, cons.notch_hi
+            )
+            if worst > SECOND_NOTCH_EPS:
+                reasons.add("second_notch_saturated")
+        target_j = dv * cons.notch_lo * cons.notch_hi
         if cons.max_jerk:
             sat_j = (
-                cons.a_const * cons.notch_freq
+                cons.a_const
+                * sat_rise_freq(dv, cons.a_const, cons.notch_lo, cons.notch_hi)
                 if cons.a_const and cons.a_const > 0.0
                 else 0.0
             )
