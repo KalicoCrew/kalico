@@ -184,12 +184,49 @@ def test_reach_cache_tracks_start_v2():
     print("  per-move reach cache keys on start_v2 OK")
 
 
+def test_no_velocity_step_at_move_boundaries():
+    # The stock planner gets boundary continuity for free: with constant accel
+    # reachable_start_v2 == next_end_v2 + delta_v2 and start_v2 == next_end_v2 -
+    # delta_v2 on a full-accel move, so the accel-to-decel midpoint lands
+    # exactly on next_end_v2. The notch law breaks that algebra, and the
+    # midpoint used to land BELOW next_end_v2 -- leaving this move ending
+    # slower than the next one starts, i.e. a hard velocity step (80 mm/s on
+    # 5 mm segments at 55 Hz) which is an infinite-accel impulse in the very
+    # band the notch exists to keep quiet.
+    for seg in (0.2, 1.0, 2.0, 5.0, 10.0):
+        th = make_unified_toolhead(
+            max_accel=20000.0,
+            max_velocity=600.0,
+            max_accel_to_decel=10000.0,
+            junction_deviation=0.5 * 5.0**2 / 20000.0,
+        )
+        laq = toolhead.LookAheadQueue()
+        pos = [0.0, 0.0, 0.0, 0.0]
+        for _ in range(12):
+            nxt = [pos[0] + seg, 0.0, 0.0, 0.0]
+            laq.add_move(toolhead.Move(th, pos, nxt, 300.0))
+            pos = nxt
+        moves = laq.flush()
+        for i in range(1, len(moves)):
+            gap = moves[i].start_v - moves[i - 1].end_v
+            assert abs(gap) <= 1e-9, (
+                "velocity step at move boundary",
+                seg,
+                i,
+                gap,
+                moves[i - 1].end_v,
+                moves[i].start_v,
+            )
+    print("  notch plan leaves no velocity step at move boundaries OK")
+
+
 def main():
     test_subclass_without_unified_fields()
     test_unified_rejects_unsegmented_extra_axis()
     test_notch_freq_floor()
     test_set_unified_pair_rule_and_rollback()
     test_reach_cache_tracks_start_v2()
+    test_no_velocity_step_at_move_boundaries()
     print("ALL PASS")
 
 

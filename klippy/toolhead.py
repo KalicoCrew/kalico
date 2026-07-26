@@ -235,6 +235,25 @@ class LookAheadQueue:
                             th._move_reach_v2(move, start_v2),
                             th._move_reach_v2(move, next_end_v2),
                         )
+                        # Restore the identity the stock planner gets for free.
+                        # With constant accel, reachable_start_v2 is exactly
+                        # next_end_v2 + delta_v2 and start_v2 is next_end_v2 -
+                        # delta_v2 on a full-accel move, so the midpoint above
+                        # lands EXACTLY on next_end_v2 and this move's end_v
+                        # equals the next move's start_v. The notch law breaks
+                        # that algebra -- reach is not start + delta -- and the
+                        # midpoint then lands BELOW next_end_v2, which
+                        # set_junction turns into a hard velocity step at the
+                        # move boundary: 80 mm/s on 5 mm segments at 55 Hz, an
+                        # infinite-accel impulse in the exact band the notch
+                        # exists to keep quiet. next_end_v2 is jerk-reachable
+                        # from start_v2 (jerk_reach_v2 is direction-symmetric,
+                        # and start_v2 was itself clamped to reach of
+                        # next_end_v2), so lifting the cruise back onto it is
+                        # always feasible.
+                        cruise_v2 = max(
+                            cruise_v2, min(next_end_v2, move.max_cruise_v2)
+                        )
                     move.set_junction(
                         min(start_v2, cruise_v2),
                         cruise_v2,
