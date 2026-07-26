@@ -820,7 +820,11 @@ class ToolHead:
             vs, ve = first.start_v, last.end_v
             vc = max(min(peak, cap), vs, ve)
             total_d = math.fsum([m.move_d for m in group])
-            cons = self._pathplan_cons(first, v_ceil=vc + 1.0)
+            # The run is rendered as ONE profile, so its acceleration ceiling
+            # has to be the tightest any member allows -- members can differ
+            # under a direction-dependent accel limit.
+            a_span = min(m.accel for m in group)
+            cons = self._pathplan_cons(first, v_ceil=vc + 1.0, a_const=a_span)
             segs = pathplan.emit_profile(vs, vc, ve, total_d, cons)
             if not segs:
                 # Degenerate profile: leave the run to the per-move path.
@@ -1418,7 +1422,7 @@ class ToolHead:
         move._unified_notch_f = f
         return f
 
-    def _pathplan_cons(self, move, v_ceil=None):
+    def _pathplan_cons(self, move, v_ceil=None, a_const=None):
         # Build the pathplan.Constraints for one move. a_const is the move's
         # constant accel (the sharp-fallback ceiling); with a notch frequency
         # the emitter governs ordinary moves via a_peak = dv*f_n instead.
@@ -1437,7 +1441,7 @@ class ToolHead:
             # as the conservative ceiling for reach calculations.
             v_ceil = math.sqrt(move.max_cruise_v2) + 1.0
         return pathplan.Constraints(
-            a_const=move.accel,
+            a_const=move.accel if a_const is None else a_const,
             v_ceil=v_ceil,
             max_jerk=jerk,
             jerk_dt=self.unified_jerk_dt,
@@ -1512,8 +1516,14 @@ class ToolHead:
             return False
         if not self._uses_unified_reach(prev_move):
             return False
-        if move.accel != prev_move.accel:
-            return False
+        # Deliberately NOT comparing move.accel for equality. Kinematics like
+        # limited_cartesian set the accel limit per move as
+        # min(x_max_a/|rx|, y_max_a/|ry|), so it changes at EVERY segment of a
+        # curve -- an exact comparison rejected every link and silently
+        # disabled spanning on the real machine while the unit tests, which
+        # used a constant accel, saw none of it. The run is emitted at the
+        # group's minimum accel instead (see _span_buckets), which respects
+        # every member's limit.
         f_move = self._move_notch_freq(move)
         f_prev = self._move_notch_freq(prev_move)
         f_ref = prev_move.span_notch_f

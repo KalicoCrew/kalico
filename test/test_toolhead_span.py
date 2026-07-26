@@ -492,6 +492,59 @@ def test_span_notch_tolerance_does_not_accumulate():
     print("  per-axis notch drift stays bounded within every curve span OK")
 
 
+def test_span_survives_direction_dependent_accel():
+    # limited_cartesian (and friends) set the accel limit per move as
+    # min(x_max_a/|rx|, y_max_a/|ry|), so move.accel changes at EVERY segment
+    # of a curve. Requiring equal accel to link rejected every pair and
+    # disabled spanning entirely on such a machine -- invisible to any test
+    # that uses a constant accel, and it cost a full hardware run to find.
+    radius = 40.0
+    step = SEG / radius
+
+    def arc(th, apply_limit):
+        laq = toolhead.LookAheadQueue()
+        pos = [radius, 0.0, 0.0, 0.0]
+        for i in range(1, 300):
+            a = i * step
+            nxt = [radius * math.cos(a), radius * math.sin(a), 0.0, 0.0]
+            move = toolhead.Move(th, pos, nxt, FEED)
+            if apply_limit:
+                rx = max(abs(move.axes_r[0]), 1e-9)
+                ry = max(abs(move.axes_r[1]), 1e-9)
+                # Axis caps below the hypot limit, the way scale_xy_accel
+                # leaves them, so the per-move value actually varies BELOW
+                # max_accel instead of being clamped away by limit_speed.
+                axis_a = th.max_accel * 0.5
+                move.limit_speed(th.max_velocity, min(axis_a / rx, axis_a / ry))
+            laq.add_move(move)
+            pos = nxt
+        return laq.flush()
+
+    th = make_toolhead(span=True)
+    moves = arc(th, True)
+    accels = {m.accel for m in moves}
+    assert len(accels) > 50, ("accel should vary per move", len(accels))
+    linked = sum(1 for m in moves if m.span_link)
+    assert linked > len(moves) - 3, (
+        "per-move accel limits broke every span link",
+        linked,
+        len(moves),
+    )
+    groups = list(th._span_groups(moves))
+    assert groups, "no span formed under a direction-dependent accel limit"
+    # The emitted run must respect the TIGHTEST member's accel, not the first's.
+    for group, _peak, _cap in groups:
+        a_span = min(m.accel for m in group)
+        assert a_span <= group[0].accel + 1e-9
+    v_on = max(m.cruise_v for m in moves)
+    v_off = max(m.cruise_v for m in arc(make_toolhead(span=False), True))
+    assert v_on > 4.0 * v_off, ("no speedup under per-move accel", v_off, v_on)
+    print(
+        "  spans survive direction-dependent accel (%d distinct):"
+        " %.1f -> %.1f mm/s OK" % (len(accels), v_off, v_on)
+    )
+
+
 def test_span_off_is_a_noop():
     th = make_toolhead(span=False)
     moves = plan_chain(th, 20)
@@ -511,6 +564,7 @@ def main():
     test_corner_breaks_the_span()
     test_span_follows_a_curve()
     test_span_notch_tolerance_does_not_accumulate()
+    test_span_survives_direction_dependent_accel()
     test_span_off_is_a_noop()
     print("ALL PASS")
 
