@@ -61,11 +61,44 @@ class FakeMove:
         self.axes_r = [rx, ry, rz, 0.0]
 
 
-def mk(fx, fy):
+class FakeStepper:
+    def __init__(self, axes):
+        self.axes = axes
+
+    def is_active_axis(self, axis):
+        return axis in self.axes
+
+
+class FakeRail:
+    def __init__(self, steppers):
+        self.steppers = steppers
+
+    def get_steppers(self):
+        return self.steppers
+
+
+# Real itersolve active-axis flags: a cartesian/CoreXY Z stepper is AF_Z only,
+# while a CoreXZ stepper is AF_X|AF_Z and a delta tower is AF_X|AF_Y|AF_Z.
+DECOUPLED_RAILS = [
+    FakeRail([FakeStepper("xy")]),
+    FakeRail([FakeStepper("xy")]),
+    FakeRail([FakeStepper("z")]),
+]
+COREXZ_RAILS = [
+    FakeRail([FakeStepper("xz")]),
+    FakeRail([FakeStepper("y")]),
+    FakeRail([FakeStepper("xz")]),
+]
+
+
+def mk(fx, fy, z_coupled=False, rails=DECOUPLED_RAILS):
     # Bare instance with the (already resolved) per-axis freqs set.
     o = object.__new__(TH)
     o.unified_notch_freq_x = fx
     o.unified_notch_freq_y = fy
+    if z_coupled:
+        rails = COREXZ_RAILS
+    o.kin = types.SimpleNamespace(rails=rails) if rails is not None else None
     return o
 
 
@@ -132,8 +165,32 @@ def run_checks():
     check(failures, "pure-Y", f(o, 0, 1), 55.0)
     check(failures, "45deg ", f(o, s2, s2), 55.0)
     check(failures, "X+Z   ", f(o, 0.6, 0.0, 0.8), 55.0)
-    check(failures, "Z-only", f(o, 0, 0, 1), 55.0)
     check_true(failures, "_notch_on() true", TH._notch_on(o))
+
+    print("== no XY motion, Z decoupled -> no notch (nothing to cancel) ==")
+    # a_x = rx*a(t) and a_y = ry*a(t) with rx = ry = 0, so no a(t) excites the
+    # XY modes. Shaping anyway costs the whole 2/f_n ramp and its runway for
+    # zero benefit -- and a Z hop has nowhere near that runway.
+    o = mk(55.0, 55.0)
+    check(failures, "Z-only  -> off", f(o, 0, 0, 1), 0.0)
+    check(failures, "E-only  -> off", f(o, 0, 0, 0), 0.0)
+    o = mk(60.0, 55.0)
+    check(failures, "Z-only per-axis -> off", f(o, 0, 0, 1), 0.0)
+    # A Z move with ANY real XY component is still shaped: that component does
+    # excite the modes.
+    check(failures, "tiny X + Z -> fx", f(o, 1e-6, 0.0, 1.0), 60.0)
+
+    print("== no XY motion, Z COUPLED (CoreXZ/delta) -> keep shaping ==")
+    # On CoreXZ (A = x + z, B = x - z), delta and polar, a Z-only move drives
+    # the very belts the notch targets. Commanded X is zero only to first
+    # order, so the shaping must stay.
+    o = mk(55.0, 55.0, z_coupled=True)
+    check(failures, "Z-only coupled  -> on", f(o, 0, 0, 1), 55.0)
+    o = mk(60.0, 55.0, z_coupled=True)
+    check(failures, "Z-only coupled per-axis", f(o, 0, 0, 1), 60.0)
+    # Unknown kinematics must fall on the safe side: keep shaping.
+    o = mk(55.0, 55.0, rails=None)
+    check(failures, "unknown kin -> on", f(o, 0, 0, 1), 55.0)
 
     print("== per-axis: fx=60, fy=55 ==")
     o = mk(60.0, 55.0)
