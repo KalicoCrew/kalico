@@ -457,6 +457,41 @@ def test_span_follows_a_curve():
     )
 
 
+def test_span_notch_tolerance_does_not_accumulate():
+    # With distinct per-axis modes, the direction-weighted target changes a
+    # little at every segment of a curve. Comparing adjacent moves lets those
+    # small changes accumulate indefinitely even though the whole run is
+    # emitted at its first move's target.
+    th = make_toolhead(span=True)
+    th.unified_notch_freq = 0.0
+    th.unified_notch_freq_x = 55.0
+    th.unified_notch_freq_y = 70.0
+    radius = 40.0
+    step = SEG / radius
+    laq = toolhead.LookAheadQueue()
+    pos = [radius, 0.0, 0.0, 0.0]
+    for i in range(1, 300):
+        a = i * step
+        nxt = [radius * math.cos(a), radius * math.sin(a), 0.0, 0.0]
+        laq.add_move(toolhead.Move(th, pos, nxt, FEED))
+        pos = nxt
+    moves = laq.flush()
+    groups = list(th._span_groups(moves))
+    assert len(groups) > 1, "the changing notch target never split the curve"
+    for group, _peak, _cap in groups:
+        first_f = th._move_notch_freq(group[0])
+        for move in group:
+            move_f = th._move_notch_freq(move)
+            rel = abs(move_f - first_f) / max(move_f, first_f)
+            assert rel <= toolhead.SPAN_NOTCH_REL_TOL + 1e-12, (
+                "span accumulated notch drift",
+                first_f,
+                move_f,
+                rel,
+            )
+    print("  per-axis notch drift stays bounded within every curve span OK")
+
+
 def test_span_off_is_a_noop():
     th = make_toolhead(span=False)
     moves = plan_chain(th, 20)
@@ -475,6 +510,7 @@ def main():
     test_lazy_flush_keeps_velocity_continuous()
     test_corner_breaks_the_span()
     test_span_follows_a_curve()
+    test_span_notch_tolerance_does_not_accumulate()
     test_span_off_is_a_noop()
     print("ALL PASS")
 

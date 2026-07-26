@@ -73,6 +73,7 @@ class Move:
         self.max_junction_v2 = 999999999.9
         self.span_start_v2 = 0.0
         self.span_start_d = 0.0
+        self.span_notch_f = None
         self.span_link = False
 
     def limit_speed(self, speed, accel):
@@ -171,9 +172,13 @@ class Move:
         if span_link and max_start_v2 >= prev_reach_v2 - 1e-9:
             self.span_start_v2 = prev_move.span_start_v2
             self.span_start_d = prev_move.span_start_d + prev_move.move_d
+            self.span_notch_f = prev_move.span_notch_f
+            if self.span_notch_f is None:
+                self.span_notch_f = th._move_notch_freq(prev_move)
         else:
             self.span_start_v2 = max_start_v2
             self.span_start_d = 0.0
+            self.span_notch_f = th._move_notch_freq(self)
 
     def set_junction(self, start_v2, cruise_v2, end_v2):
         # Determine accel, cruise, and decel portions of the move distance
@@ -769,6 +774,8 @@ class ToolHead:
         for move in moves:
             usable = move.is_kinematic_move and self._uses_unified_reach(move)
             if group and usable:
+                first_notch = self._move_notch_freq(group[0])
+                move_notch = self._move_notch_freq(move)
                 new_cap = min(
                     cap,
                     math.sqrt(move.max_cruise_v2),
@@ -783,6 +790,8 @@ class ToolHead:
                 # -- never slower than the per-move plan.
                 if (
                     move.span_link
+                    and abs(move_notch - first_notch)
+                    <= SPAN_NOTCH_REL_TOL * max(move_notch, first_notch)
                     and abs(group[-1].end_v - move.start_v) <= SPAN_V_EPS
                     and new_cap
                     >= max(new_peak, group[0].start_v, move.end_v) - SPAN_V_EPS
@@ -1507,6 +1516,9 @@ class ToolHead:
             return False
         f_move = self._move_notch_freq(move)
         f_prev = self._move_notch_freq(prev_move)
+        f_ref = prev_move.span_notch_f
+        if f_ref is None:
+            f_ref = f_prev
         # Compare with a tolerance rather than exactly. With per-axis notches
         # the target is direction-weighted, so it drifts CONTINUOUSLY along a
         # curve and no two segments of an arc ever agree exactly. The run is
@@ -1517,7 +1529,7 @@ class ToolHead:
         # discretization already leaves. 1% keeps it negligible and lands in
         # the same place as the 2 degree heading limit for a typical per-axis
         # spread.
-        if abs(f_move - f_prev) > SPAN_NOTCH_REL_TOL * max(f_move, f_prev):
+        if abs(f_move - f_ref) > SPAN_NOTCH_REL_TOL * max(f_move, f_ref):
             return False
         # junction_cos_theta is the NEGATED dot product of the unit directions.
         return -junction_cos_theta >= min_cos
