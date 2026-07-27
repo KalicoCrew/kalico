@@ -446,77 +446,6 @@ def test_reach_runway_floor_short_circuit():
     print("  reach reports the exact runway floor for short moves OK")
 
 
-def test_notch_adaptation_is_off_by_default():
-    # No cap -> the strict per-move law, so a short move is pinned.
-    fn = 55.0
-    u0 = 100.0 * 100.0
-    d = 2.0 * 100.0 / fn * 0.5  # half the runway a ramp needs
-    assert (
-        pathplan.jerk_reach_v2(u0, d, A_CONST, 0.0, 650.0, notch_freq=fn) == u0
-    )
-    cons = make_cons(notch=fn)
-    assert cons.notch_max_freq is None
-    assert pathplan.adapted_notch_freq(50.0, 200.0, 50.0, 0.3, cons) == fn
-    print("  runway adaptation is disabled unless a cap is set OK")
-
-
-def test_notch_adaptation_raises_freq_and_speed():
-    fn = 55.0
-    cap = fn * 1.5
-    v0 = 100.0
-    u0 = v0 * v0
-    # Between the two runway floors: too short for f_n (2*v0/f_n) but long
-    # enough for the cap (2*v0/cap), so adaptation is exactly what unblocks it.
-    d = 0.8 * (2.0 * v0 / fn)
-    assert 2.0 * v0 / cap < d < 2.0 * v0 / fn
-    pinned = pathplan.jerk_reach_v2(u0, d, A_CONST, 0.0, 650.0, notch_freq=fn)
-    adapted = pathplan.jerk_reach_v2(
-        u0, d, A_CONST, 0.0, 650.0, notch_freq=fn, notch_max_freq=cap
-    )
-    assert pinned == u0
-    assert adapted > u0, (adapted, u0)
-    # The cap is a hard ceiling: below 2*v0/cap even adaptation cannot help.
-    assert (
-        pathplan.jerk_reach_v2(
-            u0,
-            0.5 * (2.0 * v0 / cap),
-            A_CONST,
-            0.0,
-            650.0,
-            notch_freq=fn,
-            notch_max_freq=cap,
-        )
-        == u0
-    )
-    # A move with room keeps the EXACT target frequency -- adaptation must
-    # never lower the notch or raise it when it is not needed.
-    roomy = make_cons(notch=fn)
-    roomy.notch_max_freq = cap
-    assert pathplan.adapted_notch_freq(0.0, 100.0, 0.0, 50.0, roomy) == fn
-    f_short = pathplan.adapted_notch_freq(50.0, 120.0, 50.0, 0.6, roomy)
-    assert fn < f_short <= cap, f_short
-    print("  runway adaptation raises the notch only when needed OK")
-
-
-def test_notch_adaptation_emits_and_reports():
-    fn = 55.0
-    cons = make_cons(notch=fn)
-    cons.notch_max_freq = fn * 2.0
-    vs, vc, ve, move_d = 60.0, 130.0, 60.0, 1.2
-    segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
-    assert segs
-    check_segs(segs, move_d, vs, ve, "adapt")
-    reasons = pathplan.notch_loss_reasons(vs, vc, ve, move_d, cons)
-    assert "notch_raised" in reasons, reasons
-    for r in reasons:
-        assert r in pathplan.LOSS_REASONS, r
-    # Same move with room to spare must NOT report a raise.
-    assert "notch_raised" not in pathplan.notch_loss_reasons(
-        vs, vc, ve, 60.0, cons
-    )
-    print("  adapted moves emit valid profiles and report notch_raised OK")
-
-
 def main():
     test_zero_is_parked()
     test_apeak_linear_in_dv()
@@ -530,9 +459,6 @@ def main():
     test_notch_loss_reasons()
     test_loss_reasons_are_declared()
     test_reach_runway_floor_short_circuit()
-    test_notch_adaptation_is_off_by_default()
-    test_notch_adaptation_raises_freq_and_speed()
-    test_notch_adaptation_emits_and_reports()
     test_notch_saturated_trapezoid_reaches_requested_peak()
     test_saturated_emitted_zoh_notch_response()
     test_notch_reach_uses_saturated_plateau()

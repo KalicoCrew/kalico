@@ -71,12 +71,6 @@ class Constraints:
                -> SECOND mode frequency (Hz) to null in the same ramp. None/0,
                   or equal to notch_freq, gives the single-zero triangle. See
                   ramp_jerk() for the two-zero law.
-    notch_max_freq
-               -> highest frequency (Hz) the notch may be RAISED to when a move
-                  is too short to fit a ramp at notch_freq. See
-                  adapted_notch_freq(). None/0, or any value <= notch_freq,
-                  disables the adaptation and short moves simply hold their
-                  entry speed.
     """
 
     def __init__(
@@ -87,7 +81,6 @@ class Constraints:
         jerk_dt=0.001,
         notch_freq=None,
         max_da=None,
-        notch_max_freq=None,
         notch_freq2=None,
     ):
         self.a_const = a_const
@@ -96,7 +89,6 @@ class Constraints:
         self.jerk_dt = jerk_dt
         self.notch_freq = notch_freq
         self.max_da = max_da
-        self.notch_max_freq = notch_max_freq
         self.notch_freq2 = notch_freq2
         # Derived pair. A ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), so it
         # lasts notch_period = 1/f_lo + 1/f_hi and covers
@@ -273,87 +265,6 @@ def _sat_rise(dv, accel, f_lo, f_hi):
 SECOND_NOTCH_EPS = 0.01
 
 
-def _pair_for(f_eq, ratio):
-    """Expand an equivalent (harmonic-mean) frequency back into its pair.
-
-    The pair (f_lo, f_hi = ratio*f_lo) with harmonic mean f_eq satisfies
-    2/f_eq = 1/f_lo + 1/f_hi, so f_lo = f_eq*(1 + 1/ratio)/2. ratio == 1.0
-    returns (f_eq, f_eq), i.e. the single-zero case unchanged.
-    """
-    if ratio <= 1.0:
-        return f_eq, f_eq
-    f_lo = 0.5 * f_eq * (1.0 + 1.0 / ratio)
-    return f_lo, f_lo * ratio
-
-
-def ramp_freq_for(v_sum, dist, notch_freq, notch_max_freq):
-    """Smallest notch frequency >= notch_freq whose ramps fit in `dist`.
-
-    A ramp v0 -> v1 under the notch law covers (v0+v1)/f of path distance, so
-    for a total `v_sum` of ramp endpoints the shortest distance the requested
-    f_n can do is v_sum/f_n. When the move is shorter than that, holding f_n
-    means the move cannot change speed AT ALL -- which is what pins the toolhead
-    to ~f_n*segment_length on short-segment geometry.
-
-    Rather than give up on shaping (a hard accel step) or give up on motion
-    (hold the entry speed), raise the frequency to exactly what fits:
-
-        f = clamp(v_sum/dist, notch_freq, notch_max_freq)
-
-    The ramp stays jerk-limited and keeps a shaper zero; the zero just sits
-    above the target mode, so it attenuates that mode less. The degradation is
-    continuous in `dist` -- as the move shrinks the zero slides smoothly up
-    toward the cap, instead of falling off a cliff at v_sum/f_n. f is never
-    lowered below notch_freq, so moves with room still get the exact target.
-
-    notch_max_freq is what keeps this honest: past it the rise time is shorter
-    than the emitter's slice resolution and the "ramp" is a step in all but
-    name. A cap <= notch_freq disables the adaptation entirely.
-    """
-    if not notch_freq:
-        return notch_freq
-    cap = notch_max_freq or 0.0
-    if cap <= notch_freq or dist <= 0.0:
-        return notch_freq
-    need = v_sum / dist
-    if need <= notch_freq:
-        return notch_freq
-    return min(need, cap)
-
-
-def adapted_notch_freq(vs, vc, ve, move_d, cons):
-    """Runway-adapted EQUIVALENT frequency for one whole move (accel + decel).
-
-    Returns an f_eq (see Constraints), not a mode frequency: with two zeros the
-    pair is raised together, keeping their ratio -- and so both zeros' relative
-    placement -- while the ramp shortens to fit. _with_notch() expands it back.
-    """
-    if not cons.notch_freq:
-        return cons.notch_f_eq
-    vc = max(vc, vs, ve)
-    # Accel ramp needs (vs+vc)/f_eq, decel ramp needs (vc+ve)/f_eq.
-    return ramp_freq_for(
-        vs + 2.0 * vc + ve, move_d, cons.notch_f_eq, cons.notch_max_freq
-    )
-
-
-def _with_notch(cons, f_eq):
-    # f_eq is a harmonic-mean frequency; expand it back into the pair at this
-    # move's ratio so both zeros move together.
-    ratio = cons.notch_hi / cons.notch_lo if cons.notch_lo else 1.0
-    f_lo, f_hi = _pair_for(f_eq, ratio)
-    return Constraints(
-        a_const=cons.a_const,
-        v_ceil=cons.v_ceil,
-        max_jerk=cons.max_jerk,
-        jerk_dt=cons.jerk_dt,
-        notch_freq=f_lo,
-        max_da=cons.max_da,
-        notch_max_freq=cons.notch_max_freq,
-        notch_freq2=f_hi,
-    )
-
-
 def jerk_dist(v0, v1, accel, jerk, notch_freq=None, notch_freq2=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
     # S-curve at constant max |accel| and max |jerk| (accel ramps 0 -> peak -> 0
@@ -410,7 +321,6 @@ def jerk_reach_v2(
     jerk,
     v_ceil,
     notch_freq=None,
-    notch_max_freq=None,
     notch_freq2=None,
 ):
     # Max u = v^2 reachable from v0=sqrt(u0) over path-distance `dist` under a
@@ -422,56 +332,37 @@ def jerk_reach_v2(
     #
     # Bisection stays valid under the notch law: distance is (v0+v1)/f while
     # a_peak is unsaturated and 0.5*(v0+v1)*(dv/A + 1/f) past that; both are
-    # monotonically increasing in v1. It stays valid under the runway-adapted
-    # frequency too: raising f only shortens the ramp, and f itself is
-    # non-decreasing in v1, so the distance is still monotone.
+    # monotonically increasing in v1.
     if dist <= 0.0:
         return u0
     if accel <= 0.0 or ((jerk is None or jerk <= 0.0) and not notch_freq):
         return u0 + 2.0 * accel * dist
     v0 = math.sqrt(max(u0, 0.0))
-    # The frequency this move can actually ramp at is chosen per candidate
-    # speed (ramp_freq_for), bounded above by the cap. Everything below uses
-    # f_top for the "is any speed change possible at all" tests, since that is
-    # the most permissive frequency available.
-    f_top = notch_freq
-    ratio = 1.0
+    f_lo = f_hi = 0.0
     if notch_freq:
         # Distances are governed by the pair's HARMONIC mean (Constraints
         # docstring): a ramp costs 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq,
-        # which is the single-notch formula with f_eq == notch_freq. Adaptation
-        # scales the pair, so track the pair through its ratio.
+        # which is the single-notch formula with f_eq == notch_freq.
         f_lo = min(notch_freq, notch_freq2 or notch_freq)
         f_hi = max(notch_freq, notch_freq2 or notch_freq)
-        ratio = f_hi / f_lo
         f_eq = 2.0 / (1.0 / f_lo + 1.0 / f_hi)
-        f_top = f_eq
-        cap = notch_max_freq or 0.0
-        if cap > f_eq:
-            f_top = cap
-        # Even at f_top a ramp costs (v0+v1)/f of distance, and that does not
-        # go to zero as v1 -> v0: its infimum is 2*v0/f_top. A move shorter
-        # than that has no room for any speed change and reach is exactly u0.
-        # This is the common short-move case, and testing it in closed form
-        # skips the whole bisection.
-        if dist < 2.0 * v0 / f_top:
+        # A ramp costs (v0+v1)/f_eq of distance, and that does not go to zero
+        # as v1 -> v0: its infimum is 2*v0/f_eq. A move shorter than that has
+        # no room for any speed change and reach is exactly u0. This is the
+        # common short-move case, and testing it in closed form skips the whole
+        # bisection.
+        if dist < 2.0 * v0 / f_eq:
             return u0
         if jerk:
             tri_dv_max = jerk / (f_lo * f_hi)
             sat_j = accel * f_hi if accel > 0.0 else 0.0
             if jerk < sat_j:
                 v_ceil = min(v_ceil, v0 + tri_dv_max)
-        notch_freq = f_eq
 
     def _fits(v1):
-        f = notch_freq
-        if notch_freq:
-            f = ramp_freq_for(v0 + v1, dist, notch_freq, notch_max_freq)
-        if not f:
-            return jerk_dist(v0, v1, accel, jerk, f) <= dist
-        # f is an f_eq; expand it back into the pair it stands for.
-        f_a, f_b = _pair_for(f, ratio)
-        return jerk_dist(v0, v1, accel, jerk, f_a, f_b) <= dist
+        if not notch_freq:
+            return jerk_dist(v0, v1, accel, jerk) <= dist
+        return jerk_dist(v0, v1, accel, jerk, f_lo, f_hi) <= dist
 
     hi = max(v0, v_ceil)
     if _fits(hi):
@@ -753,18 +644,13 @@ def emit_profile(vs, vc, ve, move_d, cons):
     constant-accel slices whose per-slice changes are jerk bounded; on a move
     too short to jerk-limit, it falls back to the sharp constant-accel profile.
 
-    If the move is too short to ramp at cons.notch_freq, the notch is RAISED to
-    whatever does fit (see adapted_notch_freq) so the move can still change
-    speed. The lookahead applies the identical rule, so the cruise it asked for
-    is the cruise this renders.
+    A move with no room to ramp at cons.notch_freq simply holds its entry speed
+    -- the zero stays parked on the mode. The lookahead applies the identical
+    rule, so the cruise it asked for is the cruise this renders.
     """
     if move_d <= 0.0:
         return []
     if cons.max_jerk or cons.notch_freq:
-        if cons.notch_freq:
-            f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
-            if f_eff != cons.notch_f_eq:
-                cons = _with_notch(cons, f_eff)
         segs = _emit_jerk(vs, vc, ve, move_d, cons)
         if segs is not None:
             return segs
@@ -859,7 +745,6 @@ LOSS_REASONS = frozenset(
     (
         "jerk_clamped",
         "insufficient_runway",
-        "notch_raised",
         "second_notch_saturated",
     )
 )
@@ -877,12 +762,6 @@ def notch_loss_reasons(vs, vc, ve, move_d, cons):
     if not cons.notch_freq:
         return []
     reasons = set()
-    f_eff = adapted_notch_freq(vs, vc, ve, move_d, cons)
-    if f_eff > cons.notch_f_eq:
-        # The move was too short to ramp at the target, so the zero slid up to
-        # fit. Motion is still shaped, just not on the requested mode.
-        reasons.add("notch_raised")
-        cons = _with_notch(cons, f_eff)
     two_zero = cons.notch_hi > cons.notch_lo
     for dv in (abs(vc - vs), abs(vc - ve)):
         if dv <= 1e-12:

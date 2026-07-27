@@ -116,7 +116,6 @@ def make_unified_toolhead(**over):
     th.unified_notch_freq = 55.0
     th.unified_notch_freq_x = 55.0
     th.unified_notch_freq_y = 55.0
-    th.unified_notch_max_freq = 0.0
     th.unified_span_ramps = True
     th.unified_span_max_angle = toolhead.SPAN_MAX_ANGLE
     th.unified_span_min_cos = math.cos(math.radians(th.unified_span_max_angle))

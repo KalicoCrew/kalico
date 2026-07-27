@@ -510,20 +510,11 @@ class ToolHead:
             )
         except ValueError as e:
             raise config.error(str(e))
-        # Runway adaptation. A notched ramp always lasts 2/f_n seconds, so it
+        # Ramp spanning. A notched ramp always lasts 2/f_n seconds, so it
         # needs (v0+v1)/f_n of travel; a move shorter than that cannot change
         # speed at all, which otherwise pins a chain of L-mm segments to about
-        # f_n*L mm/s no matter how high max_velocity/max_accel are. When that
-        # happens the notch can be RAISED to whatever does fit, up to this cap,
-        # so the move still moves. That is a TRADE: the zero leaves the mode, so
-        # ringing comes back roughly as sinc^2(pi*f_n/f) -- about 40% of
-        # unshaped at 2*f_n and 80% at 4*f_n. Hence 0 (off) is the default and
-        # useful values are just above unified_notch_freq, not far above it.
-        self.unified_notch_max_freq = config.getfloat(
-            "unified_notch_max_freq", 0.0, minval=0.0
-        )
-        # Ramp spanning. The other answer to the same runway problem, and the
-        # one that does NOT move the zero: let a single notched ramp cover a
+        # f_n*L mm/s no matter how high max_velocity/max_accel are. The answer
+        # that does NOT move the zero: let a single notched ramp cover a
         # run of consecutive near-collinear moves, so the runway is the run's
         # length instead of one segment's. The ramp keeps its shape, so the
         # zero stays exactly on unified_notch_freq; only the requirement that
@@ -548,7 +539,6 @@ class ToolHead:
         self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
         self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
         self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
-        self.orig_cfg["unified_notch_max_freq"] = self.unified_notch_max_freq
         self.orig_cfg["unified_span_ramps"] = self.unified_span_ramps
         self.orig_cfg["unified_span_max_angle"] = self.unified_span_max_angle
         self._unified_warned = set()
@@ -1470,25 +1460,8 @@ class ToolHead:
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             max_da=max_da,
-            notch_max_freq=self._notch_freq_cap(),
             notch_freq2=notch2,
         )
-
-    def _notch_freq_cap(self):
-        # Ceiling the runway adaptation may raise the notch to. 0 = OFF: short
-        # moves hold their entry speed rather than being shaped on a wrong
-        # frequency. This is the default on purpose -- raising the zero away
-        # from the mode restores ringing fast (see docs/Jerk_Limiting.md), so
-        # adaptation is a deliberate speed-for-quality trade, not a free win.
-        # Also bounded by the emitter's slice resolution: a rise time shorter
-        # than a few jerk_dt is a step in all but name.
-        cap = getattr(self, "unified_notch_max_freq", 0.0)
-        if not cap:
-            return 0.0
-        dt = self.unified_jerk_dt
-        if dt > 0.0:
-            cap = min(cap, 0.25 / dt)
-        return cap
 
     def _z_couples_xy(self):
         # Does a Z-only cartesian move drive the same actuators as X or Y?
@@ -1596,7 +1569,6 @@ class ToolHead:
             jerk,
             self.max_velocity,
             notch_freq=cons.notch_freq,
-            notch_max_freq=cons.notch_max_freq,
             notch_freq2=cons.notch_freq2,
         )
         move._unified_reach_cache = (key, res)
@@ -1615,7 +1587,6 @@ class ToolHead:
         "unified_notch_freq",
         "unified_notch_freq_x",
         "unified_notch_freq_y",
-        "unified_notch_max_freq",
         "unified_span_ramps",
         "unified_span_max_angle",
     )
@@ -1831,7 +1802,6 @@ class ToolHead:
                 "unified_notch_freq: %.6f" % self.unified_notch_freq,
                 "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
                 "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
-                "unified_notch_max_freq: %.6f" % self.unified_notch_max_freq,
                 "unified_span_ramps: %d" % self.unified_span_ramps,
                 "unified_span_max_angle: %.6f" % self.unified_span_max_angle,
             )
@@ -1870,9 +1840,7 @@ class ToolHead:
         "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes, nulled together "
         "in one trapezoidal ramp (0 = fall back to NOTCH_FREQ); "
-        "NOTCH_MAX_FREQ lets short "
-        "moves raise the notch to fit their runway (Hz, 0 = off, trades "
-        "ringing for throughput); SPAN_RAMPS=0/1 lets one ramp span a run of "
+        "SPAN_RAMPS=0/1 lets one ramp span a run of "
         "near-collinear moves so short segments get a runway without moving "
         "the zero; SPAN_MAX_ANGLE caps the heading change one ramp may span "
         "(degrees, larger trades ringing on the turning axis for spanning "
@@ -1886,7 +1854,6 @@ class ToolHead:
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
         notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
-        notch_max = gcmd.get_float("NOTCH_MAX_FREQ", None, minval=0.0)
         span = gcmd.get_int("SPAN_RAMPS", None, minval=0, maxval=1)
         span_ang = gcmd.get_float(
             "SPAN_MAX_ANGLE", None, minval=0.0, maxval=90.0
@@ -1922,8 +1889,6 @@ class ToolHead:
                 self.unified_notch_freq_y = notch_y
             if max_da is not None:
                 self.unified_max_da = max_da
-            if notch_max is not None:
-                self.unified_notch_max_freq = notch_max
             if span is not None:
                 self.unified_span_ramps = bool(span)
             if span_ang is not None:
@@ -1946,7 +1911,7 @@ class ToolHead:
         gcmd.respond_info(
             "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
             " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
-            " notch_max_freq=%.2f span_ramps=%d span_max_angle=%.2f"
+            " span_ramps=%d span_max_angle=%.2f"
             % (
                 self.unified_emit,
                 self.unified_max_jerk,
@@ -1954,7 +1919,6 @@ class ToolHead:
                 self.unified_notch_freq_x,
                 self.unified_notch_freq_y,
                 self.unified_max_da,
-                self.unified_notch_max_freq,
                 self.unified_span_ramps,
                 self.unified_span_max_angle,
             )

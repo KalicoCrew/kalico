@@ -1991,7 +1991,7 @@ available if the kinematic supports it.
 #### SET_UNIFIED
 `SET_UNIFIED [ENABLE=<0|1>] [MAX_JERK=<value>] [MAX_DA=<value>]
 [NOTCH_FREQ=<value>] [NOTCH_FREQ_X=<value>] [NOTCH_FREQ_Y=<value>]
-[NOTCH_MAX_FREQ=<value>] [SPAN_RAMPS=<0|1>] [SPAN_MAX_ANGLE=<value>]`:
+[SPAN_RAMPS=<0|1>] [SPAN_MAX_ANGLE=<value>]`:
 This command changes the experimental jerk-limited planner settings at
 runtime. Pending moves are flushed before changes are applied. `ENABLE`
 toggles jerk-limited emission for normal queued moves. `MAX_JERK` sets the
@@ -2003,9 +2003,7 @@ or both zero, matching the config-time rule. Setting them to two *different*
 values makes each ramp a trapezoid that nulls both modes at once, on both axes
 and in every direction; setting them equal is identical to `NOTCH_FREQ`, which
 makes flipping between the two a direct A/B. Non-zero notch frequencies must be
-at least 5 Hz. `NOTCH_MAX_FREQ` lets moves too short to ramp at `NOTCH_FREQ`
-raise the notch to whatever fits (`0` disables it); this trades ringing for
-throughput, so it is useful for A/B testing a value just above `NOTCH_FREQ`.
+at least 5 Hz.
 `SPAN_RAMPS` lets one ramp span a run of near-collinear moves so short segments
 get a runway without moving the zero; toggling it is the cheapest A/B for
 whether the short-segment speed ceiling is what is limiting a print.

@@ -271,22 +271,13 @@ max_accel:
 #   modes it helps more, reporting the loss. Setting the two equal is identical
 #   to setting unified_notch_freq. The default is to use unified_notch_freq for
 #   both axes.
-#unified_notch_max_freq: 0
-#   Highest frequency in Hz the notch may be raised to on moves too short to
-#   ramp at unified_notch_freq. 0 disables this and short moves hold their entry
-#   speed instead. Enabling it raises the throughput ceiling to
-#   unified_notch_max_freq * segment_length, but the zero then sits off the mode
-#   and ringing returns as sinc^2(pi * f_n / f): roughly 4% of unshaped at 1.2x
-#   unified_notch_freq, 17% at 1.5x, and 41% at 2x. Useful values are just above
-#   unified_notch_freq; far above it is equivalent to disabling shaping on short
-#   moves. Also capped internally at 1 / (4 * unified_jerk_dt), past which the
-#   emitted slices cannot resolve a ramp. The default is 0.
 #unified_span_ramps: True
 #   Allow one jerk-limited ramp to span a run of consecutive near-collinear
 #   moves instead of starting and ending at zero acceleration inside every move.
-#   This is the other answer to the same short-segment problem
-#   unified_notch_max_freq addresses, and unlike that one it does NOT move the
-#   spectral zero: the ramp keeps its shape and its rise time, so it still
+#   A move too short to ramp at unified_notch_freq cannot change speed at all,
+#   which pins a chain of L-mm segments to about unified_notch_freq * L mm/s.
+#   Spanning fixes that WITHOUT moving the spectral zero: the ramp keeps its
+#   shape and its rise time, so it still
 #   cancels unified_notch_freq exactly. The runway becomes the run's length
 #   rather than one segment's, which lifts a 0.2 mm segment chain at 55 Hz from
 #   about 11 mm/s to the requested feedrate. A run breaks at any direction

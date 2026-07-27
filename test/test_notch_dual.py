@@ -21,8 +21,8 @@
 # twins (jerk_dist, jerk_reach_v2) agree with the integrator; the emitter's
 # distance invariant survives; accel saturation, which leaves room for only one
 # zero, spends it on whichever mode it helps more and reports the loss only when
-# a mode is really left excited; runway adaptation raises both zeros together,
-# preserving their ratio.
+# a mode is really left excited; and the pair's harmonic mean f_eq, which every
+# distance formula is written in terms of, matches the measured ramp.
 #
 # Run: klippy-env/bin/python -m pytest test/test_notch_dual.py
 import math
@@ -47,7 +47,6 @@ def cons(
     a_const=A_BIG,
     max_jerk=None,
     jerk_dt=DT,
-    notch_max_freq=None,
 ):
     return pathplan.Constraints(
         a_const=a_const,
@@ -56,7 +55,6 @@ def cons(
         jerk_dt=jerk_dt,
         notch_freq=f_lo,
         notch_freq2=f_hi,
-        notch_max_freq=notch_max_freq,
     )
 
 
@@ -186,9 +184,7 @@ def test_lookahead_twins_agree_with_the_integrator():
 
     # And reach must be the exact inverse of distance.
     for dist in (0.5, 3.13, 5.0, 20.0):
-        u = pathplan.jerk_reach_v2(
-            0.0, dist, A_BIG, None, 1e9, F_LO, None, F_HI
-        )
+        u = pathplan.jerk_reach_v2(0.0, dist, A_BIG, None, 1e9, F_LO, F_HI)
         v = math.sqrt(u)
         need = pathplan.jerk_dist(0.0, v, A_BIG, None, F_LO, F_HI)
         assert need <= dist + 1e-6, (dist, v, need)
@@ -199,9 +195,7 @@ def test_lookahead_twins_agree_with_the_integrator():
 def test_reach_is_monotone_in_distance():
     prev = 0.0
     for dist in [0.1 * i for i in range(1, 200)]:
-        u = pathplan.jerk_reach_v2(
-            4.0, dist, A_BIG, None, 1e9, F_LO, None, F_HI
-        )
+        u = pathplan.jerk_reach_v2(4.0, dist, A_BIG, None, 1e9, F_LO, F_HI)
         assert u >= prev - 1e-9, (dist, u, prev)
         prev = u
     print("  reachable v^2 is non-decreasing in distance OK")
@@ -305,45 +299,26 @@ def test_saturation_is_silent_when_it_costs_nothing():
     print("  saturation that costs no zero is not reported OK")
 
 
-def test_runway_adaptation_raises_both_zeros_together():
-    # A move too short to fit the ramp may raise the notch to whatever fits.
-    # With a pair, raising only one would silently change which modes are
-    # targeted; the pair has to scale as a unit so their RATIO is preserved.
-    c = cons(notch_max_freq=400.0)
-    ratio = F_HI / F_LO
-    f_eq0 = c.notch_f_eq
-    short = 0.4
-    f_eq = pathplan.adapted_notch_freq(0.0, 200.0, 0.0, short, c)
-    assert f_eq > f_eq0, (f_eq, f_eq0)
-    raised = pathplan._with_notch(c, f_eq)
-    assert abs(raised.notch_hi / raised.notch_lo - ratio) < 1e-9
-    assert abs(raised.notch_f_eq - f_eq) < 1e-9
-    assert raised.notch_lo > c.notch_lo and raised.notch_hi > c.notch_hi
-    reasons = pathplan.notch_loss_reasons(0.0, 200.0, 0.0, short, c)
-    assert "notch_raised" in reasons, reasons
-    # The raised pair still nulls the (now higher) pair it names.
-    pulse, _ = ramp(0.0, 40.0, raised)
-    assert residual(pulse, raised.notch_lo) < 5e-3
-    assert residual(pulse, raised.notch_hi) < 5e-3
-    print(
-        "  runway adaptation raised (%.1f, %.1f) -> (%.1f, %.1f) Hz, ratio kept"
-        % (c.notch_lo, c.notch_hi, raised.notch_lo, raised.notch_hi)
-    )
-
-
-def test_pair_round_trips_through_f_eq():
-    # Distances everywhere in the planner are expressed as (v0+v1)/f_eq, so the
-    # pair has to survive the trip through its harmonic mean unchanged.
+def test_f_eq_is_the_harmonic_mean_of_the_pair():
+    # Every distance in the planner is written (v0+v1)/f_eq and every duration
+    # as notch_period, which is what makes the two-zero formulas textually
+    # identical to the single-zero ones. Pin both against a measured ramp.
     for f_lo, f_hi in ((55.0, 75.0), (30.0, 31.0), (40.0, 160.0), (55.0, 55.0)):
         c = pathplan.Constraints(
-            a_const=A_BIG, notch_freq=f_lo, notch_freq2=f_hi
+            a_const=A_BIG, jerk_dt=DT, notch_freq=f_lo, notch_freq2=f_hi
         )
-        back_lo, back_hi = pathplan._pair_for(
-            c.notch_f_eq, c.notch_hi / c.notch_lo
+        assert abs(c.notch_period - (1.0 / f_lo + 1.0 / f_hi)) < 1e-12
+        assert abs(c.notch_f_eq - 2.0 / (1.0 / f_lo + 1.0 / f_hi)) < 1e-12
+        v0, v1 = 40.0, 140.0
+        _pulse, dist = ramp(v0, v1, c)
+        # 1% is the zero-order-hold discretization of the integrated ramp, the
+        # same slack the jerk_dist agreement check above carries.
+        assert abs(dist - (v0 + v1) / c.notch_f_eq) < 1e-2 * dist, (
+            f_lo,
+            f_hi,
+            dist,
         )
-        assert abs(back_lo - f_lo) < 1e-9, (f_lo, f_hi, back_lo)
-        assert abs(back_hi - f_hi) < 1e-9, (f_lo, f_hi, back_hi)
-    print("  (f_lo, f_hi) -> f_eq -> (f_lo, f_hi) round-trips OK")
+    print("  notch_period / f_eq match the measured ramp OK")
 
 
 def test_notch_unset_is_untouched():
