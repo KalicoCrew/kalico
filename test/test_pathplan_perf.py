@@ -62,9 +62,7 @@ def bench_emit_short(iterations=400):
     for i in range(iterations):
         vs = ve = 0.0
         vc = 5.0 + float(i % 16)
-        ramp_d = pathplan.notch_dist(
-            0.0, vc, cons.a_const, cons.notch_freq
-        )
+        ramp_d = pathplan.notch_dist(0.0, vc, cons.a_const, cons.notch_freq)
         move_d = 2.0 * ramp_d + 0.01
         segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
         assert segs, (vs, vc, ve, move_d)

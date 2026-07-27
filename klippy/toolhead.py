@@ -854,7 +854,9 @@ class ToolHead:
                     rendered, [m.move_d for m in group]
                 )
                 if not all(buckets):
-                    raise AssertionError("validated span produced an empty move")
+                    raise AssertionError(
+                        "validated span produced an empty move"
+                    )
                 span_buckets.update(
                     (id(member), bucket)
                     for member, bucket in zip(group, buckets)
@@ -865,11 +867,7 @@ class ToolHead:
                         group[-1],
                         pathplan.notch_loss_reasons(vs, vc, ve, cons),
                     )
-            elif (
-                segs is None
-                and self.unified_emit
-                and move.is_kinematic_move
-            ):
+            elif segs is None and self.unified_emit and move.is_kinematic_move:
                 cons = self._pathplan_cons(move)
                 segs = (
                     pathplan._render_validated_profile(

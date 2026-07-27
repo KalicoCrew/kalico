@@ -257,6 +257,7 @@ def _sat_rise(dv, accel, f_lo, f_hi):
 # noise.
 SECOND_NOTCH_EPS = 0.01
 
+
 def notch_dist(v0, v1, accel, notch_freq, notch_freq2=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
     # notch profile (accel ramps 0 -> peak -> 0, so a(t) is continuous in the
@@ -320,6 +321,7 @@ def notch_reach_v2(
     # short-move case, and testing it in closed form skips the whole bisection.
     if dist < 2.0 * v0 / f_eq:
         return u0
+
     def _fits(v1):
         return notch_dist(v0, v1, accel, f_lo, f_hi) <= dist
 
@@ -646,11 +648,7 @@ def split_segments(segs, lengths):
 
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
-LOSS_REASONS = frozenset(
-    (
-        "second_notch_saturated",
-    )
-)
+LOSS_REASONS = frozenset(("second_notch_saturated",))
 
 
 def notch_loss_reasons(vs, vc, ve, cons):

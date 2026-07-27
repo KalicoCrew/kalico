@@ -115,7 +115,9 @@ def span_buckets(th, moves):
         buckets = toolhead.pathplan.split_segments(
             segs, [m.move_d for m in group]
         )
-        out.update((id(member), bucket) for member, bucket in zip(group, buckets))
+        out.update(
+            (id(member), bucket) for member, bucket in zip(group, buckets)
+        )
     return out
 
 

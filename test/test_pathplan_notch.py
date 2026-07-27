@@ -243,9 +243,7 @@ def test_saturated_emitted_zoh_notch_response():
 def test_notch_reach_uses_saturated_plateau():
     accel = 3000.0
     notch = 55.0
-    u = pathplan.notch_reach_v2(
-        0.0, 1000.0, accel, 500.0, notch_freq=notch
-    )
+    u = pathplan.notch_reach_v2(0.0, 1000.0, accel, 500.0, notch_freq=notch)
     v = math.sqrt(u)
     assert v > accel / notch + 1.0, (v, accel / notch)
     print("  notch reach uses designed saturated plateau OK")
@@ -378,8 +376,7 @@ def test_reach_runway_floor_short_circuit():
         assert opened > u0, (v0, opened, u0)
     # From rest there is no floor: any distance buys some speed.
     assert (
-        pathplan.notch_reach_v2(0.0, 0.05, A_CONST, 650.0, notch_freq=fn)
-        > 0.0
+        pathplan.notch_reach_v2(0.0, 0.05, A_CONST, 650.0, notch_freq=fn) > 0.0
     )
     print("  reach reports the exact runway floor for short moves OK")
 

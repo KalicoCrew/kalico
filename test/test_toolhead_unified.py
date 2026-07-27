@@ -292,9 +292,12 @@ def test_infeasible_batch_fails_before_emission():
     )
     first.start_v = 0.0
     first.cruise_v = first.end_v = 100.0
-    move_d = toolhead.pathplan.notch_dist(
-        200.0, 0.0, th.max_accel, th.unified_notch_freq
-    ) * 0.8
+    move_d = (
+        toolhead.pathplan.notch_dist(
+            200.0, 0.0, th.max_accel, th.unified_notch_freq
+        )
+        * 0.8
+    )
     second = toolhead.Move(
         th,
         [100.0, 0.0, 0.0, 1.0],
@@ -311,7 +314,9 @@ def test_infeasible_batch_fails_before_emission():
             emitted.append(("axis", args))
 
     th.extra_axes = [CountingAxis()]
-    th.lookahead = types.SimpleNamespace(flush=lambda lazy=False: [first, second])
+    th.lookahead = types.SimpleNamespace(
+        flush=lambda lazy=False: [first, second]
+    )
     th.special_queuing_state = "NeedPrime"
     th.print_time = 123.0
     th.trapq = object()

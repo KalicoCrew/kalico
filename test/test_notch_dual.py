@@ -208,10 +208,7 @@ def test_emitted_profiles_keep_both_zeros_and_the_invariants():
     coarse = 2e-4
     for a_const in (A_BIG, 20000.0):
         c = cons(a_const=a_const, jerk_dt=coarse)
-        d = (
-            2.0 * pathplan.notch_dist(0.0, 200.0, a_const, F_LO, F_HI)
-            + 5.0
-        )
+        d = 2.0 * pathplan.notch_dist(0.0, 200.0, a_const, F_LO, F_HI) + 5.0
         segs = pathplan.emit_profile(0.0, 200.0, 0.0, d, c)
         check_segs(segs, d, 0.0, 0.0, "dual a=%g" % a_const)
         pulse = profile_pulse(segs)
@@ -229,7 +226,9 @@ def test_emitted_profiles_keep_both_zeros_and_the_invariants():
                     pathplan.emit_profile(10.0, 200.0, 30.0, d, c)
                 except pathplan.InfeasibleProfile:
                     continue
-                raise AssertionError("infeasible dual notch did not fail closed")
+                raise AssertionError(
+                    "infeasible dual notch did not fail closed"
+                )
             segs = pathplan.emit_profile(10.0, 200.0, 30.0, d, c)
             check_segs(segs, d, 10.0, 30.0, "dual d=%g" % d)
             assert abs(sum(s[6] for s in segs) - d) <= 1e-6 * d
@@ -297,9 +296,7 @@ def test_saturation_is_silent_when_it_costs_nothing():
     # A dv small enough not to saturate at all is silent for the plain reason.
     small = 40.0
     assert small * F_LO < a_const
-    d_small = (
-        2.0 * pathplan.notch_dist(0.0, small, a_const, F_LO, F_HI) + 5.0
-    )
+    d_small = 2.0 * pathplan.notch_dist(0.0, small, a_const, F_LO, F_HI) + 5.0
     assert pathplan.notch_loss_reasons(0.0, small, 0.0, c) == []
     print("  saturation that costs no zero is not reported OK")
 
