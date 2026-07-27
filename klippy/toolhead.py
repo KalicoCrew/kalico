@@ -220,8 +220,6 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 SPAN_MAX_ANGLE = 2.0
 # Largest RELATIVE difference in notch target between two moves of one run.
 SPAN_NOTCH_REL_TOL = 0.01
-# Velocity continuity tolerance (mm/s) for joining two moves into one span.
-SPAN_V_EPS = 1e-6
 
 
 # Class to track a list of pending move requests and to facilitate
@@ -264,9 +262,14 @@ class LookAheadQueue:
         next_move = None
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            if next_move is None or not next_move.span_link:
+            if next_move is None or not next_move.span_start_d:
                 # No shared ramp across this junction: the decel run this move
                 # feeds ends where the next move begins.
+                #
+                # Gated on span_start_d, not span_link, so the decel run is the
+                # SAME chain _span_groups renders and the accel clamp sized
+                # against. span_link only says two moves MAY share a ramp;
+                # span_start_d says the planner actually put them in one run.
                 span_end_v2 = next_end_v2
                 span_after_d = 0.0
             span_total_d = span_after_d + move.move_d
@@ -295,7 +298,17 @@ class LookAheadQueue:
                         update_flush_count
                         and peak_cruise_v2
                         and (
-                            not unified or start_v2 >= move.max_start_v2 - 1e-9
+                            not unified
+                            or (
+                                start_v2 >= move.max_start_v2 - 1e-9
+                                # ... and this move inherits no runway from its
+                                # predecessors. queue[:i] is emitted now and
+                                # queue[i:] replanned later, so splitting where
+                                # span_start_d > 0 hands the emitter a move
+                                # whose cruise was clamped against runway that
+                                # stayed behind in the queue.
+                                and not move.span_start_d
+                            )
                         )
                     ):
                         # A lazy flush emits queue[:i] now and replans the rest
@@ -743,45 +756,45 @@ class ToolHead:
         return t
 
     def _span_groups(self, moves):
-        # Split the flush batch into runs of moves that may share one ramp.
-        # Yields (group, peak_v, cap_v): the moves, the highest cruise any of
-        # them planned, and the highest speed the run may pass through without
-        # violating a member's own feedrate limit or an interior junction.
+        # Split the flush batch into the runs the LOOKAHEAD already planned.
+        # Yields (group, peak_v, cap_v).
+        #
+        # Membership is NOT re-derived here. span_start_d is the planner's own
+        # record of "this move inherits runway from its predecessor", and the
+        # cruise clamp sized every one of these moves against exactly that run
+        # (see LookAheadQueue.flush and Move.calc_junction). Deciding
+        # membership a second time by different rules is what made the emitter
+        # render a different set of moves than the clamp had assumed: the plan
+        # was feasible over the run the planner had in mind and impossible over
+        # the group the emitter built, so validation shut the printer down --
+        # 47 such moves in one 2 h print, every one of them a move with
+        # inherited runway. One source of truth makes that unrepresentable
+        # instead of patching its symptoms one at a time.
+        #
+        # The structural tests the old code repeated here -- shared direction,
+        # matching notch target, a junction that does not bind -- are all
+        # already conditions on span_start_d being carried forward at all.
+        # Velocity continuity inside the run needs no check because the run is
+        # rendered as ONE profile and then split by distance, which supplies
+        # the interior speeds itself.
         if not self.unified_span_ramps or not self.unified_emit:
             return
         group = []
         peak = cap = 0.0
         for move in moves:
             usable = move.is_kinematic_move and self._uses_unified_reach(move)
-            if group and usable:
-                first_notch = self._move_notch_freq(group[0])
-                move_notch = self._move_notch_freq(move)
-                new_cap = min(
-                    cap,
-                    math.sqrt(move.max_cruise_v2),
-                    math.sqrt(move.max_junction_v2),
-                )
-                new_peak = max(peak, move.cruise_v)
-                # The run is rendered as ONE trapezoid, so every speed it
-                # passes through must be allowed everywhere along it: the cap
-                # has to clear the run's own planned peak as well as the start
-                # and end speeds the neighbouring moves expect. When it does
-                # not, the run breaks here and each side is emitted on its own
-                # -- never slower than the per-move plan.
-                if (
-                    move.span_link
-                    and abs(move_notch - first_notch)
-                    <= SPAN_NOTCH_REL_TOL * max(move_notch, first_notch)
-                    and abs(group[-1].end_v - move.start_v) <= SPAN_V_EPS
-                    and new_cap
-                    >= max(new_peak, group[0].start_v, move.end_v) - SPAN_V_EPS
-                ):
-                    group.append(move)
-                    cap = new_cap
-                    peak = new_peak
-                    continue
-                if len(group) > 1:
-                    yield group, peak, cap
+            if group and usable and move.span_start_d > 0.0:
+                group.append(move)
+                cap = min(cap, math.sqrt(move.max_cruise_v2))
+                peak = max(peak, move.cruise_v)
+                continue
+            # The run ends here. Yield it whatever ENDED it -- a run is just as
+            # often ended by a move that is not usable at all as by one that
+            # is. A bed-mesh-split travel is bookended by G10/G11, which are
+            # extruder-only and so not kinematic; closing the group only on the
+            # usable path silently DISCARDED every such run.
+            if len(group) > 1:
+                yield group, peak, cap
             group = [move] if usable else []
             if usable:
                 cap = min(math.sqrt(move.max_cruise_v2), self.max_velocity)
@@ -1533,16 +1546,22 @@ class ToolHead:
         f_ref = prev_move.span_notch_f
         if f_ref is None:
             f_ref = f_prev
-        # Compare with a tolerance rather than exactly. With per-axis notches
-        # the target is direction-weighted, so it drifts CONTINUOUSLY along a
-        # curve and no two segments of an arc ever agree exactly. The run is
-        # rendered at the first move's target, so what matters is how far the
-        # others sit from it: a triangular pulse whose zero is off by a
-        # fraction e leaves about sinc^2(pi*(1+e)) at the mode -- 1e-4 at 1%
-        # and 2e-3 at 5%, both under the ~0.0066 the emitter's own
-        # discretization already leaves. 1% keeps it negligible and lands in
-        # the same place as the 2 degree heading limit for a typical per-axis
-        # spread.
+        # Compare with a tolerance rather than exactly.
+        #
+        # On a machine whose X and Y modes both land on the same actuators this
+        # never fires: the two-zero ramp nulls both modes on every axis, so the
+        # target no longer depends on heading and every move of a curve agrees
+        # EXACTLY. (The single-zero blend it replaced put the zero at a
+        # direction-weighted mean, which crept at every segment -- that is what
+        # this tolerance was originally sized for.) It is kept because
+        # _move_notch_pair is still per-move: on kinematics where Z couples
+        # into X/Y the pair can genuinely differ between moves.
+        #
+        # The run is rendered at the first move's target, so what matters is
+        # how far the others sit from it: a triangular pulse whose zero is off
+        # by a fraction e leaves about sinc^2(pi*(1+e)) at the mode -- 1e-4 at
+        # 1% and 2e-3 at 5%, both under the ~0.0066 the emitter's own
+        # discretization already leaves.
         if abs(f_move - f_ref) > SPAN_NOTCH_REL_TOL * max(f_move, f_ref):
             return False
         # junction_cos_theta is the NEGATED dot product of the unit directions.

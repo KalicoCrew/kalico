@@ -474,6 +474,107 @@ def test_lazy_flush_keeps_velocity_continuous():
         )
 
 
+def test_run_ended_by_a_nonkinematic_move_is_still_spanned():
+    # Regression: red shut down mid-print with
+    #   InfeasibleProfile: start=275.009495 cruise=400.000000 end=400.000000
+    #                      distance=5.000081
+    # on a G1 F24000 travel that bed_mesh had split into 5 mm segments.
+    #
+    # _span_groups() closed a run ONLY on the "usable" path, so a run ended by
+    # a move that is not kinematic at all was dropped on the floor instead of
+    # being yielded. Travels are bookended by G10/G11 -- extruder-only, hence
+    # not kinematic -- so EVERY bed-mesh-split travel hit it. The lookahead had
+    # already clamped those moves against the whole run's runway, so losing the
+    # span left one 5 mm segment carrying 275 -> 400 mm/s, which needs
+    # 0.5*(275+400)*(2/55) = 12.3 mm of path and has no notched profile at all.
+    th = make_toolhead(span=True)
+    moves = plan_chain(th, 12)
+    assert all(m.is_kinematic_move for m in moves)
+    spanned = sum(len(g) for g, _, _ in th._span_groups(moves))
+    assert spanned, "no span formed at all; test proves nothing"
+
+    # Same chain, but the run is now terminated by a non-kinematic move --
+    # exactly what a retract does at the end of a travel.
+    tail = moves[-1]
+    tail.is_kinematic_move = False
+    ended = sum(len(g) for g, _, _ in th._span_groups(moves))
+    assert ended >= spanned - 1, (
+        "a run ended by a non-kinematic move was discarded instead of "
+        "yielded: %d moves spanned, %d after the run is closed by a retract"
+        % (spanned, ended)
+    )
+    print(
+        "  run closed by a non-kinematic move still spans"
+        " (%d moves, %d with a trailing retract) OK" % (spanned, ended)
+    )
+
+
+def test_lazy_flush_never_emits_an_unrealisable_move():
+    # Regression: red shut down mid-print with
+    #   InfeasibleProfile: start=275.009495 cruise=400.000000 end=400.000000
+    #                      distance=5.000081
+    # on a G1 F24000 travel that bed_mesh had split into 5 mm segments.
+    #
+    # The clamp had let cruise reach 400 mm/s because the RUN had 38 mm of
+    # runway, then a lazy flush split the run and handed the emitter one 5 mm
+    # segment carrying the whole 275 -> 400 change. A notched ramp lasts
+    # 1/f_lo + 1/f_hi no matter what, so that needs 0.5*(275+400)*(2/55) =
+    # 12.3 mm of path -- no acceleration limit can buy it back, and with
+    # max_accel this high the notch is the ONLY thing limiting accel.
+    #
+    # The invariant: whatever a lazy flush emits, _process_lookahead must be
+    # able to validate. Here that is asserted directly against the batches.
+    pathplan = toolhead.pathplan
+    th = make_toolhead(span=True)
+    th.max_accel = 100000.0  # red's config: notch-limited, not accel-limited
+    th.max_velocity = 650.0
+    th.junction_deviation = 0.5 * th.square_corner_velocity**2 / th.max_accel
+    seg, feed = 5.0, 400.0
+
+    laq = toolhead.LookAheadQueue()
+    pos = [0.0, 0.0, 0.0, 0.0]
+    batches = []
+    for _ in range(400):
+        nxt = [pos[0] + seg, 0.0, 0.0, 0.0]
+        move = toolhead.Move(th, pos, nxt, feed)
+        pos = nxt
+        if laq.add_move(move):
+            got = laq.flush(lazy=True)
+            if got:
+                batches.append(got)
+    got = laq.flush()
+    if got:
+        batches.append(got)
+    assert len(batches) > 1, "no lazy split happened; test proves nothing"
+
+    checked = 0
+    for bi, batch in enumerate(batches):
+        # Exactly what _process_lookahead does before touching print_time.
+        plans = th._span_plans(batch)
+        for move in batch:
+            if id(move) in plans or not move.is_kinematic_move:
+                continue
+            try:
+                pathplan.validate_profile(
+                    move.start_v,
+                    move.cruise_v,
+                    move.end_v,
+                    move.move_d,
+                    th._pathplan_cons(move),
+                )
+            except pathplan.InfeasibleProfile as e:
+                raise AssertionError(
+                    "lazy flush emitted a move the emitter cannot render "
+                    "(batch %d, span_start_d=%.3f): %s"
+                    % (bi, move.span_start_d, e)
+                )
+            checked += 1
+    print(
+        "  lazy flush emits only realisable moves: %d batches, %d validated OK"
+        % (len(batches), checked)
+    )
+
+
 def test_corner_breaks_the_span():
     # A 60 degree turn is far outside unified_span_max_angle: the run must
     # not carry the ramp through it, so the moves on each side belong to
@@ -558,13 +659,33 @@ def test_span_notch_target_is_constant_along_a_curve():
     assert len(targets) == 1, ("notch target varies along the curve", targets)
     pairs = {th._move_notch_pair(m) for m in moves}
     assert pairs == {(55.0, 70.0)}, pairs
-    # And so the curve is not split by the notch check at all.
+    # And so the curve is not split by the notch target at all: every move
+    # still ends up in a span, and every split is a RUN boundary rather than a
+    # notch decision.
+    #
+    # This used to assert one group for the whole curve. Grouping now follows
+    # the run the lookahead actually planned (span_start_d), so the constant-
+    # cruise middle -- where there is no ramp to carry and spanning buys
+    # nothing -- is not welded into the accel run. Demanding one group here
+    # would be demanding exactly the over-grouping that let the clamp size a
+    # move against a run the emitter then rendered differently.
     groups = list(th._span_groups(moves))
-    assert len(groups) == 1, (
-        "constant notch target still split the curve",
-        len(groups),
+    covered = sum(len(g) for g, _peak, _cap in groups)
+    assert covered == len(moves), (
+        "spanning left moves behind on the curve",
+        covered,
+        len(moves),
     )
-    assert len(groups[0][0]) == len(moves)
+    for group, _peak, _cap in groups:
+        assert group[0].span_start_d == 0.0, (
+            "a span started mid-run, so the group is not the planner's run",
+            group[0].span_start_d,
+        )
+        for member in group[1:]:
+            assert member.span_start_d > 0.0, (
+                "a move with no inherited runway was welded into a run",
+                member.span_start_d,
+            )
     # The pinning that bounded the old drift is still enforced, so it stays
     # correct if a heading-dependent target is ever reintroduced.
     for group, _peak, _cap in groups:
@@ -654,6 +775,8 @@ def main():
     test_turning_axis_keeps_its_null()
     test_span_angle_limit_is_enforced()
     test_lazy_flush_keeps_velocity_continuous()
+    test_run_ended_by_a_nonkinematic_move_is_still_spanned()
+    test_lazy_flush_never_emits_an_unrealisable_move()
     test_corner_breaks_the_span()
     test_span_follows_a_curve()
     test_span_notch_target_is_constant_along_a_curve()
