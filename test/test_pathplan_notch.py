@@ -446,6 +446,59 @@ def test_reach_runway_floor_short_circuit():
     print("  reach reports the exact runway floor for short moves OK")
 
 
+def test_emit_fallback_raise_is_bounded():
+    # A move whose BOTH endpoints are pinned by its neighbours may not fit its
+    # ramp -- the lookahead guarantees it does (jerk_reach_v2 caps entry speed
+    # on the same law), so in practice this only sees the sub-1% closed-form vs
+    # integrator disagreement and the seams where spanning splits a run.
+    #
+    # _emit_jerk absorbs that by raising the jerk to whatever fits, which
+    # SHORTENS the ramp and slides the zero up off the mode. Left unbounded it
+    # would happily emit a 2 ms "ramp" whose zero is nowhere near f_n -- shaping
+    # in name only. The raise must stay within FALLBACK_FREQ_RATIO, and a move
+    # needing more than that must drop to the honest sharp profile instead.
+    fn = 55.0
+    cons = make_cons(notch=fn, jerk_dt=25e-6)
+    vs = vc = 200.0
+    ve = 0.0
+    need = pathplan.jerk_dist(vs, ve, A_CONST, None, fn)
+    ideal_t = cons.notch_period
+    ratio = pathplan.FALLBACK_FREQ_RATIO
+    saw_raise = saw_sharp = False
+    # Stay above the distance a plain constant-accel stop needs: below that the
+    # move is infeasible at max_accel itself, which the lookahead prevents and
+    # which says nothing about this bound.
+    d_min = 0.5 * (vs * vs - ve * ve) / A_CONST
+    for frac in (1.02, 0.99, 0.95, 0.9, 0.7, 0.5):
+        move_d = need * frac
+        assert move_d > d_min, (frac, move_d, d_min)
+        segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
+        assert segs
+        check_segs(segs, move_d, vs, ve, "fallback f=%.2f" % frac)
+        t_ramp = sum(s[0] + s[2] for s in segs)  # ramp only, no cruise
+        if len(segs) > 3:  # a real jerk ramp, not the sharp fallback
+            saw_raise = True
+            # Bounded: the ramp may not be more than `ratio` times shorter.
+            assert t_ramp > ideal_t / ratio - 1e-9, (frac, t_ramp, ideal_t)
+        else:
+            saw_sharp = True
+        if frac < 1.0:
+            assert "insufficient_runway" in pathplan.notch_loss_reasons(
+                vs, vc, ve, move_d, cons
+            ), frac
+    assert saw_raise, "the bounded raise never engaged -- test is vacuous"
+    assert saw_sharp, "the bound never forced the sharp profile"
+    # A move that DOES fit is untouched by any of this.
+    segs = pathplan.emit_profile(vs, vc, ve, need * 1.02, cons)
+    t_ramp = sum(s[0] + s[2] for s in segs)
+    assert abs(t_ramp - ideal_t) < 0.02 * ideal_t, (t_ramp, ideal_t)
+    assert pathplan.notch_loss_reasons(vs, vc, ve, need * 1.02, cons) == []
+    print(
+        "  emitter fallback raises the zero by at most %.2fx, then goes sharp OK"
+        % ratio
+    )
+
+
 def main():
     test_zero_is_parked()
     test_apeak_linear_in_dv()
@@ -459,6 +512,7 @@ def main():
     test_notch_loss_reasons()
     test_loss_reasons_are_declared()
     test_reach_runway_floor_short_circuit()
+    test_emit_fallback_raise_is_bounded()
     test_notch_saturated_trapezoid_reaches_requested_peak()
     test_saturated_emitted_zoh_notch_response()
     test_notch_reach_uses_saturated_plateau()

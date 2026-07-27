@@ -264,6 +264,14 @@ def _sat_rise(dv, accel, f_lo, f_hi):
 # noise.
 SECOND_NOTCH_EPS = 0.01
 
+# How far the emitter's infeasible-move fallback (_emit_jerk) may slide the
+# shaper zero above where it was configured. 1.2 leaves at most sinc^2(pi/1.2)
+# ~= 3.6% of unshaped at the mode, and is far more headroom than the sub-1%
+# lookahead/integrator disagreement this backstop exists to absorb. Past it the
+# move is emitted as a plain constant-accel profile instead: no zero at all, but
+# reported, rather than a ramp whose zero has silently walked off the mode.
+FALLBACK_FREQ_RATIO = 1.2
+
 
 def jerk_dist(v0, v1, accel, jerk, notch_freq=None, notch_freq2=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
@@ -574,10 +582,31 @@ def _emit_jerk(vs, vc, ve, move_d, cons):
         J0 = cons.ramp_jerk(max(abs(vc - vs), abs(vc - ve)))
     if not J0:
         return None  # nothing to ramp -> caller does sharp
-    hi = J0
+    # In NOTCH mode the raise is bounded, because raising J shortens the ramp
+    # and a shorter ramp slides the shaper zero UP off the mode -- the exact
+    # thing the notch law exists to prevent. Scaling the pair by k costs k^2 in
+    # jerk, so capping J' at FALLBACK_FREQ_RATIO^2 * J holds the zero within
+    # that ratio of where it was configured.
+    #
+    # The lookahead already guarantees the ramp fits (jerk_reach_v2 caps the
+    # move's boundary speeds on exactly this law), so this path only ever sees
+    # the sub-1% disagreement between that closed form and the discretized
+    # integrator, plus the seams where spanning splits a run. A small bound is
+    # ample for those. Anything needing more is not a rounding artifact, and
+    # emitting it as a "ramp" whose zero has walked off to nowhere would be
+    # shaping in name only -- fall through to the sharp profile instead, which
+    # is honest and which notch_loss_reasons already reports as
+    # insufficient_runway.
+    j_cap = J0 * FALLBACK_FREQ_RATIO**2 if cons.notch_freq else None
+    hi = lo = J0  # lo tracks the last known-INfeasible jerk
     feasible_hi = False
     for _ in range(40):  # expand until feasible
-        hi *= 2.0
+        if j_cap is not None and hi >= j_cap:
+            break
+        lo = hi
+        hi = hi * 2.0
+        if j_cap is not None:
+            hi = min(hi, j_cap)
         s = _emit_jerk_core(
             vs, vc, ve, move_d, _with_jerk(cons, hi), collect=False
         )
@@ -585,8 +614,8 @@ def _emit_jerk(vs, vc, ve, move_d, cons):
             feasible_hi = True
             break
     if not feasible_hi:
-        return None  # truly degenerate -> caller does sharp
-    lo = hi * 0.5  # last infeasible jerk
+        # Degenerate, or past the notch bound -> caller does sharp.
+        return None
     best = hi
     for _ in range(24):  # bisection for the minimum feasible J'
         mid = 0.5 * (lo + hi)
