@@ -1989,13 +1989,12 @@ X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
 available if the kinematic supports it.
 
 #### SET_UNIFIED
-`SET_UNIFIED [ENABLE=<0|1>] [MAX_JERK=<value>] [MAX_DA=<value>]
+`SET_UNIFIED [ENABLE=<0|1>] [MAX_DA=<value>]
 [NOTCH_FREQ=<value>] [NOTCH_FREQ_X=<value>] [NOTCH_FREQ_Y=<value>]
 [SPAN_RAMPS=<0|1>] [SPAN_MAX_ANGLE=<value>]`:
 This command changes the experimental jerk-limited planner settings at
 runtime. Pending moves are flushed before changes are applied. `ENABLE`
-toggles jerk-limited emission for normal queued moves. `MAX_JERK` sets the
-normal-path jerk cap in mm/s^3 (`0` disables the cap). `MAX_DA` caps the
+toggles jerk-limited emission for normal queued moves. `MAX_DA` caps the
 positive emitted acceleration step between slices in mm/s^2 (`0` disables the
 cap). `NOTCH_FREQ` sets one scalar notch frequency in Hz. `NOTCH_FREQ_X` and
 `NOTCH_FREQ_Y` set per-axis frequencies; they must end up either both non-zero

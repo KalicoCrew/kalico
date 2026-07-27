@@ -110,7 +110,6 @@ def make_unified_toolhead(**over):
     th.junction_deviation = 0.01
     th.max_accel_to_decel = 50000.0
     th.unified_emit = True
-    th.unified_max_jerk = 0.0
     th.unified_jerk_dt = 0.001
     th.unified_max_da = 0.0
     th.unified_notch_freq = 55.0
@@ -283,6 +282,57 @@ def test_reset_velocity_limit_resyncs_derived_span_angle():
     print("  RESET_VELOCITY_LIMIT re-derives the span angle OK")
 
 
+def test_infeasible_batch_fails_before_emission():
+    th = make_unified_toolhead(unified_span_ramps=False)
+    first = toolhead.Move(
+        th,
+        [0.0, 0.0, 0.0, 0.0],
+        [100.0, 0.0, 0.0, 1.0],
+        200.0,
+    )
+    first.start_v = 0.0
+    first.cruise_v = first.end_v = 100.0
+    move_d = toolhead.pathplan.notch_dist(
+        200.0, 0.0, th.max_accel, th.unified_notch_freq
+    ) * 0.8
+    second = toolhead.Move(
+        th,
+        [100.0, 0.0, 0.0, 1.0],
+        [100.0 + move_d, 0.0, 0.0, 2.0],
+        200.0,
+    )
+    second.start_v = second.cruise_v = 200.0
+    second.end_v = 0.0
+
+    emitted = []
+
+    class CountingAxis:
+        def process_move_segment(self, *args):
+            emitted.append(("axis", args))
+
+    th.extra_axes = [CountingAxis()]
+    th.lookahead = types.SimpleNamespace(flush=lambda lazy=False: [first, second])
+    th.special_queuing_state = "NeedPrime"
+    th.print_time = 123.0
+    th.trapq = object()
+    th.trapq_append = lambda *args: emitted.append(("trapq", args))
+    th._calc_print_time = lambda: emitted.append(("calc_print_time", ()))
+    th._unified_all_warned = False
+    th._unified_warned = set()
+
+    try:
+        th._process_lookahead()
+    except toolhead.pathplan.InfeasibleProfile as e:
+        assert "does not fit move" in str(e)
+    else:
+        raise AssertionError("infeasible profile reached trapq emission")
+
+    assert emitted == [], emitted
+    assert th.print_time == 123.0
+    assert th.special_queuing_state == "NeedPrime"
+    print("  infeasible batch fails before timing or motion-queue mutation OK")
+
+
 def main():
     test_subclass_without_unified_fields()
     test_unified_rejects_unsegmented_extra_axis()
@@ -291,6 +341,7 @@ def main():
     test_reach_cache_tracks_start_v2()
     test_no_velocity_step_at_move_boundaries()
     test_reset_velocity_limit_resyncs_derived_span_angle()
+    test_infeasible_batch_fails_before_emission()
     print("ALL PASS")
 
 

@@ -67,7 +67,6 @@ def make_toolhead(span=True, notch=FN):
     th.square_corner_velocity = 5.0
     th.junction_deviation = 0.5 * th.square_corner_velocity**2 / th.max_accel
     th.unified_emit = True
-    th.unified_max_jerk = 0.0
     th.unified_jerk_dt = 0.0005
     th.unified_max_da = 0.0
     th.unified_notch_freq = notch
@@ -103,9 +102,26 @@ def plan_chain(th, n, seg=SEG, feed=FEED, turn_at=None, turn_deg=0.0):
     return laq.flush()
 
 
+def span_buckets(th, moves):
+    """Materialize span plans for tests; production renders one group at a time."""
+    out = {}
+    plans = th._span_plans(moves)
+    for move in moves:
+        item = plans.get(id(move))
+        if item is None or item[1] != 0:
+            continue
+        group, vs, vc, ve, total_d, cons = item[0]
+        segs = toolhead.pathplan.emit_profile(vs, vc, ve, total_d, cons)
+        buckets = toolhead.pathplan.split_segments(
+            segs, [m.move_d for m in group]
+        )
+        out.update((id(member), bucket) for member, bucket in zip(group, buckets))
+    return out
+
+
 def span_profile(th, moves):
     """Concatenate the spanning buckets covering `moves`, or None."""
-    buckets = th._span_buckets(moves)
+    buckets = span_buckets(th, moves)
     if not buckets:
         return None
     segs = []
@@ -285,7 +301,7 @@ def test_span_keeps_BOTH_zeros_with_per_axis_modes():
 def test_span_buckets_conserve_distance_and_velocity():
     th = make_toolhead(span=True)
     moves = plan_chain(th, 40)
-    buckets = th._span_buckets(moves)
+    buckets = span_buckets(th, moves)
     assert buckets, "expected a spanning run"
     v = None
     for move in moves:
@@ -318,7 +334,7 @@ def test_span_buckets_conserve_distance_and_velocity():
 
 def accel_pulse_items(th, moves):
     """(axes_r, slices) for the span's leading ACCEL pulse, in path order."""
-    buckets = th._span_buckets(moves)
+    buckets = span_buckets(th, moves)
     items = []
     for move in moves:
         b = buckets.get(id(move))
@@ -346,7 +362,6 @@ def turn_residual(deg, frac):
     cons = pathplan.Constraints(
         a_const=20000.0,
         v_ceil=400.0,
-        max_jerk=None,
         jerk_dt=0.0005,
         notch_freq=FN,
     )
@@ -623,7 +638,7 @@ def test_span_survives_direction_dependent_accel():
 def test_span_off_is_a_noop():
     th = make_toolhead(span=False)
     moves = plan_chain(th, 20)
-    assert th._span_buckets(moves) == {}, "spanning ran while disabled"
+    assert th._span_plans(moves) == {}, "spanning ran while disabled"
     for move in moves:
         assert not move.span_link
     print("  unified_span_ramps=0 leaves the per-move path untouched OK")

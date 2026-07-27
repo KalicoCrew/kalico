@@ -113,9 +113,8 @@ class Move:
         # is allowed to have started before prev_move, so the runway is the
         # whole run rather than prev_move alone. It is still capped by the
         # STOCK constant-accel reach over prev_move: that keeps every move
-        # individually feasible at max_accel, so the sharp fallback (and the
-        # non-unified trapezoid) remains valid for every move the span planner
-        # touches.
+        # individually feasible for the non-unified trapezoid if shaping is
+        # later disabled.
         span_link = th._span_link_ok(prev_move, self, junction_cos_theta)
         if span_link:
             prev_reach_v2 = min(
@@ -273,8 +272,8 @@ class LookAheadQueue:
             span_total_d = span_after_d + move.move_d
             if span_after_d > 0.0:
                 # Same cap as the accel side: never plan a boundary speed the
-                # stock constant-accel trapezoid could not also honour, so the
-                # sharp fallback stays valid for every move in the run.
+                # stock constant-accel trapezoid could not also honour if
+                # shaping is later disabled.
                 reachable_start_v2 = min(
                     th._span_reach_v2(move, span_end_v2, span_total_d),
                     next_end_v2 + move.delta_v2,
@@ -353,9 +352,9 @@ class LookAheadQueue:
                         # clamp cruise to what is jerk-reachable from each end so
                         # the emitted profile stays jerk-feasible. Must use the
                         # SAME jerk law as the emitter or the clamp lets through
-                        # a cruise the emitter cannot ramp to, forcing the sharp
-                        # fallback. Under spanning the emitter ramps over the
-                        # whole run, so the clamp gets the run's runway too --
+                        # a cruise the emitter cannot ramp to. Under spanning
+                        # the emitter ramps over the whole run, so the clamp
+                        # gets the run's runway too --
                         # otherwise the clamp, not the ramp, becomes the cliff.
                         fwd_d = move.span_start_d + move.move_d
                         if fwd_d > move.move_d:
@@ -384,7 +383,7 @@ class LookAheadQueue:
                         # move boundary: 80 mm/s on 5 mm segments at 55 Hz, an
                         # infinite-accel impulse in the exact band the notch
                         # exists to keep quiet. next_end_v2 is jerk-reachable
-                        # from start_v2 (jerk_reach_v2 is direction-symmetric,
+                        # from start_v2 (notch_reach_v2 is direction-symmetric,
                         # and start_v2 was itself clamped to reach of
                         # next_end_v2), so lifting the cruise back onto it is
                         # always feasible.
@@ -466,15 +465,6 @@ class ToolHead:
         # jerk-bounded constant-accel slices instead of one hard accel step, and
         # the lookahead plans the boundary speeds that ramp can reach.
         self.unified_emit = config.getboolean("unified_planner", False)
-        # Fixed jerk cap (mm/s^3). 0 = uncapped. With unified_notch_freq set it
-        # is a CEILING on the per-ramp jerk rather than the jerk itself.
-        self.unified_max_jerk = config.getfloat(
-            "unified_max_jerk", 0.0, minval=0.0
-        )
-        if 0.0 < self.unified_max_jerk < 1000.0:
-            raise config.error(
-                "unified_max_jerk must be 0 or at least 1000 mm/s^3"
-            )
         # Ramp integration time step (s).
         self.unified_jerk_dt = config.getfloat(
             "unified_jerk_dt", 0.001, minval=0.0001
@@ -483,7 +473,7 @@ class ToolHead:
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
         # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
-        # 0 = off (fixed unified_max_jerk governs).
+        # 0 disables the notch law.
         self.unified_notch_freq = config.getfloat(
             "unified_notch_freq", 0.0, minval=0.0
         )
@@ -533,7 +523,6 @@ class ToolHead:
         self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
         self.orig_cfg["unified_emit"] = self.unified_emit
-        self.orig_cfg["unified_max_jerk"] = self.unified_max_jerk
         self.orig_cfg["unified_jerk_dt"] = self.unified_jerk_dt
         self.orig_cfg["unified_max_da"] = self.unified_max_da
         self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
@@ -800,11 +789,10 @@ class ToolHead:
         if len(group) > 1:
             yield group, peak, cap
 
-    def _span_buckets(self, moves):
-        # Render each multi-move run from ONE profile and cut it back up into
-        # per-move slice lists. Returns {id(move): segs} for the moves that got
-        # a spanning profile; every other move falls through to the ordinary
-        # per-move emit.
+    def _span_plans(self, moves):
+        # Validate each multi-move run without collecting slices. Return a
+        # lightweight {id(move): (plan, index)} map; _process_lookahead renders
+        # and splits one plan at a time when its first move reaches emission.
         out = {}
         for group, peak, cap in self._span_groups(moves):
             first, last = group[0], group[-1]
@@ -816,27 +804,35 @@ class ToolHead:
             # under a direction-dependent accel limit.
             a_span = min(m.accel for m in group)
             cons = self._pathplan_cons(first, v_ceil=vc + 1.0, a_const=a_span)
-            segs = pathplan.emit_profile(vs, vc, ve, total_d, cons)
-            if not segs:
-                # Degenerate profile: leave the run to the per-move path.
-                continue
-            if not self._unified_all_warned:
-                self._warn_unified_profile(
-                    last,
-                    pathplan.notch_loss_reasons(vs, vc, ve, total_d, cons),
-                )
-            buckets = pathplan.split_segments(segs, [m.move_d for m in group])
-            if not all(buckets):
-                # A move that got no slice would be emitted with zero duration.
-                continue
-            for move, bucket in zip(group, buckets):
-                out[id(move)] = bucket
+            pathplan.validate_profile(vs, vc, ve, total_d, cons)
+            plan = (group, vs, vc, ve, total_d, cons)
+            for index, move in enumerate(group):
+                out[id(move)] = (plan, index)
         return out
 
     def _process_lookahead(self, lazy=False):
         moves = self.lookahead.flush(lazy=lazy)
         if not moves:
             return
+        # Validate every unified profile before mutating print-time or any
+        # motion queue. Validation runs the emitter's distance recurrence
+        # without collecting slices, keeping memory bounded for dense batches.
+        span_plans = self._span_plans(moves)
+        for move in moves:
+            if (
+                id(move) in span_plans
+                or not self.unified_emit
+                or not move.is_kinematic_move
+            ):
+                continue
+            cons = self._pathplan_cons(move)
+            pathplan.validate_profile(
+                move.start_v,
+                move.cruise_v,
+                move.end_v,
+                move.move_d,
+                cons,
+            )
         # Resync print_time if necessary
         if self.special_queuing_state:
             # Transition from "NeedPrime"/"Priming" state to main state
@@ -845,18 +841,38 @@ class ToolHead:
             self._calc_print_time()
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
-        # Ramp spanning renders a run of moves from ONE profile, so the moves
-        # are walked in groups. Without spanning every group is a single move
-        # and this is the stock one-move-at-a-time loop.
-        spans = self._span_buckets(moves)
+        span_buckets = {}
         for move in moves:
-            segs = spans.get(id(move))
-            if segs is None and self.unified_emit and move.is_kinematic_move:
+            span_item = span_plans.get(id(move))
+            segs = span_buckets.pop(id(move), None)
+            if span_item is not None and span_item[1] == 0:
+                group, vs, vc, ve, total_d, cons = span_item[0]
+                rendered = pathplan._render_validated_profile(
+                    vs, vc, ve, total_d, cons
+                )
+                buckets = pathplan.split_segments(
+                    rendered, [m.move_d for m in group]
+                )
+                if not all(buckets):
+                    raise AssertionError("validated span produced an empty move")
+                span_buckets.update(
+                    (id(member), bucket)
+                    for member, bucket in zip(group, buckets)
+                )
+                segs = span_buckets.pop(id(move))
+                if not self._unified_all_warned:
+                    self._warn_unified_profile(
+                        group[-1],
+                        pathplan.notch_loss_reasons(vs, vc, ve, cons),
+                    )
+            elif (
+                segs is None
+                and self.unified_emit
+                and move.is_kinematic_move
+            ):
                 cons = self._pathplan_cons(move)
-                # `or None` sends a degenerate empty profile back to the stock
-                # path rather than emitting a zero-duration move.
                 segs = (
-                    pathplan.emit_profile(
+                    pathplan._render_validated_profile(
                         move.start_v,
                         move.cruise_v,
                         move.end_v,
@@ -865,18 +881,13 @@ class ToolHead:
                     )
                     or None
                 )
-                # notch_loss_reasons() costs MORE than emit_profile() itself, so
-                # it must not run once every distinct reason has already been
-                # logged -- the dedup inside _warn_unified_profile is too late
-                # to help when the argument is evaluated first.
-                if segs is not None and not self._unified_all_warned:
+                if segs and not self._unified_all_warned:
                     self._warn_unified_profile(
                         move,
                         pathplan.notch_loss_reasons(
                             move.start_v,
                             move.cruise_v,
                             move.end_v,
-                            move.move_d,
                             cons,
                         ),
                     )
@@ -1406,7 +1417,7 @@ class ToolHead:
                 # a(t). No ramp shape changes the XY excitation, so notching
                 # buys no quiet while costing the full 2/f_n ramp (36 ms at
                 # 55 Hz) and its (v0+v1)/f_n of runway, which a Z hop does not
-                # have. That is what logs insufficient_runway on every Z lift.
+                # have. That is why notching a decoupled Z lift is wasteful.
                 #
                 # When Z shares actuators with X or Y -- CoreXZ and hybrid
                 # CoreXZ (A = x + z, B = x - z), deltesian, delta, rotary
@@ -1435,11 +1446,10 @@ class ToolHead:
 
     def _pathplan_cons(self, move, v_ceil=None, a_const=None):
         # Build the pathplan.Constraints for one move. a_const is the move's
-        # constant accel (the sharp-fallback ceiling); with a notch frequency
-        # the emitter governs ordinary moves via a_peak = dv*f_n instead.
+        # constant acceleration ceiling; with a notch frequency the emitter
+        # governs ordinary moves via a_peak = dv*f_n instead.
         # v_ceil is overridden when the constraints describe a whole spanning
         # run rather than this one move.
-        jerk = self.unified_max_jerk or None
         max_da = self.unified_max_da or None
         f_lo, f_hi = self._move_notch_pair(move)
         notch = f_lo or None
@@ -1456,7 +1466,6 @@ class ToolHead:
         return pathplan.Constraints(
             a_const=move.accel if a_const is None else a_const,
             v_ceil=v_ceil,
-            max_jerk=jerk,
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             max_da=max_da,
@@ -1497,7 +1506,7 @@ class ToolHead:
             or not move.is_kinematic_move
         ):
             return False
-        return self.unified_max_jerk > 0.0 or self._move_notch_freq(move) > 0.0
+        return self._move_notch_freq(move) > 0.0
 
     def _span_link_ok(self, prev_move, move, junction_cos_theta):
         # May these two consecutive moves share ONE accel ramp? Only structure
@@ -1519,7 +1528,7 @@ class ToolHead:
         # curve -- an exact comparison rejected every link and silently
         # disabled spanning on the real machine while the unit tests, which
         # used a constant accel, saw none of it. The run is emitted at the
-        # group's minimum accel instead (see _span_buckets), which respects
+        # group's minimum accel instead (see _span_plans), which respects
         # every member's limit.
         f_move = self._move_notch_freq(move)
         f_prev = self._move_notch_freq(prev_move)
@@ -1557,16 +1566,14 @@ class ToolHead:
         cached = getattr(move, "_unified_reach_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        jerk = cons.max_jerk or 0.0
         # cons.v_ceil deliberately unused here: it is the EMITTER's per-move
         # ceiling (this move's own cruise target). Reachability asks how fast
         # the toolhead could arrive, so it is bounded by the machine limit;
         # move.max_cruise_v2 is applied separately by the caller.
-        res = pathplan.jerk_reach_v2(
+        res = pathplan.notch_reach_v2(
             start_v2,
             dist,
             move.accel,
-            jerk,
             self.max_velocity,
             notch_freq=cons.notch_freq,
             notch_freq2=cons.notch_freq2,
@@ -1581,7 +1588,6 @@ class ToolHead:
 
     _UNIFIED_FIELDS = (
         "unified_emit",
-        "unified_max_jerk",
         "unified_jerk_dt",
         "unified_max_da",
         "unified_notch_freq",
@@ -1796,7 +1802,6 @@ class ToolHead:
                 "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
                 "square_corner_velocity: %.6f" % self.square_corner_velocity,
                 "unified_planner: %d" % self.unified_emit,
-                "unified_max_jerk: %.6f" % self.unified_max_jerk,
                 "unified_jerk_dt: %.6f" % self.unified_jerk_dt,
                 "unified_max_da: %.6f" % self.unified_max_da,
                 "unified_notch_freq: %.6f" % self.unified_notch_freq,
@@ -1835,8 +1840,8 @@ class ToolHead:
 
     cmd_SET_UNIFIED_help = (
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
-        "MAX_JERK sets the jerk cap (mm/s^3, 0 = uncapped); NOTCH_FREQ parks "
-        "the jerk ramp's shaper zero on a mode frequency (Hz, 0 = fixed-jerk); "
+        "NOTCH_FREQ parks the jerk ramp's shaper zero on a mode frequency "
+        "(Hz, 0 = disabled); "
         "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes, nulled together "
         "in one trapezoidal ramp (0 = fall back to NOTCH_FREQ); "
@@ -1849,7 +1854,6 @@ class ToolHead:
 
     def cmd_SET_UNIFIED(self, gcmd):
         en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
-        jerk = gcmd.get_float("MAX_JERK", None, minval=0.0)
         max_da = gcmd.get_float("MAX_DA", None, minval=0.0)
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
@@ -1865,12 +1869,6 @@ class ToolHead:
         try:
             if en is not None:
                 self.unified_emit = bool(en)
-            if jerk is not None:
-                if 0.0 < jerk < 1000.0:
-                    raise gcmd.error(
-                        "MAX_JERK must be 0 or at least 1000 mm/s^3"
-                    )
-                self.unified_max_jerk = jerk
             for name, f in (
                 ("NOTCH_FREQ", notch),
                 ("NOTCH_FREQ_X", notch_x),
@@ -1909,12 +1907,11 @@ class ToolHead:
             self._restore_unified_state(old)
             raise
         gcmd.respond_info(
-            "unified_planner=%d unified_max_jerk=%.0f unified_notch_freq=%.2f"
+            "unified_planner=%d unified_notch_freq=%.2f"
             " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
             " span_ramps=%d span_max_angle=%.2f"
             % (
                 self.unified_emit,
-                self.unified_max_jerk,
                 self.unified_notch_freq,
                 self.unified_notch_freq_x,
                 self.unified_notch_freq_y,

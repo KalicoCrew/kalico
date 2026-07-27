@@ -2361,7 +2361,6 @@ class TradRackToolHead(toolhead.ToolHead, object):
             "square_corner_velocity", 5.0, minval=0.0
         )
         self.unified_emit = False
-        self.unified_max_jerk = 0.0
         self.unified_jerk_dt = 0.001
         self.unified_max_da = 0.0
         self.unified_notch_freq = 0.0

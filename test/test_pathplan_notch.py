@@ -7,12 +7,9 @@
 #
 # Verifies: the zero is parked (rise time constant across dv, total ramp = 2/f_n);
 # a_peak scales linearly with dv; ramp distance is (v0+v1)/f_n; the LOOKAHEAD
-# twin jerk_dist agrees with the emitter's integrated distance (else moves get
-# planned into the sharp fallback); jerk_reach_v2 stays monotone; max_jerk
-# preserves the target notch by limiting dv only when the jerk ceiling is too
-# low; saturated ramps use a designed max-accel plateau; notch_freq unset is a
-# no-op; the stepguard invariants hold; and a full chain plans with zero sharp
-# fallbacks.
+# twin notch_dist agrees with the emitter's integrated distance;
+# notch_reach_v2 stays monotone; saturated ramps use a designed max-accel
+# plateau; the stepguard invariants hold; and a full chain remains feasible.
 #
 # Run: klippy-env/bin/python test/test_pathplan_notch.py
 import math
@@ -29,11 +26,10 @@ A_CONST = 30000.0  # high enough that a_peak = dv*f_n never saturates below
 DVS = [50.0, 100.0, 150.0, 200.0, 300.0, 400.0]
 
 
-def make_cons(notch=FN, max_jerk=None, a_const=A_CONST, jerk_dt=0.0002):
+def make_cons(notch=FN, a_const=A_CONST, jerk_dt=0.0002):
     return pathplan.Constraints(
         a_const=a_const,
         v_ceil=600.0,
-        max_jerk=max_jerk,
         jerk_dt=jerk_dt,
         notch_freq=notch,
     )
@@ -110,7 +106,7 @@ def test_ramp_distance_law():
 
 
 def test_lookahead_matches_emitter():
-    # jerk_dist() is what the lookahead plans with; _ramp_up_jerk() is what the
+    # notch_dist() is what the lookahead plans with; _ramp_up_jerk() is what the
     # emitter renders. The analytic model is conservative against the
     # zero-order-held slices: it may under-use available runway, but it must not
     # approve a distance shorter than the emitted slices need.
@@ -118,7 +114,7 @@ def test_lookahead_matches_emitter():
     for dv in DVS:
         v0, v1 = 10.0, 10.0 + dv
         _, _, dist = ramp_stats(v0, v1, cons)
-        pred = pathplan.jerk_dist(v0, v1, A_CONST, None, notch_freq=FN)
+        pred = pathplan.notch_dist(v0, v1, A_CONST, notch_freq=FN)
         assert pred >= dist - 1e-9, (
             "lookahead not conservative",
             dv,
@@ -131,7 +127,7 @@ def test_lookahead_matches_emitter():
             pred,
             dist,
         )
-    print("  jerk_dist conservatively bounds integrated ramp OK")
+    print("  notch_dist conservatively bounds integrated ramp OK")
 
 
 def test_lookahead_conservative_across_dt_and_saturation():
@@ -146,11 +142,10 @@ def test_lookahead_conservative_across_dt_and_saturation():
             for dv in (5.0, 20.0, 50.0, 100.0, 200.0):
                 slices, dist = pathplan._ramp_up_jerk(v0, v0 + dv, cons)
                 assert slices is not None
-                pred = pathplan.jerk_dist(
+                pred = pathplan.notch_dist(
                     v0,
                     v0 + dv,
                     cons.a_const,
-                    cons.max_jerk,
                     notch_freq=cons.notch_freq,
                 )
                 assert pred >= dist - 1e-8, (
@@ -162,32 +157,17 @@ def test_lookahead_conservative_across_dt_and_saturation():
                     pred,
                     dist,
                 )
-    print("  jerk_dist stays conservative across dt/saturation cases OK")
+    print("  notch_dist stays conservative across dt/saturation cases OK")
 
 
 def test_reach_is_monotone_and_finite():
     prev = -1.0
     for d in (1.0, 2.0, 5.0, 10.0, 25.0, 60.0, 150.0):
-        u = pathplan.jerk_reach_v2(0.0, d, A_CONST, None, 500.0, notch_freq=FN)
+        u = pathplan.notch_reach_v2(0.0, d, A_CONST, 500.0, notch_freq=FN)
         assert u >= prev - 1e-6, ("reach not monotone", d, u, prev)
         assert math.isfinite(u), ("reach not finite", d, u)
         prev = u
-    print("  jerk_reach_v2 monotone under the notch law OK")
-
-
-def test_max_jerk_limits_dv_to_preserve_notch():
-    capped = make_cons(notch=55.0, max_jerk=100000.0, a_const=30000.0)
-    dv_max = capped.max_jerk / (capped.notch_freq * capped.notch_freq)
-    segs = pathplan.emit_profile(0.0, 200.0, 0.0, 40.0, capped)
-    assert segs
-    peak_v = max(max(s[3], s[4]) for s in segs)
-    assert peak_v <= dv_max + 1e-3, (peak_v, dv_max)
-    peak_a = max(s[5] for s in segs)
-    assert peak_a <= dv_max * capped.notch_freq * 1.05, (
-        peak_a,
-        dv_max * capped.notch_freq,
-    )
-    print("  max_jerk limits dv instead of moving the notch OK")
+    print("  notch_reach_v2 monotone under the notch law OK")
 
 
 def test_emitted_zoh_notch_response():
@@ -228,20 +208,9 @@ def test_notch_loss_reasons():
     # A feasible, uncapped move reports NOTHING. Zero-order-hold discretization
     # is inherent to slice emission and is deliberately not a reason, or every
     # ordinary print would log a warning on its first move.
-    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, 20.0, clean) == []
+    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, clean) == []
     saturated = make_cons(notch=55.0, a_const=3000.0)
-    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, 20.0, saturated) == []
-    capped = make_cons(notch=55.0, max_jerk=100000.0)
-    reasons = pathplan.notch_loss_reasons(0.0, 100.0, 0.0, 20.0, capped)
-    assert "jerk_clamped" in reasons, reasons
-    capped_sat = make_cons(notch=55.0, max_jerk=100000.0, a_const=3000.0)
-    assert "jerk_clamped" in pathplan.notch_loss_reasons(
-        0.0, 100.0, 0.0, 20.0, capped_sat
-    )
-    short = make_cons()
-    assert "insufficient_runway" in pathplan.notch_loss_reasons(
-        0.0, 200.0, 0.0, 0.5, short
-    )
+    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, saturated) == []
     print("  notch loss diagnostics report emitted-profile limits OK")
 
 
@@ -253,7 +222,7 @@ def test_notch_saturated_trapezoid_reaches_requested_peak():
     peak_a = max(s[5] for s in segs)
     assert peak_v >= 199.0, peak_v
     assert peak_a <= cons.a_const + 1e-6, (peak_a, cons.a_const)
-    assert pathplan.notch_loss_reasons(0.0, 200.0, 0.0, 30.0, cons) == []
+    assert pathplan.notch_loss_reasons(0.0, 200.0, 0.0, cons) == []
     print("  saturated notch reaches requested peak while capping accel OK")
 
 
@@ -274,41 +243,12 @@ def test_saturated_emitted_zoh_notch_response():
 def test_notch_reach_uses_saturated_plateau():
     accel = 3000.0
     notch = 55.0
-    u = pathplan.jerk_reach_v2(
-        0.0, 1000.0, accel, None, 500.0, notch_freq=notch
+    u = pathplan.notch_reach_v2(
+        0.0, 1000.0, accel, 500.0, notch_freq=notch
     )
     v = math.sqrt(u)
     assert v > accel / notch + 1.0, (v, accel / notch)
     print("  notch reach uses designed saturated plateau OK")
-
-
-def test_notch_reach_clamps_to_max_jerk():
-    accel = 30000.0
-    notch = 55.0
-    jerk = 100000.0
-    u = pathplan.jerk_reach_v2(
-        0.0, 1000.0, accel, jerk, 500.0, notch_freq=notch
-    )
-    v = math.sqrt(u)
-    assert v <= jerk / (notch * notch) + 1e-6, (v, jerk / (notch * notch))
-    print("  notch reach clamps to max_jerk/f_n^2 OK")
-
-
-def test_notch_off_is_noop():
-    a = pathplan.Constraints(
-        a_const=8000.0, v_ceil=400.0, max_jerk=1.0e5, jerk_dt=0.001
-    )
-    b = pathplan.Constraints(
-        a_const=8000.0,
-        v_ceil=400.0,
-        max_jerk=1.0e5,
-        jerk_dt=0.001,
-        notch_freq=None,
-    )
-    x = pathplan.emit_profile(0.0, 200.0, 50.0, 30.0, a)
-    y = pathplan.emit_profile(0.0, 200.0, 50.0, 30.0, b)
-    assert x == y, "notch_freq=None diverged from fixed jerk"
-    print("  notch_freq=None identical to fixed jerk OK")
 
 
 def test_invariants_hold():
@@ -340,13 +280,13 @@ def _notch_lookahead(move_d, v_cap, v_junction, accel, notch, v_ceil=600.0):
             cap = min(cap, v_cap[k])
         vb[k] = cap
     for i in range(n - 1, -1, -1):
-        r = pathplan.jerk_reach_v2(
-            vb[i + 1] ** 2, move_d[i], accel, None, v_ceil, notch_freq=notch
+        r = pathplan.notch_reach_v2(
+            vb[i + 1] ** 2, move_d[i], accel, v_ceil, notch_freq=notch
         )
         vb[i] = min(vb[i], math.sqrt(r))
     for i in range(n):
-        r = pathplan.jerk_reach_v2(
-            vb[i] ** 2, move_d[i], accel, None, v_ceil, notch_freq=notch
+        r = pathplan.notch_reach_v2(
+            vb[i] ** 2, move_d[i], accel, v_ceil, notch_freq=notch
         )
         vb[i + 1] = min(vb[i + 1], math.sqrt(r))
     vs = [vb[i] for i in range(n)]
@@ -354,11 +294,11 @@ def _notch_lookahead(move_d, v_cap, v_junction, accel, notch, v_ceil=600.0):
     vc = []
     for i in range(n):
         pk = min(
-            pathplan.jerk_reach_v2(
-                vs[i] ** 2, move_d[i], accel, None, v_ceil, notch_freq=notch
+            pathplan.notch_reach_v2(
+                vs[i] ** 2, move_d[i], accel, v_ceil, notch_freq=notch
             ),
-            pathplan.jerk_reach_v2(
-                ve[i] ** 2, move_d[i], accel, None, v_ceil, notch_freq=notch
+            pathplan.notch_reach_v2(
+                ve[i] ** 2, move_d[i], accel, v_ceil, notch_freq=notch
             ),
         )
         vc.append(min(v_cap[i], math.sqrt(pk)))
@@ -410,12 +350,10 @@ def test_loss_reasons_are_declared():
     cases = [
         (0.0, 100.0, 0.0, 20.0, make_cons()),
         (0.0, 100.0, 0.0, 20.0, make_cons(notch=55.0, a_const=3000.0)),
-        (0.0, 100.0, 0.0, 20.0, make_cons(notch=55.0, max_jerk=100000.0)),
         (0.0, 200.0, 0.0, 0.5, make_cons()),
-        (50.0, 200.0, 50.0, 0.2, make_cons(notch=55.0, max_jerk=100000.0)),
     ]
     for vs, vc, ve, move_d, cons in cases:
-        for reason in pathplan.notch_loss_reasons(vs, vc, ve, move_d, cons):
+        for reason in pathplan.notch_loss_reasons(vs, vc, ve, cons):
             assert reason in pathplan.LOSS_REASONS, reason
     print("  every emitted loss reason is declared in LOSS_REASONS OK")
 
@@ -423,80 +361,67 @@ def test_loss_reasons_are_declared():
 def test_reach_runway_floor_short_circuit():
     # A notch ramp costs 2/f_n of TIME however small dv is, so its distance
     # bottoms out at 2*v0/f_n rather than at zero. Below that the move cannot
-    # change speed at all, and jerk_reach_v2 must say so exactly (not merely
+    # change speed at all, and notch_reach_v2 must say so exactly (not merely
     # bisect its way to something close).
     fn = 55.0
     for v0 in (20.0, 50.0, 100.0, 200.0, 300.0):
         u0 = v0 * v0
         d_floor = 2.0 * v0 / fn
-        pinned = pathplan.jerk_reach_v2(
-            u0, d_floor * 0.999, A_CONST, 0.0, 650.0, notch_freq=fn
+        pinned = pathplan.notch_reach_v2(
+            u0, d_floor * 0.999, A_CONST, 650.0, notch_freq=fn
         )
         assert pinned == u0, (v0, pinned, u0)
         # Just past the floor it must start moving again, and never regress.
-        opened = pathplan.jerk_reach_v2(
-            u0, d_floor * 1.5, A_CONST, 0.0, 650.0, notch_freq=fn
+        opened = pathplan.notch_reach_v2(
+            u0, d_floor * 1.5, A_CONST, 650.0, notch_freq=fn
         )
         assert opened > u0, (v0, opened, u0)
     # From rest there is no floor: any distance buys some speed.
     assert (
-        pathplan.jerk_reach_v2(0.0, 0.05, A_CONST, 0.0, 650.0, notch_freq=fn)
+        pathplan.notch_reach_v2(0.0, 0.05, A_CONST, 650.0, notch_freq=fn)
         > 0.0
     )
     print("  reach reports the exact runway floor for short moves OK")
 
 
-def test_emit_fallback_raise_is_bounded():
-    # A move whose BOTH endpoints are pinned by its neighbours may not fit its
-    # ramp -- the lookahead guarantees it does (jerk_reach_v2 caps entry speed
-    # on the same law), so in practice this only sees the sub-1% closed-form vs
-    # integrator disagreement and the seams where spanning splits a run.
-    #
-    # _emit_jerk absorbs that by raising the jerk to whatever fits, which
-    # SHORTENS the ramp and slides the zero up off the mode. Left unbounded it
-    # would happily emit a 2 ms "ramp" whose zero is nowhere near f_n -- shaping
-    # in name only. The raise must stay within FALLBACK_FREQ_RATIO, and a move
-    # needing more than that must drop to the honest sharp profile instead.
+def test_infeasible_notch_fails_closed():
+    # An infeasible notch must never be reinterpreted as a fixed-jerk ramp,
+    # because that would move or destroy the configured spectral zero.
     fn = 55.0
     cons = make_cons(notch=fn, jerk_dt=25e-6)
     vs = vc = 200.0
     ve = 0.0
-    need = pathplan.jerk_dist(vs, ve, A_CONST, None, fn)
-    ideal_t = cons.notch_period
-    ratio = pathplan.FALLBACK_FREQ_RATIO
-    saw_raise = saw_sharp = False
-    # Stay above the distance a plain constant-accel stop needs: below that the
-    # move is infeasible at max_accel itself, which the lookahead prevents and
-    # which says nothing about this bound.
-    d_min = 0.5 * (vs * vs - ve * ve) / A_CONST
-    for frac in (1.02, 0.99, 0.95, 0.9, 0.7, 0.5):
-        move_d = need * frac
-        assert move_d > d_min, (frac, move_d, d_min)
-        segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
-        assert segs
-        check_segs(segs, move_d, vs, ve, "fallback f=%.2f" % frac)
-        t_ramp = sum(s[0] + s[2] for s in segs)  # ramp only, no cruise
-        if len(segs) > 3:  # a real jerk ramp, not the sharp fallback
-            saw_raise = True
-            # Bounded: the ramp may not be more than `ratio` times shorter.
-            assert t_ramp > ideal_t / ratio - 1e-9, (frac, t_ramp, ideal_t)
-        else:
-            saw_sharp = True
-        if frac < 1.0:
-            assert "insufficient_runway" in pathplan.notch_loss_reasons(
-                vs, vc, ve, move_d, cons
-            ), frac
-    assert saw_raise, "the bounded raise never engaged -- test is vacuous"
-    assert saw_sharp, "the bound never forced the sharp profile"
-    # A move that DOES fit is untouched by any of this.
-    segs = pathplan.emit_profile(vs, vc, ve, need * 1.02, cons)
-    t_ramp = sum(s[0] + s[2] for s in segs)
-    assert abs(t_ramp - ideal_t) < 0.02 * ideal_t, (t_ramp, ideal_t)
-    assert pathplan.notch_loss_reasons(vs, vc, ve, need * 1.02, cons) == []
-    print(
-        "  emitter fallback raises the zero by at most %.2fx, then goes sharp OK"
-        % ratio
-    )
+    need = pathplan.notch_dist(vs, ve, A_CONST, fn)
+    move_d = need * 0.99
+    assert pathplan._emit_jerk_core(vs, vc, ve, move_d, cons) is None
+    try:
+        pathplan.emit_profile(vs, vc, ve, move_d, cons)
+    except pathplan.InfeasibleProfile:
+        pass
+    else:
+        raise AssertionError("infeasible notch did not fail closed")
+    print("  infeasible notch fails closed without a sharp fallback OK")
+
+
+def test_validation_matches_rendering():
+    cons = make_cons(notch=55.0)
+    try:
+        pathplan.validate_profile(0.0, 0.0, 0.0, 1.0, cons)
+    except pathplan.InfeasibleProfile:
+        pass
+    else:
+        raise AssertionError("preflight accepted positive travel at zero speed")
+
+    for vs, vc, ve, move_d in (
+        (0.0, 100.0, 0.0, 10.0),
+        (40.0, 120.0, 60.0, 20.0),
+        (100.0, 100.0, 100.0, 2.0),
+    ):
+        pathplan.validate_profile(vs, vc, ve, move_d, cons)
+        segs = pathplan._render_validated_profile(vs, vc, ve, move_d, cons)
+        assert segs, (vs, vc, ve, move_d)
+        check_segs(segs, move_d, vs, ve, "validated render")
+    print("  successful preflight and rendering stay equivalent OK")
 
 
 def main():
@@ -506,18 +431,16 @@ def main():
     test_lookahead_matches_emitter()
     test_lookahead_conservative_across_dt_and_saturation()
     test_reach_is_monotone_and_finite()
-    test_max_jerk_limits_dv_to_preserve_notch()
     test_emitted_zoh_notch_response()
     test_zoh_notch_error_scales_with_dt()
     test_notch_loss_reasons()
     test_loss_reasons_are_declared()
     test_reach_runway_floor_short_circuit()
-    test_emit_fallback_raise_is_bounded()
+    test_infeasible_notch_fails_closed()
+    test_validation_matches_rendering()
     test_notch_saturated_trapezoid_reaches_requested_peak()
     test_saturated_emitted_zoh_notch_response()
     test_notch_reach_uses_saturated_plateau()
-    test_notch_reach_clamps_to_max_jerk()
-    test_notch_off_is_noop()
     test_invariants_hold()
     test_chain_no_sharp_fallback()
     test_short_chain_degrades_cleanly()

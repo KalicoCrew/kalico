@@ -18,7 +18,7 @@
 # Verifies: both zeros actually appear in emitted profiles and beat the blend at
 # both modes; f_lo == f_hi degenerates to the single-zero triangle bit-for-bit;
 # the duration/peak/distance laws hold and are independent of dv; the lookahead
-# twins (jerk_dist, jerk_reach_v2) agree with the integrator; the emitter's
+# twins (notch_dist, notch_reach_v2) agree with the integrator; the emitter's
 # distance invariant survives; accel saturation, which leaves room for only one
 # zero, spends it on whichever mode it helps more and reports the loss only when
 # a mode is really left excited; and the pair's harmonic mean f_eq, which every
@@ -45,13 +45,11 @@ def cons(
     f_lo=F_LO,
     f_hi=F_HI,
     a_const=A_BIG,
-    max_jerk=None,
     jerk_dt=DT,
 ):
     return pathplan.Constraints(
         a_const=a_const,
         v_ceil=1e9,
-        max_jerk=max_jerk,
         jerk_dt=jerk_dt,
         notch_freq=f_lo,
         notch_freq2=f_hi,
@@ -164,14 +162,14 @@ def test_duration_peak_and_distance_laws():
 
 
 def test_lookahead_twins_agree_with_the_integrator():
-    # jerk_dist is the closed form the LOOKAHEAD plans with; the integrator is
+    # notch_dist is the closed form the LOOKAHEAD plans with; the integrator is
     # what actually renders. If they disagree the planner approves a cruise the
     # emitter cannot fit and the move drops to the sharp constant-accel
     # fallback -- losing the notch silently.
     for a_const in (A_BIG, 20000.0, 5000.0):
         for v0, v1 in ((0.0, 60.0), (0.0, 200.0), (30.0, 250.0)):
             _pulse, d_int = ramp(v0, v1, cons(a_const=a_const))
-            d_cf = pathplan.jerk_dist(v0, v1, a_const, None, F_LO, F_HI)
+            d_cf = pathplan.notch_dist(v0, v1, a_const, F_LO, F_HI)
             # 0.6% is the zero-order-hold discretization, the same error the
             # single-notch law carries; it is not a modelling difference.
             assert abs(d_int - d_cf) / d_cf < 0.01, (
@@ -184,18 +182,18 @@ def test_lookahead_twins_agree_with_the_integrator():
 
     # And reach must be the exact inverse of distance.
     for dist in (0.5, 3.13, 5.0, 20.0):
-        u = pathplan.jerk_reach_v2(0.0, dist, A_BIG, None, 1e9, F_LO, F_HI)
+        u = pathplan.notch_reach_v2(0.0, dist, A_BIG, 1e9, F_LO, F_HI)
         v = math.sqrt(u)
-        need = pathplan.jerk_dist(0.0, v, A_BIG, None, F_LO, F_HI)
+        need = pathplan.notch_dist(0.0, v, A_BIG, F_LO, F_HI)
         assert need <= dist + 1e-6, (dist, v, need)
         assert need > dist - 1e-3, (dist, v, need)  # and not leaving room
-    print("  jerk_dist / jerk_reach_v2 agree with the integrated ramp OK")
+    print("  notch_dist / notch_reach_v2 agree with the integrated ramp OK")
 
 
 def test_reach_is_monotone_in_distance():
     prev = 0.0
     for dist in [0.1 * i for i in range(1, 200)]:
-        u = pathplan.jerk_reach_v2(4.0, dist, A_BIG, None, 1e9, F_LO, F_HI)
+        u = pathplan.notch_reach_v2(4.0, dist, A_BIG, 1e9, F_LO, F_HI)
         assert u >= prev - 1e-9, (dist, u, prev)
         prev = u
     print("  reachable v^2 is non-decreasing in distance OK")
@@ -211,7 +209,7 @@ def test_emitted_profiles_keep_both_zeros_and_the_invariants():
     for a_const in (A_BIG, 20000.0):
         c = cons(a_const=a_const, jerk_dt=coarse)
         d = (
-            2.0 * pathplan.jerk_dist(0.0, 200.0, a_const, None, F_LO, F_HI)
+            2.0 * pathplan.notch_dist(0.0, 200.0, a_const, F_LO, F_HI)
             + 5.0
         )
         segs = pathplan.emit_profile(0.0, 200.0, 0.0, d, c)
@@ -219,12 +217,19 @@ def test_emitted_profiles_keep_both_zeros_and_the_invariants():
         pulse = profile_pulse(segs)
         assert residual(pulse, F_LO) < 5e-3, residual(pulse, F_LO)
         assert residual(pulse, F_HI) < 5e-3, residual(pulse, F_HI)
-        assert pathplan.notch_loss_reasons(0.0, 200.0, 0.0, d, c) == []
-    # Distance conservation across a range of move lengths, including ones too
-    # short to ramp (sharp fallback).
+        assert pathplan.notch_loss_reasons(0.0, 200.0, 0.0, c) == []
+    # Distance conservation across a range of feasible move lengths. Infeasible
+    # notched moves must fail closed instead of emitting a sharp fallback.
     for a_const in (A_BIG, 5000.0):
         c = cons(a_const=a_const, jerk_dt=coarse)
         for d in (0.5, 3.0, 12.0, 60.0):
+            core = pathplan._emit_jerk_core(10.0, 200.0, 30.0, d, c)
+            if core is None:
+                try:
+                    pathplan.emit_profile(10.0, 200.0, 30.0, d, c)
+                except pathplan.InfeasibleProfile:
+                    continue
+                raise AssertionError("infeasible dual notch did not fail closed")
             segs = pathplan.emit_profile(10.0, 200.0, 30.0, d, c)
             check_segs(segs, d, 10.0, 30.0, "dual d=%g" % d)
             assert abs(sum(s[6] for s in segs) - d) <= 1e-6 * d
@@ -267,8 +272,8 @@ def test_saturation_spends_its_one_zero_where_it_helps_most():
     assert 1e-2 < residual(pulse, F_HI) < 0.05, residual(pulse, F_HI)
 
     # And the loss is reported, not silent.
-    d = 2.0 * pathplan.jerk_dist(0.0, dv, a_const, None, F_LO, F_HI) + 5.0
-    reasons = pathplan.notch_loss_reasons(0.0, dv, 0.0, d, c)
+    d = 2.0 * pathplan.notch_dist(0.0, dv, a_const, F_LO, F_HI) + 5.0
+    reasons = pathplan.notch_loss_reasons(0.0, dv, 0.0, c)
     assert "second_notch_saturated" in reasons, reasons
     assert "second_notch_saturated" in pathplan.LOSS_REASONS
     print("  saturated ramps pick the better zero and report the loss OK")
@@ -286,16 +291,16 @@ def test_saturation_is_silent_when_it_costs_nothing():
     pulse, _d = ramp(0.0, dv, c)
     assert residual(pulse, F_LO) < 1e-3, residual(pulse, F_LO)
     assert residual(pulse, F_HI) < 1e-3, residual(pulse, F_HI)
-    d = 2.0 * pathplan.jerk_dist(0.0, dv, a_const, None, F_LO, F_HI) + 5.0
-    assert pathplan.notch_loss_reasons(0.0, dv, 0.0, d, c) == []
+    d = 2.0 * pathplan.notch_dist(0.0, dv, a_const, F_LO, F_HI) + 5.0
+    assert pathplan.notch_loss_reasons(0.0, dv, 0.0, c) == []
 
     # A dv small enough not to saturate at all is silent for the plain reason.
     small = 40.0
     assert small * F_LO < a_const
     d_small = (
-        2.0 * pathplan.jerk_dist(0.0, small, a_const, None, F_LO, F_HI) + 5.0
+        2.0 * pathplan.notch_dist(0.0, small, a_const, F_LO, F_HI) + 5.0
     )
-    assert pathplan.notch_loss_reasons(0.0, small, 0.0, d_small, c) == []
+    assert pathplan.notch_loss_reasons(0.0, small, 0.0, c) == []
     print("  saturation that costs no zero is not reported OK")
 
 
@@ -312,7 +317,7 @@ def test_f_eq_is_the_harmonic_mean_of_the_pair():
         v0, v1 = 40.0, 140.0
         _pulse, dist = ramp(v0, v1, c)
         # 1% is the zero-order-hold discretization of the integrated ramp, the
-        # same slack the jerk_dist agreement check above carries.
+        # same slack the notch_dist agreement check above carries.
         assert abs(dist - (v0 + v1) / c.notch_f_eq) < 1e-2 * dist, (
             f_lo,
             f_hi,
@@ -326,7 +331,6 @@ def test_notch_unset_is_untouched():
     c = pathplan.Constraints(
         a_const=A_BIG,
         v_ceil=1e9,
-        max_jerk=None,
         jerk_dt=DT,
         notch_freq=None,
         notch_freq2=F_HI,

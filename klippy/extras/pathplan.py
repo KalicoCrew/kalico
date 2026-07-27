@@ -5,16 +5,15 @@
 # jerk-aware lookahead that approximates the boundary speeds that emitter can
 # render.
 #
-# The jerk per ramp can either be a fixed value (max_jerk) or be derived from a
-# NOTCH FREQUENCY. A jerk-limited ramp whose acceleration does not saturate is
+# Jerk is derived per ramp from a NOTCH FREQUENCY. A jerk-limited ramp whose
+# acceleration does not saturate is
 # triangular in a(t), which is an input shaper with a zero at 1/T_rise; the
 # notch law pins T_rise = 1/f_n via J = dv * f_n^2. If the requested speed
 # change would exceed max_accel, the saturated law sets J = max_accel * f_n and
 # deliberately inserts a max-accel plateau; the ramp edge still has duration
 # 1/f_n, preserving the ideal zero while honoring the accel limit. The actual
-# emitter uses zero-order-held constant-accel slices, so discretization, jerk
-# clamping, insufficient runway, and the sharp fallback do not preserve an
-# exact zero at the requested mode.
+# emitter uses zero-order-held constant-accel slices, so discretization
+# perturbs the exact zero slightly.
 #
 # TWO MODES. A machine whose X and Y modes differ can null BOTH in the same
 # ramp, because spectral zeros multiply under convolution and the triangle above
@@ -48,23 +47,23 @@
 import math
 
 
+class InfeasibleProfile(Exception):
+    pass
+
+
 class Constraints:
     """Per-move motion limits for the jerk-limited emitter and lookahead.
 
     a_const    -> constant max |acceleration| (mm/s^2). With the notch law,
                   unsaturated moves are governed by a_peak = dv * f_n; larger
-                  moves use a designed max-accel plateau. Short fallback moves
-                  remain bounded by this value too.
+                  moves use a designed max-accel plateau.
     v_ceil     -> hard speed ceiling (mm/s); the reachability search stops here.
-    max_jerk   -> max |da/dt| (mm/s^3). None/0 = no jerk limiting (sharp
-                  constant-accel profile). With notch_freq set this is a CEILING
-                  on the per-ramp jerk rather than the jerk itself.
     jerk_dt    -> integration time step (s) for the emitted ramp.
     max_da     -> optional cap on positive jerk-up acceleration steps between
-                  emitted slices (mm/s^2). When fallback raises jerk, the
-                  emitter shrinks slice dt so J*dt <= max_da.
+                  emitted slices (mm/s^2). The emitter shrinks slice dt so
+                  J*dt <= max_da.
     notch_freq -> mode frequency (Hz) to park the ramp's shaper zero on.
-                  None/0 = fixed-jerk behaviour (max_jerk used verbatim).
+                  None/0 = no shaped motion.
                   See ramp_jerk() for the ideal law, and notch_loss_reasons()
                   for cases where the emitted profile no longer preserves it.
     notch_freq2
@@ -77,7 +76,6 @@ class Constraints:
         self,
         a_const,
         v_ceil=1e9,
-        max_jerk=None,
         jerk_dt=0.001,
         notch_freq=None,
         max_da=None,
@@ -85,7 +83,6 @@ class Constraints:
     ):
         self.a_const = a_const
         self.v_ceil = v_ceil
-        self.max_jerk = max_jerk
         self.jerk_dt = jerk_dt
         self.notch_freq = notch_freq
         self.max_da = max_da
@@ -133,7 +130,7 @@ class Constraints:
     def ramp_jerk(self, dv):
         """Jerk (mm/s^3) for ONE ramp of size |dv| (mm/s).
 
-        Fixed-jerk mode (notch_freq unset) returns max_jerk unchanged.
+        With no notch frequency configured there is no shaped ramp.
 
         Notch mode: a jerk-limited ramp whose acceleration never saturates is
         TRIANGULAR in a(t) -- a_peak = sqrt(J*dv), rise time T = sqrt(dv/J) --
@@ -161,10 +158,6 @@ class Constraints:
         The accel pulse is then a ramp-edge smoothing kernel convolved with a
         rectangle; the ramp-edge zero remains parked at f_n while the plateau
         supplies the extra velocity change at the configured acceleration.
-
-        max_jerk, when set in notch mode, limits the allowed ramp dv if the cap
-        is lower than the jerk needed by either law. It does not lower the notch
-        frequency to fit the cap.
 
         TWO zeros (notch_freq2 set and different). One scalar ramp shapes every
         axis at once -- a_i(t) = r_i*a(t) -- so a single zero has to serve both
@@ -199,7 +192,7 @@ class Constraints:
         """
         dv = abs(dv)
         if not self.notch_freq or dv <= 1e-12:
-            return self.max_jerk
+            return None
         a = self.a_const
         f_lo, f_hi = self.notch_lo, self.notch_hi
         if a and a > 0.0 and dv > a / f_lo:
@@ -264,113 +257,71 @@ def _sat_rise(dv, accel, f_lo, f_hi):
 # noise.
 SECOND_NOTCH_EPS = 0.01
 
-# How far the emitter's infeasible-move fallback (_emit_jerk) may slide the
-# shaper zero above where it was configured. 1.2 leaves at most sinc^2(pi/1.2)
-# ~= 3.6% of unshaped at the mode, and is far more headroom than the sub-1%
-# lookahead/integrator disagreement this backstop exists to absorb. Past it the
-# move is emitted as a plain constant-accel profile instead: no zero at all, but
-# reported, rather than a ramp whose zero has silently walked off the mode.
-FALLBACK_FREQ_RATIO = 1.2
-
-
-def jerk_dist(v0, v1, accel, jerk, notch_freq=None, notch_freq2=None):
+def notch_dist(v0, v1, accel, notch_freq, notch_freq2=None):
     # Path distance to change speed v0 -> v1 under a symmetric jerk-limited
-    # S-curve at constant max |accel| and max |jerk| (accel ramps 0 -> peak -> 0
-    # so a(t) is continuous in the ideal law). Closed form: distance = mean
-    # speed * duration, exact because a symmetric velocity S-curve's
-    # time-average speed is (v0+v1)/2. Serves accel and decel identically (uses
-    # |dv|). The actual emitter uses zero-order-held acceleration slices, so
-    # this is the analytic planning model rather than a bit-exact rendering
-    # model.
+    # notch profile (accel ramps 0 -> peak -> 0, so a(t) is continuous in the
+    # ideal law). Closed form: distance = mean speed * duration, exact because
+    # a symmetric velocity S-curve's time-average speed is (v0+v1)/2. Serves
+    # accel and decel identically (uses |dv|). The actual emitter uses
+    # zero-order-held acceleration slices, so this is the analytic planning
+    # model rather than a bit-exact rendering model.
     dv = abs(v1 - v0)
     if dv <= 1e-12:
         return 0.0
-    if notch_freq:
-        # Per-ramp law, mirrored from Constraints.ramp_jerk. Both zeros survive
-        # while the plateau is the notch's own (a_peak = dv*f_lo <= accel), and
-        # then the duration is EXACTLY 1/f_lo + 1/f_hi -- independent of dv, and
-        # equal to the single-notch 2/f_n when f_lo == f_hi. Past saturation the
-        # plateau widens to dv/A and the rise edge keeps its zero on f_hi.
-        f_lo = min(notch_freq, notch_freq2 or notch_freq)
-        f_hi = max(notch_freq, notch_freq2 or notch_freq)
-        saturated = accel > 0.0 and dv > accel / f_lo
-        if saturated:
-            f_rise = sat_rise_freq(dv, accel, f_lo, f_hi)
-            t = dv / accel + 1.0 / f_rise
-        else:
-            t = 1.0 / f_lo + 1.0 / f_hi
-        if jerk:
-            # A max_jerk ceiling below the law's jerk stretches the rise edge;
-            # fall back to the generic form so the estimate stays conservative.
-            j = accel * f_rise if saturated else dv * f_lo * f_hi
-            if jerk < j:
-                return _jerk_dist_generic(v0, v1, dv, accel, jerk)
-        return 0.5 * (v0 + v1) * t
-    return _jerk_dist_generic(v0, v1, dv, accel, jerk)
-
-
-def _jerk_dist_generic(v0, v1, dv, accel, jerk):
-    # Fixed-jerk S-curve: triangular a(t) below saturation, trapezoidal above.
-    if jerk is None or jerk <= 0.0 or accel <= 0.0:
-        return abs(v1 * v1 - v0 * v0) / (2.0 * accel)
-    if dv <= accel * accel / jerk:
-        # Accel never saturates (triangular a(t)): T = 2*sqrt(dv/J).
-        t = 2.0 * math.sqrt(dv / jerk)
+    if not notch_freq:
+        raise ValueError("notch_dist requires a notch frequency")
+    # Per-ramp law, mirrored from Constraints.ramp_jerk. Both zeros survive
+    # while the plateau is the notch's own (a_peak = dv*f_lo <= accel), and
+    # then the duration is exactly 1/f_lo + 1/f_hi. Past saturation the plateau
+    # widens to dv/A and the rise edge keeps one configured zero.
+    f_lo = min(notch_freq, notch_freq2 or notch_freq)
+    f_hi = max(notch_freq, notch_freq2 or notch_freq)
+    saturated = accel > 0.0 and dv > accel / f_lo
+    if saturated:
+        f_rise = sat_rise_freq(dv, accel, f_lo, f_hi)
+        t = dv / accel + 1.0 / f_rise
     else:
-        # Accel saturates at `accel` (trapezoidal a(t)): T = dv/A + A/J.
-        t = dv / accel + accel / jerk
+        t = 1.0 / f_lo + 1.0 / f_hi
     return 0.5 * (v0 + v1) * t
 
 
-def jerk_reach_v2(
+def notch_reach_v2(
     u0,
     dist,
     accel,
-    jerk,
     v_ceil,
-    notch_freq=None,
+    notch_freq,
     notch_freq2=None,
 ):
     # Max u = v^2 reachable from v0=sqrt(u0) over path-distance `dist` under a
-    # jerk-limited S-curve (constant max accel/jerk). Direction-symmetric
-    # (forward accel == backward decel). Bisection on v1 over the O(1)
-    # closed-form jerk_dist -- cheap enough for the hot lookahead loop (no ramp
-    # integration). jerk None/0 (and no notch_freq) -> stock constant-accel
-    # reach.
+    # notch profile. Direction-symmetric (forward accel == backward decel).
+    # Bisection on v1 over the O(1) closed-form notch_dist is cheap enough for
+    # the hot lookahead loop (no ramp integration).
     #
     # Bisection stays valid under the notch law: distance is (v0+v1)/f while
     # a_peak is unsaturated and 0.5*(v0+v1)*(dv/A + 1/f) past that; both are
     # monotonically increasing in v1.
     if dist <= 0.0:
         return u0
-    if accel <= 0.0 or ((jerk is None or jerk <= 0.0) and not notch_freq):
-        return u0 + 2.0 * accel * dist
+    if accel <= 0.0:
+        return u0
+    if not notch_freq:
+        raise ValueError("notch_reach_v2 requires a notch frequency")
     v0 = math.sqrt(max(u0, 0.0))
-    f_lo = f_hi = 0.0
-    if notch_freq:
-        # Distances are governed by the pair's HARMONIC mean (Constraints
-        # docstring): a ramp costs 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq,
-        # which is the single-notch formula with f_eq == notch_freq.
-        f_lo = min(notch_freq, notch_freq2 or notch_freq)
-        f_hi = max(notch_freq, notch_freq2 or notch_freq)
-        f_eq = 2.0 / (1.0 / f_lo + 1.0 / f_hi)
-        # A ramp costs (v0+v1)/f_eq of distance, and that does not go to zero
-        # as v1 -> v0: its infimum is 2*v0/f_eq. A move shorter than that has
-        # no room for any speed change and reach is exactly u0. This is the
-        # common short-move case, and testing it in closed form skips the whole
-        # bisection.
-        if dist < 2.0 * v0 / f_eq:
-            return u0
-        if jerk:
-            tri_dv_max = jerk / (f_lo * f_hi)
-            sat_j = accel * f_hi if accel > 0.0 else 0.0
-            if jerk < sat_j:
-                v_ceil = min(v_ceil, v0 + tri_dv_max)
-
+    # Distances are governed by the pair's HARMONIC mean (Constraints
+    # docstring): a ramp costs 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq,
+    # which is the single-notch formula with f_eq == notch_freq.
+    f_lo = min(notch_freq, notch_freq2 or notch_freq)
+    f_hi = max(notch_freq, notch_freq2 or notch_freq)
+    f_eq = 2.0 / (1.0 / f_lo + 1.0 / f_hi)
+    # A ramp costs (v0+v1)/f_eq of distance, and that does not go to zero as
+    # v1 -> v0: its infimum is 2*v0/f_eq. A move shorter than that has no room
+    # for any speed change and reach is exactly u0. This is the common
+    # short-move case, and testing it in closed form skips the whole bisection.
+    if dist < 2.0 * v0 / f_eq:
+        return u0
     def _fits(v1):
-        if not notch_freq:
-            return jerk_dist(v0, v1, accel, jerk) <= dist
-        return jerk_dist(v0, v1, accel, jerk, f_lo, f_hi) <= dist
+        return notch_dist(v0, v1, accel, f_lo, f_hi) <= dist
 
     hi = max(v0, v_ceil)
     if _fits(hi):
@@ -402,9 +353,8 @@ def _ramp_up_jerk(v0, v1, cons, collect=True):
     # it da/dt = -J exactly, so following min(a_curve, a_brake, a+J*dt)
     # guarantees a bounded rise (a+J*dt) and a jerk-feasible fall to 0 at v1.
     #
-    # Per-RAMP jerk: fixed (cons.max_jerk) in fixed-jerk mode, or dv*f_n^2 when
-    # a notch frequency is configured, which holds this ramp's shaper zero on
-    # f_n instead of letting it slide with dv. See Constraints.ramp_jerk.
+    # Per-ramp jerk is derived from the configured notch frequencies. See
+    # Constraints.ramp_jerk.
     J = cons.ramp_jerk(v1 - v0)
     dt0 = cons.jerk_dt
     if cons.max_da is not None and J is not None and J > 0.0:
@@ -461,29 +411,12 @@ def _decel_from_accel(acc_slices):
     return dec
 
 
-def _notch_peak_limit(vs, vc, ve, cons):
-    if not cons.notch_freq:
-        return vc
-    if cons.max_jerk:
-        # Unsaturated law is J = dv*f_lo*f_hi, so a jerk ceiling caps the ramp
-        # dv at max_jerk/(f_lo*f_hi); saturated it is J = A*f_hi.
-        sat_j = (
-            cons.a_const * cons.notch_hi
-            if cons.a_const and cons.a_const > 0.0
-            else 0.0
-        )
-        if not sat_j or cons.max_jerk < sat_j:
-            dv_max = cons.max_jerk / (cons.notch_lo * cons.notch_hi)
-            return min(vc, vs + dv_max, ve + dv_max)
-    return vc
-
-
 def _peak_velocity_jerk(vs, ve, move_d, cons):
     # Highest cruise a jerk-limited move can reach: bisection on the ramp
     # distance (accel vs->vp plus decel vp->ve). Returns max(vs,ve) when even
-    # that connecting ramp overfills move_d (caller then falls back to sharp).
+    # that connecting ramp overfills move_d (the profile is infeasible).
     lo = max(vs, ve)
-    hi = _notch_peak_limit(vs, cons.v_ceil, ve, cons)
+    hi = cons.v_ceil
     need_lo = (
         _ramp_up_jerk(vs, lo, cons, collect=False)[1]
         + _ramp_up_jerk(ve, lo, cons, collect=False)[1]
@@ -509,28 +442,11 @@ def _peak_velocity_jerk(vs, ve, move_d, cons):
     return lo
 
 
-def _with_jerk(cons, J):
-    # Shallow copy of the constraints with a different jerk (for the fallback
-    # jerk-raising search). notch_freq is deliberately DROPPED: under the notch
-    # law a ramp's distance is (v0+v1)/f_n no matter what J is, so a move too
-    # short to fit it is infeasible at every J and the search would never
-    # converge. Falling back to plain fixed-jerk is the right semantics: too
-    # short to shape, so stop preserving the requested notch.
-    return Constraints(
-        a_const=cons.a_const,
-        v_ceil=cons.v_ceil,
-        max_jerk=J,
-        jerk_dt=cons.jerk_dt,
-        notch_freq=None,
-        max_da=cons.max_da,
-    )
-
-
 def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
     # One jerk-limited profile at the per-ramp jerk: ramp vs->vc, cruise, ramp
     # vc->ve. Returns None when the move can't be jerk-limited (endpoints
     # unreachable within move_d even at the connecting peak).
-    vc = max(_notch_peak_limit(vs, vc, ve, cons), vs, ve)
+    vc = max(vc, vs, ve)
     acc, d_acc = _ramp_up_jerk(vs, vc, cons, collect=collect)
     dec_acc, d_dec = _ramp_up_jerk(ve, vc, cons, collect=collect)
     if not math.isfinite(d_acc) or not math.isfinite(d_dec):
@@ -552,6 +468,8 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
         # absorbs it, and trimming a slice instead would break the per-slice
         # "trapq-implied distance == dist" invariant.
         cruise_d = max(0.0, cruise_d)
+    if cruise_d > 1e-9 and vc <= 1e-9:
+        return None
     if not collect:
         return []
     segs = list(acc)
@@ -565,74 +483,9 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
     return segs
 
 
-def _emit_jerk(vs, vc, ve, move_d, cons):
-    # Discretized jerk-limited profile. If the move is infeasible at the
-    # configured jerk, raise the jerk to the minimum value that fits and emit
-    # there; acceleration remains staircase-shaped with bounded per-slice
-    # changes. A hard step would become a multi-step position jump in
-    # stepcompress on any downstream that reads accel.
-    segs = _emit_jerk_core(vs, vc, ve, move_d, cons)
-    if segs is not None:
-        return segs
-    # Seed the search from the jerk this move WOULD have used. In notch mode
-    # max_jerk may be unset (the notch law supplies the jerk), so fall back to
-    # the notch-law jerk for the move's largest ramp.
-    J0 = cons.max_jerk
-    if not J0:
-        J0 = cons.ramp_jerk(max(abs(vc - vs), abs(vc - ve)))
-    if not J0:
-        return None  # nothing to ramp -> caller does sharp
-    # In NOTCH mode the raise is bounded, because raising J shortens the ramp
-    # and a shorter ramp slides the shaper zero UP off the mode -- the exact
-    # thing the notch law exists to prevent. Scaling the pair by k costs k^2 in
-    # jerk, so capping J' at FALLBACK_FREQ_RATIO^2 * J holds the zero within
-    # that ratio of where it was configured.
-    #
-    # The lookahead already guarantees the ramp fits (jerk_reach_v2 caps the
-    # move's boundary speeds on exactly this law), so this path only ever sees
-    # the sub-1% disagreement between that closed form and the discretized
-    # integrator, plus the seams where spanning splits a run. A small bound is
-    # ample for those. Anything needing more is not a rounding artifact, and
-    # emitting it as a "ramp" whose zero has walked off to nowhere would be
-    # shaping in name only -- fall through to the sharp profile instead, which
-    # is honest and which notch_loss_reasons already reports as
-    # insufficient_runway.
-    j_cap = J0 * FALLBACK_FREQ_RATIO**2 if cons.notch_freq else None
-    hi = lo = J0  # lo tracks the last known-INfeasible jerk
-    feasible_hi = False
-    for _ in range(40):  # expand until feasible
-        if j_cap is not None and hi >= j_cap:
-            break
-        lo = hi
-        hi = hi * 2.0
-        if j_cap is not None:
-            hi = min(hi, j_cap)
-        s = _emit_jerk_core(
-            vs, vc, ve, move_d, _with_jerk(cons, hi), collect=False
-        )
-        if s is not None:
-            feasible_hi = True
-            break
-    if not feasible_hi:
-        # Degenerate, or past the notch bound -> caller does sharp.
-        return None
-    best = hi
-    for _ in range(24):  # bisection for the minimum feasible J'
-        mid = 0.5 * (lo + hi)
-        s = _emit_jerk_core(
-            vs, vc, ve, move_d, _with_jerk(cons, mid), collect=False
-        )
-        if s is not None:
-            hi, best = mid, mid
-        else:
-            lo = mid
-    return _emit_jerk_core(vs, vc, ve, move_d, _with_jerk(cons, best))
-
-
 def _emit_sharp(vs, vc, ve, move_d, cons):
     # Constant-accel accel/cruise/decel profile (the classic trapezoid), used
-    # when a move is too short to jerk-limit. Closed form at cons.a_const --
-    # this is exactly what the a_max lookahead approved, so it always fits.
+    # when notch shaping is disabled. Closed form at cons.a_const.
     a = cons.a_const
     if a is None or a <= 0.0:
         return []
@@ -660,8 +513,37 @@ def _emit_sharp(vs, vc, ve, move_d, cons):
     return segs
 
 
+def validate_profile(vs, vc, ve, move_d, cons):
+    """Raise InfeasibleProfile if a notched profile cannot fit the move.
+
+    This follows the same recurrence as emit_profile() without collecting
+    slices, so callers can validate a whole flush batch without retaining its
+    rendered profiles in memory.
+    """
+    if move_d <= 0.0 or not cons.notch_freq:
+        return
+    if _emit_jerk_core(vs, vc, ve, move_d, cons, collect=False) is None:
+        raise InfeasibleProfile(
+            "notched profile does not fit move: "
+            "start=%.6f cruise=%.6f end=%.6f distance=%.6f"
+            % (vs, vc, ve, move_d)
+        )
+
+
+def _render_validated_profile(vs, vc, ve, move_d, cons):
+    """Render a profile that has already passed validate_profile()."""
+    if move_d <= 0.0:
+        return []
+    if cons.notch_freq:
+        segs = _emit_jerk_core(vs, vc, ve, move_d, cons)
+        if segs is None:
+            raise AssertionError("validated notch profile failed to render")
+        return segs
+    return _emit_sharp(vs, vc, ve, move_d, cons)
+
+
 def emit_profile(vs, vc, ve, move_d, cons):
-    """Emit ONE monotonic constant-accel segment list for a single move.
+    """Validate and emit one constant-accel segment list for a single move.
 
     Each segment is (accel_t, cruise_t, decel_t, start_v, cruise_v, accel, dist)
     -- the tuple the toolhead/extruder trapq consume. Invariant-guaranteed by
@@ -669,22 +551,16 @@ def emit_profile(vs, vc, ve, move_d, cons):
     trapq-implied distance == dist, inter-segment velocity continuity, and
     sum(dist) == move_d to within 1e-6*move_d (see _emit_jerk_core).
 
-    When cons.max_jerk (or cons.notch_freq) is set, acceleration is emitted as
-    constant-accel slices whose per-slice changes are jerk bounded; on a move
-    too short to jerk-limit, it falls back to the sharp constant-accel profile.
+    When cons.notch_freq is set, acceleration is emitted as constant-accel
+    slices whose per-slice changes are jerk bounded. An infeasible notched move
+    raises InfeasibleProfile instead of silently substituting a sharp profile.
 
     A move with no room to ramp at cons.notch_freq simply holds its entry speed
     -- the zero stays parked on the mode. The lookahead applies the identical
     rule, so the cruise it asked for is the cruise this renders.
     """
-    if move_d <= 0.0:
-        return []
-    if cons.max_jerk or cons.notch_freq:
-        segs = _emit_jerk(vs, vc, ve, move_d, cons)
-        if segs is not None:
-            return segs
-        # else: jerk-infeasible for this short move -> sharp fallback below
-    return _emit_sharp(vs, vc, ve, move_d, cons)
+    validate_profile(vs, vc, ve, move_d, cons)
+    return _render_validated_profile(vs, vc, ve, move_d, cons)
 
 
 def _split_segment(seg, d1):
@@ -772,14 +648,12 @@ def split_segments(segs, lengths):
 # stop calling the diagnostic once it has reported all of them.
 LOSS_REASONS = frozenset(
     (
-        "jerk_clamped",
-        "insufficient_runway",
         "second_notch_saturated",
     )
 )
 
 
-def notch_loss_reasons(vs, vc, ve, move_d, cons):
+def notch_loss_reasons(vs, vc, ve, cons):
     """Return reasons the requested notch frequency is not preserved exactly.
 
     Reports only ACTIONABLE losses -- ones a config change can remove. The
@@ -813,26 +687,4 @@ def notch_loss_reasons(vs, vc, ve, move_d, cons):
             )
             if worst > SECOND_NOTCH_EPS:
                 reasons.add("second_notch_saturated")
-        target_j = dv * cons.notch_lo * cons.notch_hi
-        if cons.max_jerk:
-            sat_j = (
-                cons.a_const
-                * sat_rise_freq(dv, cons.a_const, cons.notch_lo, cons.notch_hi)
-                if cons.a_const and cons.a_const > 0.0
-                else 0.0
-            )
-            required_j = min(target_j, sat_j) if sat_j else target_j
-            if cons.max_jerk < required_j:
-                reasons.add("jerk_clamped")
-    req_d = (
-        _ramp_up_jerk(vs, max(vc, vs), cons, collect=False)[1]
-        + _ramp_up_jerk(ve, max(vc, ve), cons, collect=False)[1]
-    )
-    # collect=False: this is a feasibility probe, so never build the slice list
-    # just to throw it away.
-    if (
-        req_d > move_d + 1e-9
-        or _emit_jerk_core(vs, vc, ve, move_d, cons, collect=False) is None
-    ):
-        reasons.add("insufficient_runway")
     return sorted(reasons)

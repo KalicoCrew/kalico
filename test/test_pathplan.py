@@ -67,40 +67,6 @@ def test_sharp_trapezoid():
     print("  sharp trapezoid invariants OK")
 
 
-def test_jerk_profile_invariants():
-    cons = pathplan.Constraints(
-        a_const=8000.0, v_ceil=400.0, max_jerk=1.0e5, jerk_dt=0.001
-    )
-    for vs, vc, ve, d in [
-        (0.0, 200.0, 0.0, 60.0),
-        (0.0, 250.0, 120.0, 50.0),
-        (80.0, 300.0, 80.0, 90.0),
-    ]:
-        segs = pathplan.emit_profile(vs, vc, ve, d, cons)
-        assert segs, ("empty", vs, vc, ve, d)
-        check_segs(segs, d, vs, ve, "jerk(%s,%s,%s,%s)" % (vs, vc, ve, d))
-    print("  jerk profile invariants OK")
-
-
-def test_disabled_matches_sharp():
-    a = pathplan.emit_profile(
-        0.0,
-        200.0,
-        50.0,
-        40.0,
-        pathplan.Constraints(a_const=8000.0, v_ceil=400.0),
-    )
-    b = pathplan.emit_profile(
-        0.0,
-        200.0,
-        50.0,
-        40.0,
-        pathplan.Constraints(a_const=8000.0, v_ceil=400.0, max_jerk=None),
-    )
-    assert a == b, "max_jerk=None diverged from sharp"
-    print("  max_jerk=None identical to sharp OK")
-
-
 def test_impossible_endpoint_change_rejected():
     cons = pathplan.Constraints(a_const=8000.0, v_ceil=400.0)
     cases = [(100.0, 200.0, 0.0, 0.5), (50.0, 200.0, 100.0, 0.2)]
@@ -114,8 +80,6 @@ def test_impossible_endpoint_change_rejected():
 
 def main():
     test_sharp_trapezoid()
-    test_jerk_profile_invariants()
-    test_disabled_matches_sharp()
     test_impossible_endpoint_change_rejected()
     print("ALL PASS")
 

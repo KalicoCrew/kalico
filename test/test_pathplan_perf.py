@@ -19,8 +19,8 @@ def bench_reach(iterations=2000):
         v0 = (i % 180) * 0.7
         dist = 0.4 + (i % 37) * 0.18
         nf = 44.0 + (i % 5) * 3.0
-        acc += pathplan.jerk_reach_v2(
-            v0 * v0, dist, 8000.0, 250000.0, 600.0, notch_freq=nf
+        acc += pathplan.notch_reach_v2(
+            v0 * v0, dist, 8000.0, 600.0, notch_freq=nf
         )
     return time.perf_counter() - start, acc
 
@@ -29,7 +29,6 @@ def _cons():
     return pathplan.Constraints(
         a_const=8000.0,
         v_ceil=600.0,
-        max_jerk=250000.0,
         jerk_dt=0.001,
         notch_freq=55.0,
     )
@@ -54,24 +53,19 @@ def bench_emit(iterations=400):
 
 
 def bench_emit_short(iterations=400):
-    # The moves the 8-36 mm bench above never reaches: sub-millimetre segments
-    # at speed, where the requested cruise does NOT fit the runway. These take
-    # the _peak_velocity_jerk bisection (two full ramp integrations per probe)
-    # and then the jerk-escalation search -- by far the most expensive path in
-    # the emitter, and the COMMON case on real sliced geometry.
+    # Exercise complete shaped accel/decel profiles that fit in less than one
+    # millimetre. Infeasible profiles intentionally fail closed, so they are
+    # not useful emitter benchmarks.
     cons = _cons()
     start = time.perf_counter()
     seg_count = 0
     for i in range(iterations):
-        vs = 40.0 + float(i % 90)
-        move_d = 0.15 + float(i % 12) * 0.07  # 0.15 - 0.92 mm
-        # Keep (vs, ve) inside the constant-accel reach so the endpoints are
-        # something a real lookahead could hand us; only the CRUISE is out of
-        # reach, which is what forces the expensive peak search.
-        span = 2.0 * cons.a_const * move_d
-        frac = -0.9 + 0.2 * float(i % 10)
-        ve = math.sqrt(max(0.0, vs * vs + span * frac))
-        vc = max(vs, ve) + 60.0
+        vs = ve = 0.0
+        vc = 5.0 + float(i % 16)
+        ramp_d = pathplan.notch_dist(
+            0.0, vc, cons.a_const, cons.notch_freq
+        )
+        move_d = 2.0 * ramp_d + 0.01
         segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
         assert segs, (vs, vc, ve, move_d)
         check_segs(segs, move_d, vs, ve, "perf_short[%d]" % (i,))
@@ -92,7 +86,7 @@ def bench_loss_reasons(iterations=400):
         ve = float((i * 11) % 40)
         vc = max(vs, ve) + 20.0 + float(i % 120)
         move_d = 8.0 + float(i % 80) * 0.35
-        reasons = pathplan.notch_loss_reasons(vs, vc, ve, move_d, cons)
+        reasons = pathplan.notch_loss_reasons(vs, vc, ve, cons)
         for r in reasons:
             assert r in pathplan.LOSS_REASONS, r
         count += len(reasons)

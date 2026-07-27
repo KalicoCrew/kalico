@@ -57,10 +57,9 @@ constant-acceleration plateau for the remaining velocity change. The ideal ramp
 edge still has a zero at `f_n` while the configured acceleration limit is
 honored.
 
-If `unified_max_jerk` is set too low for the required triangular or saturated
-law, the planner limits ramp `dv` instead of lowering the notch frequency. The
-emitted zero-order-held slices still approximate the ideal pulse, and
-insufficient runway moves the response away from the requested notch.
+The notch frequencies and ramp velocity change determine jerk directly. The
+emitted zero-order-held slices approximate the ideal pulse, and insufficient
+runway moves the response away from the requested notch.
 
 ## Configuration
 
@@ -78,7 +77,7 @@ unified_notch_freq: 55
 
 - `unified_notch_freq` (default: 0)
   Mode frequency in Hz to park the accel-ramp's shaper zero on, via
-  `J = dv * f_n^2`. `0` disables the notch law (a fixed jerk is used instead).
+  `J = dv * f_n^2`. `0` disables the notch law.
 
 - `unified_notch_freq_x`, `unified_notch_freq_y` (default: 0)
   Optional per-axis notch modes in Hz. Setting two **different** modes selects a
@@ -90,18 +89,10 @@ unified_notch_freq: 55
   different measured modes — e.g. a bed-slinger whose heavy Y rings low and
   lighter X higher.
 
-- `unified_max_jerk` (default: 0)
-  Fixed jerk cap in mm/s^3. `0` = uncapped. Values other than `0` must be at
-  least `1000`. When `unified_notch_freq` is set this cap must be high enough
-  for the selected law: `dv * f_n^2` while triangular, or `max_accel * f_n` once
-  the ramp saturates `max_accel`. If it is lower, lookahead slows the move
-  rather than moving the first zero below `f_n`. Very short moves may use a
-  bounded escape ramp above this cap while still respecting `max_accel`.
-
 - `unified_max_da` (default: 0)
   Optional cap in mm/s^2 on the positive acceleration step emitted between
-  slices. `0` disables the cap. When short-move fallback raises jerk, the
-  emitter shrinks slice time to keep jerk-up steps within this cap.
+  slices. `0` disables the cap. The emitter shrinks slice time to keep jerk-up
+  steps within this cap.
 
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a
@@ -172,7 +163,6 @@ flushed first, so the change applies to subsequently planned moves):
 ```
 SET_UNIFIED ENABLE=1 NOTCH_FREQ=55
 SET_UNIFIED NOTCH_FREQ_X=70 NOTCH_FREQ_Y=55   # per-axis modes
-SET_UNIFIED MAX_JERK=400000
 SET_UNIFIED MAX_DA=100
 SET_UNIFIED                       # report current state
 ```
@@ -205,10 +195,10 @@ printed at a known speed. Band spacing is the resonance period, so
   Lower `f_n` needs more runway, so very fine detail on a low-frequency notch may
   not be shaped. When a move is too short, the *planner* does not accelerate
   across it at all — it holds the entry speed rather than emitting an unshaped
-  ramp. (The emitter does carry a fixed-jerk and then a constant-accel fallback,
-  but the lookahead never asks for a speed change it cannot shape, so in normal
-  queued motion those paths are not reached.) See **Throughput** below: this is
-  the dominant practical effect of the feature.
+  ramp. If lookahead and emission ever disagree and the requested notched
+  profile cannot be rendered, motion fails closed instead of substituting a
+  potentially large constant-acceleration step. See **Throughput** below: this
+  is the dominant practical effect of the feature.
 
 - **Acceleration limit.** For `dv <= max_accel / f_n`, notch mode uses the
   triangular law `J = dv * f_n^2`. Above that, it uses a saturated trapezoid with
@@ -305,9 +295,8 @@ printed at a known speed. Band spacing is the resonance period, so
   collinear" intuition suggests. A scalar-only spectrum cannot see any of this,
   which is why the test measures each axis separately. Boundary speeds are additionally
   capped by the stock constant-acceleration reach, which keeps every move
-  individually feasible at `max_accel` and so keeps the constant-accel fallback
-  valid everywhere. Set `unified_span_ramps: False` for the strict per-move
-  behaviour.
+  individually feasible at `max_accel`. Set `unified_span_ramps: False` for the
+  strict per-move behaviour.
 
   Slicing at a longer segment length also raises the per-move ceiling directly,
   and is the only lever if spanning is disabled.
