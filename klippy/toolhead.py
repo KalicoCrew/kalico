@@ -73,7 +73,6 @@ class Move:
         self.max_junction_v2 = 999999999.9
         self.span_start_v2 = 0.0
         self.span_start_d = 0.0
-        self.span_notch_f = None
         self.span_link = False
 
     def limit_speed(self, speed, accel):
@@ -171,13 +170,9 @@ class Move:
         if span_link and max_start_v2 >= prev_reach_v2 - 1e-9:
             self.span_start_v2 = prev_move.span_start_v2
             self.span_start_d = prev_move.span_start_d + prev_move.move_d
-            self.span_notch_f = prev_move.span_notch_f
-            if self.span_notch_f is None:
-                self.span_notch_f = th._move_notch_freq(prev_move)
         else:
             self.span_start_v2 = max_start_v2
             self.span_start_d = 0.0
-            self.span_notch_f = th._move_notch_freq(self)
 
     def set_junction(self, start_v2, cruise_v2, end_v2):
         # Determine accel, cruise, and decel portions of the move distance
@@ -218,8 +213,6 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 # Hence a 2 degree default, tunable via unified_span_max_angle for anyone who
 # wants to trade that residual for spanning across coarser geometry.
 SPAN_MAX_ANGLE = 2.0
-# Largest RELATIVE difference in notch target between two moves of one run.
-SPAN_NOTCH_REL_TOL = 0.01
 
 
 # Class to track a list of pending move requests and to facilitate
@@ -1541,29 +1534,15 @@ class ToolHead:
         # used a constant accel, saw none of it. The run is emitted at the
         # group's minimum accel instead (see _span_plans), which respects
         # every member's limit.
-        f_move = self._move_notch_freq(move)
-        f_prev = self._move_notch_freq(prev_move)
-        f_ref = prev_move.span_notch_f
-        if f_ref is None:
-            f_ref = f_prev
-        # Compare with a tolerance rather than exactly.
-        #
-        # On a machine whose X and Y modes both land on the same actuators this
-        # never fires: the two-zero ramp nulls both modes on every axis, so the
-        # target no longer depends on heading and every move of a curve agrees
-        # EXACTLY. (The single-zero blend it replaced put the zero at a
-        # direction-weighted mean, which crept at every segment -- that is what
-        # this tolerance was originally sized for.) It is kept because
-        # _move_notch_pair is still per-move: on kinematics where Z couples
-        # into X/Y the pair can genuinely differ between moves.
-        #
-        # The run is rendered at the first move's target, so what matters is
-        # how far the others sit from it: a triangular pulse whose zero is off
-        # by a fraction e leaves about sinc^2(pi*(1+e)) at the mode -- 1e-4 at
-        # 1% and 2e-3 at 5%, both under the ~0.0066 the emitter's own
-        # discretization already leaves.
-        if abs(f_move - f_ref) > SPAN_NOTCH_REL_TOL * max(f_move, f_ref):
-            return False
+        # No notch-target comparison is needed between two moves of a run.
+        # Every move that reaches here carries the SAME (f_lo, f_hi): the
+        # two-zero ramp nulls both modes on every axis, so the pair stopped
+        # depending on heading. _move_notch_pair varies only for a move with no
+        # XY component, and there it is either (0, 0) -- decoupled Z, rejected
+        # by _uses_unified_reach above before we get this far -- or the very
+        # same pair an XY move gets. The tolerance this used to apply was sized
+        # for the single-zero blend, whose direction-weighted mean crept at
+        # every segment of a curve; that drift no longer exists.
         # junction_cos_theta is the NEGATED dot product of the unit directions.
         return -junction_cos_theta >= min_cos
 

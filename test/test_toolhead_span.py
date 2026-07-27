@@ -640,7 +640,7 @@ def test_span_notch_target_is_constant_along_a_curve():
     # Two zeros remove the cause rather than bounding it. rect(1/f_hi) *
     # rect(1/f_lo) nulls both modes on both axes, so the ramp shape -- and the
     # target the span compares -- no longer depends on heading at all. The drift
-    # bound is asserted here as ZERO, not merely within SPAN_NOTCH_REL_TOL.
+    # bound is asserted here as ZERO, not merely within a tolerance.
     th = make_toolhead(span=True)
     th.unified_notch_freq = 0.0
     th.unified_notch_freq_x = 55.0
@@ -686,18 +686,18 @@ def test_span_notch_target_is_constant_along_a_curve():
                 "a move with no inherited runway was welded into a run",
                 member.span_start_d,
             )
-    # The pinning that bounded the old drift is still enforced, so it stays
-    # correct if a heading-dependent target is ever reintroduced.
+    # Drift is not merely bounded, it is ZERO -- which is why _span_link_ok no
+    # longer carries a notch-target comparison at all. Asserted exactly, so
+    # reintroducing any heading dependence fails here rather than silently
+    # eating into a tolerance.
     for group, _peak, _cap in groups:
         first_f = th._move_notch_freq(group[0])
         for move in group:
             move_f = th._move_notch_freq(move)
-            rel = abs(move_f - first_f) / max(move_f, first_f)
-            assert rel <= toolhead.SPAN_NOTCH_REL_TOL + 1e-12, (
+            assert move_f == first_f, (
                 "span accumulated notch drift",
                 first_f,
                 move_f,
-                rel,
             )
     print(
         "  per-axis notch target constant over %d curve segments (%.4f Hz) OK"
