@@ -421,6 +421,65 @@ def test_validation_matches_rendering():
     print("  successful preflight and rendering stay equivalent OK")
 
 
+def test_render_refuses_an_unvalidated_infeasible_profile():
+    # _render_validated_profile trusts its caller to have run validate_profile
+    # first, and asserts if the profile turns out not to render. That guard was
+    # never exercised: the existing test only walks the path where validation
+    # PASSED. It matters because the failure it catches is the one that shut a
+    # printer down -- the planner and the emitter disagreeing about the same
+    # move -- and a guard nothing tests is a guard nobody knows still works.
+    cons = make_cons(notch=55.0)
+    # 275 -> 400 mm/s needs 0.5*(275+400)*(2/55) = 12.3 mm; give it 5 mm.
+    vs, vc, ve, move_d = 275.009495, 400.0, 400.0, 5.000081
+    try:
+        pathplan.validate_profile(vs, vc, ve, move_d, cons)
+    except pathplan.InfeasibleProfile:
+        pass
+    else:
+        raise AssertionError(
+            "premise broken: this profile is supposed to be infeasible"
+        )
+    try:
+        pathplan._render_validated_profile(vs, vc, ve, move_d, cons)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(
+            "render silently accepted a profile validation would reject"
+        )
+    print("  rendering an unvalidated infeasible profile fails loudly OK")
+
+
+def test_split_segments_never_empties_a_bucket():
+    # _process_lookahead asserts that a validated span never splits into an
+    # empty per-move bucket, because an empty bucket would emit a move with no
+    # motion and desynchronise print_time from the trapq. Assert the property
+    # directly, across uneven splits and a span whose ramp is far shorter than
+    # the run, which is where a bucket could plausibly come up empty.
+    cons = make_cons(notch=55.0)
+    for vs, vc, ve, lengths in (
+        (0.0, 200.0, 0.0, [5.0, 5.0, 5.0, 5.0]),
+        (50.0, 300.0, 50.0, [0.2, 0.2, 30.0, 0.2, 0.2]),
+        (100.0, 100.0, 100.0, [1.0, 0.05, 1.0]),
+        (11.0, 220.0, 11.0, [0.2] * 40),
+    ):
+        move_d = math.fsum(lengths)
+        pathplan.validate_profile(vs, vc, ve, move_d, cons)
+        segs = pathplan._render_validated_profile(vs, vc, ve, move_d, cons)
+        buckets = pathplan.split_segments(segs, lengths)
+        assert len(buckets) == len(lengths)
+        for i, (bucket, want_d) in enumerate(zip(buckets, lengths)):
+            assert bucket, ("empty bucket", i, lengths)
+            got_d = math.fsum(s[6] for s in bucket)
+            assert abs(got_d - want_d) < 1e-9, (
+                "bucket distance drifted",
+                i,
+                got_d,
+                want_d,
+            )
+    print("  split_segments never produces an empty bucket OK")
+
+
 def main():
     test_zero_is_parked()
     test_apeak_linear_in_dv()
@@ -441,6 +500,8 @@ def main():
     test_invariants_hold()
     test_chain_no_sharp_fallback()
     test_short_chain_degrades_cleanly()
+    test_render_refuses_an_unvalidated_infeasible_profile()
+    test_split_segments_never_empties_a_bucket()
     print("ALL PASS")
 
 
