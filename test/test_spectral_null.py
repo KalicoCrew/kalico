@@ -301,6 +301,63 @@ def test_lost_nulls_are_reported():
     print("  a lost or partial null is reported, a clean one is not OK")
 
 
+def spectrum(slices, freq):
+    """|A(freq)| of the emitted acceleration; freq=0 gives the DC term (dv)."""
+    if freq <= 0.0:
+        return abs(math.fsum(s[5] * s[0] for s in slices))
+    w = 2.0 * math.pi * freq
+    t = [0.0]
+    for s in slices:
+        t.append(t[-1] + s[0])
+    return abs(sum(
+        s[5] * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
+        / (1j * w)
+        for i, s in enumerate(slices)
+    ))
+
+
+def test_broadband_response_is_not_made_worse():
+    # An exact point null can pay for itself by pushing energy elsewhere -- the
+    # waterbed effect -- and a solver that only minimises the acceleration norm
+    # has nothing stopping it. Sweep well past the modes and gate on three
+    # things: total energy, worst pointwise amplification, and whether a new
+    # peak appears that is worse than the baseline already had.
+    for vs, vc, f2 in ((0.0, 100.0, None), (0.0, 400.0, None),
+                       (0.0, 100.0, 75.0), (100.0, 120.0, None)):
+        slices, _d = ramp(vs, vc, f2=f2)
+        freqs = [F] if f2 is None else [F, f2]
+        solved = pathplan.solve_ramp_null(slices, freqs, ACCEL)
+        assert solved is not None, (vs, vc, f2)
+        dc0 = spectrum(slices, 0.0)
+        dc1 = spectrum(solved, 0.0)
+        worst_amp = 0.0
+        base_peak = solved_peak = 0.0
+        e0 = e1 = 0.0
+        for i in range(1, 1001):
+            f = 0.5 * i
+            # Skip the immediate neighbourhood of each null: the ratio there is
+            # meaningless because the denominator is what we removed.
+            if any(abs(f - q) < 3.0 for q in freqs):
+                continue
+            b = spectrum(slices, f) / dc0
+            a = spectrum(solved, f) / dc1
+            e0 += b * b
+            e1 += a * a
+            base_peak = max(base_peak, b)
+            solved_peak = max(solved_peak, a)
+            if b > 1e-12:
+                worst_amp = max(worst_amp, a / b)
+        # Total emitted energy must not grow.
+        assert math.sqrt(e1 / e0) < 1.05, (vs, vc, f2, math.sqrt(e1 / e0))
+        # No single frequency may be amplified without bound.
+        assert worst_amp < 5.0, (vs, vc, f2, worst_amp)
+        # And no NEW peak worse than the one the baseline already had -- the
+        # amplification above lands where the response is small.
+        assert solved_peak <= base_peak * 1.05, (
+            vs, vc, f2, base_peak, solved_peak)
+    print("  broadband response is not made worse by the null OK")
+
+
 def main():
     test_unsaturated_ramps_null_exactly()
     test_null_holds_at_any_slice_count()
@@ -313,6 +370,7 @@ def main():
     test_bounded_jerk_amplification()
     test_saturation_cost_is_linear_not_cubic()
     test_lost_nulls_are_reported()
+    test_broadband_response_is_not_made_worse()
     test_emitter_is_inert_unless_enabled()
     test_decel_ramps_carry_the_null_too()
     print("ALL PASS")

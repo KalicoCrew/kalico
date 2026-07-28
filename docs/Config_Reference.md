@@ -300,7 +300,9 @@ max_accel:
 #   degrees about eight times it. With unified_spectral_null on there is no
 #   floor to hide under: a straight run nulls exactly, so every degree of turn
 #   is measurable and this becomes a direct residual budget rather than a free
-#   allowance. Raise it only to span coarser geometry, and expect ringing in
+#   allowance. A spanned run that does not turn keeps the spectral correction
+#   (constant axis ratios carry a scalar null to every axis); one that turns
+#   anywhere reports spectral_null_span_turned instead. Raise it only to span coarser geometry, and expect ringing in
 #   return. The default is 2.0.
 #unified_spectral_null: False
 #   Solve the emitted slice accelerations for the notch null instead of

@@ -338,8 +338,15 @@ printed at a known speed. Band spacing is the resonance period, so
 
   With `unified_spectral_null` on there is no such floor — a straight run nulls
   exactly — so every degree of turn is measurable, and this limit stops being
-  "free up to 2°" and becomes a direct residual budget. The table below is the
-  floor-relative view and applies to the unsolved emitter:
+  "free up to 2°" and becomes a direct residual budget.
+
+  A spanned run that genuinely does not turn keeps the correction: with the
+  axis ratios constant, one scalar null transfers to every axis unchanged. A
+  run that turns anywhere along it does not, and reports
+  `spectral_null_span_turned` rather than quietly emitting an uncorrected run.
+
+  The table below is the floor-relative view and applies to the unsolved
+  emitter:
 
   | heading change | residual at `f_n` | vs. straight-run floor |
   | -------------- | ----------------- | ---------------------- |

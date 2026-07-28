@@ -214,6 +214,14 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 # wants to trade that residual for spanning across coarser geometry.
 SPAN_MAX_ANGLE = 2.0
 
+# How exactly two moves must agree on direction for a spanned run to count as
+# straight, per unit-vector component. A straight run's axis ratios are
+# constant, so one scalar spectral null transfers to every axis unchanged; any
+# real turn makes them time-varying and it does not. Slicer output that is
+# genuinely collinear reproduces the direction bit-for-bit, so this only has to
+# absorb the rounding in axes_r itself.
+SPAN_COLLINEAR_EPS = 1e-12
+
 
 # Class to track a list of pending move requests and to facilitate
 # "look-ahead" across moves to reduce acceleration between moves.
@@ -799,6 +807,29 @@ class ToolHead:
         if len(group) > 1:
             yield group, peak, cap
 
+    def _group_is_collinear(self, group):
+        # Does every move in a run point the same way?
+        #
+        # A spanned run renders ONE scalar profile and splits it among its
+        # members, and each axis sees a_i(t) = r_i(t)*a(t). If r_i is CONSTANT
+        # the scalar null transfers to every axis unchanged -- a straight run
+        # is exactly as safe as a single move. It is only a direction change
+        # inside the pulse that makes r_i time-varying and breaks the null.
+        #
+        # unified_span_max_angle bounds each JUNCTION, not the run, so heading
+        # can drift across many small turns. Compare against the run's first
+        # move rather than pairwise.
+        first = group[0].axes_r
+        for move in group:
+            r = move.axes_r
+            if (
+                abs(r[0] - first[0]) > SPAN_COLLINEAR_EPS
+                or abs(r[1] - first[1]) > SPAN_COLLINEAR_EPS
+                or abs(r[2] - first[2]) > SPAN_COLLINEAR_EPS
+            ):
+                return False
+        return True
+
     def _span_plans(self, moves):
         # Validate each multi-move run without collecting slices. Return a
         # lightweight {id(move): (plan, index)} map; _process_lookahead renders
@@ -814,7 +845,10 @@ class ToolHead:
             # under a direction-dependent accel limit.
             a_span = min(m.accel for m in group)
             cons = self._pathplan_cons(
-                first, v_ceil=vc + 1.0, a_const=a_span, for_span=True
+                first,
+                v_ceil=vc + 1.0,
+                a_const=a_span,
+                for_span=not self._group_is_collinear(group),
             )
             pathplan.validate_profile(vs, vc, ve, total_d, cons)
             plan = (group, vs, vc, ve, total_d, cons)
@@ -1472,24 +1506,26 @@ class ToolHead:
             # start_v/cruise_v/end_v. Use the move's configured cruise limit
             # as the conservative ceiling for reach calculations.
             v_ceil = math.sqrt(move.max_cruise_v2) + 1.0
-        return pathplan.Constraints(
+        want_null = getattr(self, "unified_spectral_null", False)
+        cons = pathplan.Constraints(
             a_const=move.accel if a_const is None else a_const,
             v_ceil=v_ceil,
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             notch_freq2=notch2,
-            # NOT on a spanning run. One scalar profile is rendered across the
-            # whole run and split among moves of differing direction, and each
-            # axis sees a_i(t) = r_i(t)*a(t) with a TIME-VARYING ratio once the
-            # heading changes -- so a solved scalar null is not an axis-level
-            # null there. unified_span_max_angle bounds how wrong that gets for
-            # the unsolved emitter, but it bounds it against a discretization
-            # floor the solve removes.
-            spectral_null=(
-                not for_span
-                and getattr(self, "unified_spectral_null", False)
-            ),
+            # for_span is set only for a run that CHANGES DIRECTION. One scalar
+            # profile is rendered across the whole run and split among its
+            # moves, and each axis sees a_i(t) = r_i(t)*a(t) -- with r_i
+            # constant, as on a straight run, a solved scalar null transfers to
+            # every axis unchanged and spanning is exactly as safe as a single
+            # move. Only a turn inside the pulse makes r_i time-varying and
+            # breaks it. See ToolHead._group_is_collinear.
+            spectral_null=want_null and not for_span,
         )
+        if for_span and want_null:
+            # Say so rather than quietly emitting an uncorrected run.
+            cons.spectral_loss = "spectral_null_span_turned"
+        return cons
 
     def _z_couples_xy(self):
         # Does a Z-only cartesian move drive the same actuators as X or Y?

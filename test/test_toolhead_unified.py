@@ -451,10 +451,58 @@ def test_infeasible_batch_fails_before_emission():
     print("  infeasible batch fails before timing or motion-queue mutation OK")
 
 
+def _span_move(rx, ry, accel=100000.0):
+    return types.SimpleNamespace(
+        axes_r=(rx, ry, 0.0, 0.0),
+        accel=accel,
+        cruise_v=100.0,
+        start_v=0.0,
+        end_v=0.0,
+        max_cruise_v2=10000.0,
+        start_pos=(0.0, 0.0, 0.0, 0.0),
+    )
+
+
+def test_straight_spans_keep_the_spectral_null():
+    # A spanned run renders ONE scalar profile split among its moves, and each
+    # axis sees a_i(t) = r_i(t)*a(t). With r_i CONSTANT the scalar null
+    # transfers to every axis unchanged, so a straight run is exactly as safe
+    # as a single move -- and with spanning on by default, disabling the
+    # correction for all spans would bypass it on most dense collinear gcode.
+    th = make_unified_toolhead(unified_spectral_null=True)
+    straight = [_span_move(1.0, 0.0) for _ in range(4)]
+    assert th._group_is_collinear(straight)
+    cons = th._pathplan_cons(straight[0], v_ceil=200.0, a_const=100000.0,
+                             for_span=not th._group_is_collinear(straight))
+    assert cons.spectral_null, "straight span lost the correction"
+    assert cons.spectral_loss is None
+
+    # unified_span_max_angle bounds each JUNCTION, not the run, so heading can
+    # drift across many small turns -- compare against the first move, not
+    # pairwise.
+    drifting = [_span_move(1.0, 0.0), _span_move(0.9999, 0.0141),
+                _span_move(0.9997, 0.0245)]
+    assert not th._group_is_collinear(drifting)
+    cons = th._pathplan_cons(drifting[0], v_ceil=200.0, a_const=100000.0,
+                             for_span=not th._group_is_collinear(drifting))
+    assert not cons.spectral_null, "turning span kept the correction"
+    assert cons.spectral_loss == "spectral_null_span_turned"
+    assert cons.spectral_loss in toolhead.pathplan.LOSS_REASONS
+
+    # With the option off, a turning span says nothing -- there is no loss.
+    off = make_unified_toolhead()
+    off.unified_spectral_null = False
+    cons = off._pathplan_cons(drifting[0], v_ceil=200.0, a_const=100000.0,
+                              for_span=True)
+    assert cons.spectral_loss is None
+    print("  straight spans keep the null, turning spans report the loss OK")
+
+
 def main():
     test_subclass_without_unified_fields()
     test_unified_rejects_unsegmented_extra_axis()
     test_notch_freq_floor()
+    test_straight_spans_keep_the_spectral_null()
     test_unified_settings_require_notch_and_resolved_timestep()
     test_unified_settings_bound_the_ramp_slice_budget()
     test_over_budget_settings_still_render_at_runtime()

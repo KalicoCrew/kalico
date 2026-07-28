@@ -972,7 +972,12 @@ def split_segments(segs, lengths):
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
 LOSS_REASONS = frozenset(
-    ("second_notch_saturated", "spectral_null_partial", "spectral_null_failed")
+    (
+        "second_notch_saturated",
+        "spectral_null_partial",
+        "spectral_null_failed",
+        "spectral_null_span_turned",
+    )
 )
 
 
@@ -1008,7 +1013,16 @@ def notch_loss_reasons(vs, vc, ve, cons):
             _f, worst = _sat_rise(
                 dv, cons.a_const, cons.notch_lo, cons.notch_hi
             )
-            if worst > SECOND_NOTCH_EPS:
+            if worst > SECOND_NOTCH_EPS and not (
+                cons.spectral_null and cons.spectral_loss is None
+            ):
+                # Suppressed when the spectral solve succeeded. This reason is
+                # derived from the ANALYTIC saturated profile, where a widened
+                # plateau leaves only one zero placeable. That reasoning is
+                # about the ideal shape; the solve works on the emitted slices
+                # and can put both zeros back, so the measured spectrum
+                # supersedes the prediction. spectral_loss being None means the
+                # emitted profile was checked at every mode and nulled.
                 reasons.add("second_notch_saturated")
     # What the spectral solve actually managed, recorded during emission by
     # _apply_spectral_null. Both of these lose the null the user asked for:
