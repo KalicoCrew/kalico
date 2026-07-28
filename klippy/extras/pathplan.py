@@ -46,7 +46,20 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 
+# Slice budget one ramp is allowed to ask for at CONFIG time. Settings that
+# need more than this are a typo rather than a machine: at the default jerk_dt
+# it describes a four second ramp. ToolHead._check_unified_settings rejects
+# them where a bad value is still a recoverable config error.
 MAX_RAMP_SLICES = 4096
+
+# Runtime backstop for the integrator, deliberately far above MAX_RAMP_SLICES.
+# Exceeding a slice budget is not a recoverable condition down here: it is
+# reported by returning infeasible, that becomes InfeasibleProfile, and nothing
+# in klippy catches it -- the print dies on whatever G1 reached it. So this
+# limit only has to catch NON-CONVERGENCE. The margin over MAX_RAMP_SLICES is
+# what accel changes the config check cannot see (M204 lowers max_accel
+# mid-print, which lengthens a saturated plateau) spend without going fatal.
+RAMP_SLICE_BACKSTOP = 500000
 
 
 class InfeasibleProfile(Exception):
@@ -345,7 +358,19 @@ def notch_reach_v2(
     return lo * lo
 
 
-def _ramp_up_jerk(v0, v1, cons, collect=True):
+def ramp_fits_slice_budget(v0, v1, cons, limit=MAX_RAMP_SLICES):
+    """True if the ramp v0 -> v1 integrates within `limit` slices.
+
+    Asks the emitter's own integrator instead of re-deriving the slice count
+    from f_n/dt/accel, so a config check and the ramp it is validating cannot
+    drift apart as the ramp law changes.
+    """
+    return not math.isinf(
+        _ramp_up_jerk(v0, v1, cons, collect=False, limit=limit)[1]
+    )
+
+
+def _ramp_up_jerk(v0, v1, cons, collect=True, limit=RAMP_SLICE_BACKSTOP):
     # Jerk-limited acceleration ramp taking velocity v0 -> v1 (v1 >= v0). The
     # acceleration starts at ~0, rises toward a_max in steps bounded by J*dt,
     # then falls back toward ~0 landing on v1. Integrated at fixed jerk_dt; the
@@ -371,16 +396,17 @@ def _ramp_up_jerk(v0, v1, cons, collect=True):
     total = 0.0
     if v1 <= v0 + 1e-12 or J is None or J <= 0.0:
         return slices, total
-    if cons.notch_period and cons.notch_period / dt0 > MAX_RAMP_SLICES:
+    # The unsaturated ramp lasts notch_period however small dv is, so its slice
+    # count is known before the first step. Answer without spinning.
+    if cons.notch_period and cons.notch_period / dt0 > limit:
         return None, float("inf")
     v = v0
     a = 0.0
     guard = 0
     while v < v1 - 1e-9:
         guard += 1
-        if guard > MAX_RAMP_SLICES:
-            # Bound planner and trapq work even when max_da requests an
-            # impractically small integration step.
+        if guard > limit:
+            # Did not converge to v1 -> signal infeasible, never emit.
             return None, float("inf")
         rem = v1 - v
         a_curve = cons.a_max(v)

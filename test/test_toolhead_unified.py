@@ -177,6 +177,83 @@ def test_unified_settings_require_notch_and_resolved_timestep():
     print("  enabled planner requires a notch resolved by jerk_dt OK")
 
 
+def test_unified_settings_bound_the_ramp_slice_budget():
+    # jerk_dt bounds slices per ramp from BELOW (resolve the notch edge). This
+    # is the bound from above, and it has to live at config time: the emitter
+    # reports an over-resolved ramp by raising InfeasibleProfile, nothing in
+    # klippy catches that, and it lands as a shutdown on some G1 mid-print.
+    err = lambda msg: RuntimeError(msg)  # noqa: E731
+
+    # unified_max_da shrinks the integration step directly and, unlike
+    # jerk_dt, has no floor -- it is the setting that gets there first.
+    th = make_unified_toolhead(unified_max_da=20.0, max_velocity=400.0)
+    th._check_unified_settings(err)
+    th.unified_max_da = 10.0
+    try:
+        th._check_unified_settings(err)
+    except RuntimeError as e:
+        assert "more than 4096 slices" in str(e), e
+        assert "unified_max_da" in str(e), e
+    else:
+        raise AssertionError("over-resolved max_da was accepted")
+
+    # A low max_accel gets there the other way, by stretching the saturated
+    # plateau rather than by shrinking the step.
+    th = make_unified_toolhead(max_accel=100.0, max_velocity=400.0)
+    th._check_unified_settings(err)
+    th.max_accel = 50.0
+    try:
+        th._check_unified_settings(err)
+    except RuntimeError as e:
+        assert "more than 4096 slices" in str(e), e
+    else:
+        raise AssertionError("over-long saturated plateau was accepted")
+    print("  config rejects an over-resolved ramp slice budget OK")
+
+
+def test_over_budget_settings_still_render_at_runtime():
+    # The config bound must NOT be the runtime bound. max_accel is not static
+    # -- M204 lowers it per feature, and failing there would be precisely the
+    # mid-print shutdown this is avoiding -- so a ramp past the config budget
+    # still has to emit. Only non-convergence may go fatal.
+    err = lambda msg: RuntimeError(msg)  # noqa: E731
+    th = make_unified_toolhead(max_accel=20000.0, max_velocity=400.0)
+    th._check_unified_settings(err)  # the config a print starts with
+    th.max_accel = 50.0  # what an M204 may do to it, unchecked
+    cons = toolhead.pathplan.Constraints(
+        a_const=th.max_accel,
+        v_ceil=th.max_velocity + 1.0,
+        jerk_dt=th.unified_jerk_dt,
+        notch_freq=th.unified_notch_freq_x,
+    )
+    assert not toolhead.pathplan.ramp_fits_slice_budget(0.0, 400.0, cons)
+    segs = toolhead.pathplan.emit_profile(0.0, 400.0, 0.0, 1e6, cons)
+    assert segs, "a ramp past the config budget must still emit"
+    print("  a ramp past the config budget still renders OK")
+
+
+def test_set_velocity_limit_rolls_back_an_unemittable_limit():
+    # Raising max_velocity raises the dv of the worst ramp, which raises J,
+    # which shrinks a max_da-limited step -- so VELOCITY alone can push a valid
+    # unified config past its slice budget. The command must refuse it and
+    # leave BOTH limits as they were; a half-applied limit is worse than the
+    # error, because the next G1 plans against it.
+    th = make_unified_toolhead(unified_max_da=20.0, max_velocity=400.0)
+    th._check_unified_settings(th.printer.command_error)
+    gcmd = FakeGCmd()
+    asked = {"VELOCITY": 800.0}
+    gcmd.get_float = lambda n, d, **kw: asked.get(n, d)
+    try:
+        th.cmd_SET_VELOCITY_LIMIT(gcmd)
+    except RuntimeError as e:
+        assert "more than 4096 slices" in str(e), e
+    else:
+        raise AssertionError("unemittable VELOCITY was accepted")
+    assert th.max_velocity == 400.0, th.max_velocity
+    assert th.max_accel == 100000.0, th.max_accel
+    print("  SET_VELOCITY_LIMIT refuses and rolls back an unemittable limit OK")
+
+
 def test_set_unified_pair_rule_and_rollback():
     # Setting only NOTCH_FREQ_X used to slip past the X/Y pair rule that is a
     # hard config error at startup. It must be rejected, and rejection must
@@ -393,6 +470,9 @@ def main():
     test_unified_rejects_unsegmented_extra_axis()
     test_notch_freq_floor()
     test_unified_settings_require_notch_and_resolved_timestep()
+    test_unified_settings_bound_the_ramp_slice_budget()
+    test_over_budget_settings_still_render_at_runtime()
+    test_set_velocity_limit_rolls_back_an_unemittable_limit()
     test_set_unified_pair_rule_and_rollback()
     test_set_unified_rearms_profile_warnings()
     test_reach_cache_tracks_start_v2()

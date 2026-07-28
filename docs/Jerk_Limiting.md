@@ -92,7 +92,13 @@ unified_notch_freq: 55
 - `unified_max_da` (default: 0)
   Optional cap in mm/s^2 on the positive acceleration step emitted between
   slices. `0` disables the cap. The emitter shrinks slice time to keep jerk-up
-  steps within this cap.
+  steps within this cap — and unlike `unified_jerk_dt` that shrinking has no
+  floor, so a small value here is the quickest way to ask for an unrenderable
+  ramp. Settings that would need more than 4096 slices to ramp
+  `0 -> max_velocity` are rejected at startup and by `SET_VELOCITY_LIMIT`,
+  rather than left to fail on a `G1` mid-print. `M204` is deliberately not
+  checked: slicers emit it per feature, and failing there would be the
+  shutdown this is avoiding.
 
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a

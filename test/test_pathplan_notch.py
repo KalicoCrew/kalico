@@ -377,6 +377,40 @@ def test_excessive_slice_request_fails_before_integration():
     print("  excessive slice request fails before integration OK")
 
 
+def test_slice_budget_predicts_what_the_integrator_does():
+    # ramp_fits_slice_budget exists so a config check and the ramp it validates
+    # cannot drift apart: it must answer by running the same integrator, not by
+    # re-deriving a slice count from f_n/dt/accel.
+    for a_const, dv, dt, max_da in (
+        (100000.0, 400.0, 0.001, None),
+        (100000.0, 400.0, 0.001, 20.0),
+        (100000.0, 400.0, 0.001, 10.0),
+        (100.0, 400.0, 0.001, None),
+        (50.0, 400.0, 0.001, None),
+    ):
+        cons = pathplan.Constraints(
+            a_const=a_const,
+            v_ceil=dv + 1.0,
+            jerk_dt=dt,
+            notch_freq=55.0,
+            max_da=max_da,
+        )
+        slices, _ = pathplan._ramp_up_jerk(0.0, dv, cons)
+        assert slices is not None, "backstop must not catch a printable ramp"
+        fits = pathplan.ramp_fits_slice_budget(0.0, dv, cons)
+        assert fits == (len(slices) <= pathplan.MAX_RAMP_SLICES), (
+            a_const,
+            max_da,
+            len(slices),
+            fits,
+        )
+    # And the two limits must stay far apart. The config budget is a sanity
+    # bound on settings; the backstop catches non-convergence only, and the gap
+    # between them is what an unchecked M204 max_accel is allowed to spend.
+    assert pathplan.RAMP_SLICE_BACKSTOP >= 100 * pathplan.MAX_RAMP_SLICES
+    print("  slice budget predicts the integrator, clear of the backstop OK")
+
+
 def test_reach_runway_floor_short_circuit():
     # A notch ramp costs 2/f_n of TIME however small dv is, so its distance
     # bottoms out at 2*v0/f_n rather than at zero. Below that the move cannot
@@ -513,6 +547,7 @@ def main():
     test_notch_loss_reasons()
     test_loss_reasons_are_declared()
     test_excessive_slice_request_fails_before_integration()
+    test_slice_budget_predicts_what_the_integrator_does()
     test_reach_runway_floor_short_circuit()
     test_infeasible_notch_fails_closed()
     test_validation_matches_rendering()

@@ -1640,6 +1640,55 @@ class ToolHead:
                 " (at least 10 slices per fastest ramp edge)"
                 % (0.1 / max_freq, max_freq)
             )
+        self._check_unified_slice_budget(error_factory)
+
+    def _check_unified_slice_budget(self, error_factory):
+        # jerk_dt above is a LOWER bound on slices per ramp -- enough of them to
+        # resolve the notch edge. This is the upper bound, and it exists because
+        # over-resolving is not a recoverable condition at emit time: pathplan
+        # reports it by raising InfeasibleProfile, nothing catches that, and the
+        # print dies on the G1 that reached it. unified_max_da is the setting
+        # that gets there first -- it shrinks the integration step directly, and
+        # unlike jerk_dt it has no floor -- so reject it HERE, while a bad value
+        # is still a config error.
+        #
+        # The worst ramp these settings allow is 0 -> max_velocity: dv drops out
+        # of an unsaturated ramp's DURATION, but a larger dv raises J and so
+        # shrinks a max_da-limited step, and past saturation it is the longest
+        # plateau. max_accel is the configured one; M204 can lower it mid-print
+        # and lengthen that plateau further, which is exactly why this bound is
+        # a config sanity check and pathplan keeps a far looser runtime
+        # backstop rather than making this one load-bearing.
+        freqs = [
+            f
+            for f in (self.unified_notch_freq_x, self.unified_notch_freq_y)
+            if f
+        ]
+        cons = pathplan.Constraints(
+            a_const=self.max_accel,
+            v_ceil=self.max_velocity,
+            jerk_dt=self.unified_jerk_dt,
+            notch_freq=min(freqs),
+            max_da=self.unified_max_da or None,
+            notch_freq2=max(freqs),
+        )
+        if pathplan.ramp_fits_slice_budget(0.0, self.max_velocity, cons):
+            return
+        raise error_factory(
+            "unified planner settings need more than %d slices to ramp"
+            " 0 -> %.0f mm/s (unified_jerk_dt=%.6f unified_max_da=%.0f"
+            " notch=%.2f/%.2f Hz at max_accel=%.0f). Raise unified_max_da"
+            " (0 disables the cap) or unified_jerk_dt."
+            % (
+                pathplan.MAX_RAMP_SLICES,
+                self.max_velocity,
+                self.unified_jerk_dt,
+                self.unified_max_da,
+                min(freqs),
+                max(freqs),
+                self.max_accel,
+            )
+        )
 
     def _reset_unified_warnings(self):
         self._unified_warned = set()
@@ -1687,10 +1736,24 @@ class ToolHead:
         min_cruise_ratio = gcmd.get_float(
             "MINIMUM_CRUISE_RATIO", None, minval=0.0, below=1.0
         )
+        # Both limits size the worst ramp the unified emitter has to integrate
+        # -- max_velocity is the dv it validates against, and a lower max_accel
+        # lengthens a saturated plateau. Check them here, where the command can
+        # still be refused and rolled back, rather than at the G1 that would
+        # have hit it. M204 sets max_accel too and is deliberately NOT checked:
+        # slicers emit it per feature, so failing there would be the mid-print
+        # shutdown this is avoiding. pathplan's runtime backstop covers it.
+        old_limits = (self.max_velocity, self.max_accel)
         if max_velocity is not None:
             self.max_velocity = max_velocity
         if max_accel is not None:
             self.max_accel = max_accel
+        if max_velocity is not None or max_accel is not None:
+            try:
+                self._check_unified_settings(gcmd.error)
+            except:
+                self.max_velocity, self.max_accel = old_limits
+                raise
         if square_corner_velocity is not None:
             self.square_corner_velocity = square_corner_velocity
         if min_cruise_ratio is not None:
