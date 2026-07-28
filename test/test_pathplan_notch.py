@@ -357,17 +357,19 @@ def test_loss_reasons_are_declared():
 
 
 def test_excessive_slice_request_fails_before_integration():
+    # A saturated plateau is what can run away: its width is dv/a_max, and no
+    # bound on slice size shortens it. At 4 mm/s^2 the ramp lasts over a
+    # minute, which is a config nobody meant to write.
     cons = pathplan.Constraints(
-        a_const=100000.0,
+        a_const=4.0,
         v_ceil=650.0,
-        jerk_dt=0.001,
+        jerk_dt=0.0001,
         notch_freq=55.0,
-        max_da=0.01,
     )
     slices, distance = pathplan._ramp_up_jerk(0.0, 300.0, cons)
     assert slices is None
     assert math.isinf(distance)
-    move_d = 2.0 * pathplan.notch_dist(0.0, 300.0, 100000.0, 55.0) + 1.0
+    move_d = 2.0 * pathplan.notch_dist(0.0, 300.0, 4.0, 55.0) + 1.0
     try:
         pathplan.validate_profile(0.0, 300.0, 0.0, move_d, cons)
     except pathplan.InfeasibleProfile:
@@ -381,26 +383,25 @@ def test_slice_budget_predicts_what_the_integrator_does():
     # ramp_fits_slice_budget exists so a config check and the ramp it validates
     # cannot drift apart: it must answer by running the same integrator, not by
     # re-deriving a slice count from f_n/dt/accel.
-    for a_const, dv, dt, max_da in (
-        (100000.0, 400.0, 0.001, None),
-        (100000.0, 400.0, 0.001, 20.0),
-        (100000.0, 400.0, 0.001, 10.0),
-        (100.0, 400.0, 0.001, None),
-        (50.0, 400.0, 0.001, None),
+    for a_const, dv, dt in (
+        (100000.0, 400.0, 0.001),
+        (100000.0, 400.0, 0.0005),
+        (200.0, 400.0, 0.001),
+        (100.0, 400.0, 0.001),
+        (50.0, 400.0, 0.001),
     ):
         cons = pathplan.Constraints(
             a_const=a_const,
             v_ceil=dv + 1.0,
             jerk_dt=dt,
             notch_freq=55.0,
-            max_da=max_da,
         )
         slices, _ = pathplan._ramp_up_jerk(0.0, dv, cons)
         assert slices is not None, "backstop must not catch a printable ramp"
         fits = pathplan.ramp_fits_slice_budget(0.0, dv, cons)
         assert fits == (len(slices) <= pathplan.MAX_RAMP_SLICES), (
             a_const,
-            max_da,
+            dt,
             len(slices),
             fits,
         )

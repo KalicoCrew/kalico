@@ -68,7 +68,6 @@ def make_toolhead(span=True, notch=FN):
     th.junction_deviation = 0.5 * th.square_corner_velocity**2 / th.max_accel
     th.unified_emit = True
     th.unified_jerk_dt = 0.0005
-    th.unified_max_da = 0.0
     th.unified_notch_freq = notch
     th.unified_notch_freq_x = notch
     th.unified_notch_freq_y = notch

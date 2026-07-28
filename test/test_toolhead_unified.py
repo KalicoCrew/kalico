@@ -111,7 +111,6 @@ def make_unified_toolhead(**over):
     th.max_accel_to_decel = 50000.0
     th.unified_emit = True
     th.unified_jerk_dt = 0.001
-    th.unified_max_da = 0.0
     th.unified_notch_freq = 55.0
     th.unified_notch_freq_x = 55.0
     th.unified_notch_freq_y = 55.0
@@ -184,21 +183,8 @@ def test_unified_settings_bound_the_ramp_slice_budget():
     # klippy catches that, and it lands as a shutdown on some G1 mid-print.
     err = lambda msg: RuntimeError(msg)  # noqa: E731
 
-    # unified_max_da shrinks the integration step directly and, unlike
-    # jerk_dt, has no floor -- it is the setting that gets there first.
-    th = make_unified_toolhead(unified_max_da=20.0, max_velocity=400.0)
-    th._check_unified_settings(err)
-    th.unified_max_da = 10.0
-    try:
-        th._check_unified_settings(err)
-    except RuntimeError as e:
-        assert "more than 4096 slices" in str(e), e
-        assert "unified_max_da" in str(e), e
-    else:
-        raise AssertionError("over-resolved max_da was accepted")
-
-    # A low max_accel gets there the other way, by stretching the saturated
-    # plateau rather than by shrinking the step.
+    # A low max_accel is what can still run away: nothing shortens a
+    # saturated plateau of dv/a_max.
     th = make_unified_toolhead(max_accel=100.0, max_velocity=400.0)
     th._check_unified_settings(err)
     th.max_accel = 50.0
@@ -233,12 +219,12 @@ def test_over_budget_settings_still_render_at_runtime():
 
 
 def test_set_velocity_limit_rolls_back_an_unemittable_limit():
-    # Raising max_velocity raises the dv of the worst ramp, which raises J,
-    # which shrinks a max_da-limited step -- so VELOCITY alone can push a valid
-    # unified config past its slice budget. The command must refuse it and
+    # Raising max_velocity lengthens the worst ramp the emitter has to
+    # integrate, so VELOCITY alone can push a valid unified config past its
+    # slice budget. The command must refuse it and
     # leave BOTH limits as they were; a half-applied limit is worse than the
     # error, because the next G1 plans against it.
-    th = make_unified_toolhead(unified_max_da=20.0, max_velocity=400.0)
+    th = make_unified_toolhead(max_accel=100.0, max_velocity=400.0)
     th._check_unified_settings(th.printer.command_error)
     gcmd = FakeGCmd()
     asked = {"VELOCITY": 800.0}
@@ -250,7 +236,7 @@ def test_set_velocity_limit_rolls_back_an_unemittable_limit():
     else:
         raise AssertionError("unemittable VELOCITY was accepted")
     assert th.max_velocity == 400.0, th.max_velocity
-    assert th.max_accel == 100000.0, th.max_accel
+    assert th.max_accel == 100.0, th.max_accel
     print("  SET_VELOCITY_LIMIT refuses and rolls back an unemittable limit OK")
 
 

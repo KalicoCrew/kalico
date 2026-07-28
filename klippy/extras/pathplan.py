@@ -74,9 +74,6 @@ class Constraints:
                   moves use a designed max-accel plateau.
     v_ceil     -> hard speed ceiling (mm/s); the reachability search stops here.
     jerk_dt    -> integration time step (s) for the emitted ramp.
-    max_da     -> optional cap on positive jerk-up acceleration steps between
-                  emitted slices (mm/s^2). The emitter shrinks slice dt so
-                  J*dt <= max_da.
     notch_freq -> mode frequency (Hz) to park the ramp's shaper zero on.
                   None/0 = no shaped motion.
                   See ramp_jerk() for the ideal law, and notch_loss_reasons()
@@ -93,14 +90,12 @@ class Constraints:
         v_ceil=1e9,
         jerk_dt=0.001,
         notch_freq=None,
-        max_da=None,
         notch_freq2=None,
     ):
         self.a_const = a_const
         self.v_ceil = v_ceil
         self.jerk_dt = jerk_dt
         self.notch_freq = notch_freq
-        self.max_da = max_da
         self.notch_freq2 = notch_freq2
         # Derived pair. A ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), so it
         # lasts notch_period = 1/f_lo + 1/f_hi and covers
@@ -386,8 +381,6 @@ def _ramp_up_jerk(v0, v1, cons, collect=True, limit=RAMP_SLICE_BACKSTOP):
     # Constraints.ramp_jerk.
     J = cons.ramp_jerk(v1 - v0)
     dt0 = cons.jerk_dt
-    if cons.max_da is not None and J is not None and J > 0.0:
-        dt0 = min(dt0, cons.max_da / J)
     # Two-zero mode caps the plateau at dv*f_lo, which is what turns the
     # triangle into the trapezoid that nulls both modes. None in single-zero
     # mode, where the peak already lands there on its own.

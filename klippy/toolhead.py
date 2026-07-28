@@ -475,7 +475,6 @@ class ToolHead:
         self.unified_jerk_dt = config.getfloat(
             "unified_jerk_dt", 0.001, minval=0.0001
         )
-        self.unified_max_da = config.getfloat("unified_max_da", 0.0, minval=0.0)
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
         # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
@@ -531,7 +530,6 @@ class ToolHead:
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
         self.orig_cfg["unified_emit"] = self.unified_emit
         self.orig_cfg["unified_jerk_dt"] = self.unified_jerk_dt
-        self.orig_cfg["unified_max_da"] = self.unified_max_da
         self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
         self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
         self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
@@ -1455,7 +1453,6 @@ class ToolHead:
         # governs ordinary moves via a_peak = dv*f_n instead.
         # v_ceil is overridden when the constraints describe a whole spanning
         # run rather than this one move.
-        max_da = self.unified_max_da or None
         f_lo, f_hi = self._move_notch_pair(move)
         notch = f_lo or None
         notch2 = f_hi or None
@@ -1473,7 +1470,6 @@ class ToolHead:
             v_ceil=v_ceil,
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
-            max_da=max_da,
             notch_freq2=notch2,
         )
 
@@ -1586,7 +1582,6 @@ class ToolHead:
     _UNIFIED_FIELDS = (
         "unified_emit",
         "unified_jerk_dt",
-        "unified_max_da",
         "unified_notch_freq",
         "unified_notch_freq_x",
         "unified_notch_freq_y",
@@ -1647,18 +1642,16 @@ class ToolHead:
         # resolve the notch edge. This is the upper bound, and it exists because
         # over-resolving is not a recoverable condition at emit time: pathplan
         # reports it by raising InfeasibleProfile, nothing catches that, and the
-        # print dies on the G1 that reached it. unified_max_da is the setting
-        # that gets there first -- it shrinks the integration step directly, and
-        # unlike jerk_dt it has no floor -- so reject it HERE, while a bad value
-        # is still a config error.
+        # print dies on the G1 that reached it. A low max_accel is what gets
+        # there: nothing shortens a saturated plateau of dv/a_max.
         #
-        # The worst ramp these settings allow is 0 -> max_velocity: dv drops out
-        # of an unsaturated ramp's DURATION, but a larger dv raises J and so
-        # shrinks a max_da-limited step, and past saturation it is the longest
-        # plateau. max_accel is the configured one; M204 can lower it mid-print
-        # and lengthen that plateau further, which is exactly why this bound is
-        # a config sanity check and pathplan keeps a far looser runtime
-        # backstop rather than making this one load-bearing.
+        # The worst ramp these settings allow is 0 -> max_velocity: an
+        # unsaturated ramp lasts notch_period whatever dv is, but past
+        # saturation this is the longest plateau. max_accel is the configured
+        # one; M204 can lower it mid-print and lengthen that plateau further,
+        # which is exactly why this bound is a config sanity check and pathplan
+        # keeps a far looser runtime backstop rather than making it
+        # load-bearing.
         freqs = [
             f
             for f in (self.unified_notch_freq_x, self.unified_notch_freq_y)
@@ -1669,21 +1662,19 @@ class ToolHead:
             v_ceil=self.max_velocity,
             jerk_dt=self.unified_jerk_dt,
             notch_freq=min(freqs),
-            max_da=self.unified_max_da or None,
             notch_freq2=max(freqs),
         )
         if pathplan.ramp_fits_slice_budget(0.0, self.max_velocity, cons):
             return
         raise error_factory(
             "unified planner settings need more than %d slices to ramp"
-            " 0 -> %.0f mm/s (unified_jerk_dt=%.6f unified_max_da=%.0f"
-            " notch=%.2f/%.2f Hz at max_accel=%.0f). Raise unified_max_da"
-            " (0 disables the cap) or unified_jerk_dt."
+            " 0 -> %.0f mm/s (unified_jerk_dt=%.6f notch=%.2f/%.2f Hz at"
+            " max_accel=%.0f). Raise unified_jerk_dt, or raise max_accel so"
+            " the ramp needs less plateau."
             % (
                 pathplan.MAX_RAMP_SLICES,
                 self.max_velocity,
                 self.unified_jerk_dt,
-                self.unified_max_da,
                 min(freqs),
                 max(freqs),
                 self.max_accel,
@@ -1886,7 +1877,6 @@ class ToolHead:
                 "square_corner_velocity: %.6f" % self.square_corner_velocity,
                 "unified_planner: %d" % self.unified_emit,
                 "unified_jerk_dt: %.6f" % self.unified_jerk_dt,
-                "unified_max_da: %.6f" % self.unified_max_da,
                 "unified_notch_freq: %.6f" % self.unified_notch_freq,
                 "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
                 "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
@@ -1925,7 +1915,6 @@ class ToolHead:
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
         "NOTCH_FREQ parks the jerk ramp's shaper zero on a mode frequency "
         "(Hz, 0 = disabled); "
-        "MAX_DA caps positive jerk-up accel steps (mm/s^2, 0 = off); "
         "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes, nulled together "
         "in one trapezoidal ramp (0 = fall back to NOTCH_FREQ); "
         "SPAN_RAMPS=0/1 lets one ramp span a run of "
@@ -1937,7 +1926,6 @@ class ToolHead:
 
     def cmd_SET_UNIFIED(self, gcmd):
         en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
-        max_da = gcmd.get_float("MAX_DA", None, minval=0.0)
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
         notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
         notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
@@ -1968,8 +1956,6 @@ class ToolHead:
                 self.unified_notch_freq_x = notch_x
             if notch_y is not None:
                 self.unified_notch_freq_y = notch_y
-            if max_da is not None:
-                self.unified_max_da = max_da
             if span is not None:
                 self.unified_span_ramps = bool(span)
             if span_ang is not None:
@@ -1994,14 +1980,13 @@ class ToolHead:
             self._reset_unified_warnings()
         gcmd.respond_info(
             "unified_planner=%d unified_notch_freq=%.2f"
-            " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"
+            " notch_freq_x=%.2f notch_freq_y=%.2f"
             " span_ramps=%d span_max_angle=%.2f"
             % (
                 self.unified_emit,
                 self.unified_notch_freq,
                 self.unified_notch_freq_x,
                 self.unified_notch_freq_y,
-                self.unified_max_da,
                 self.unified_span_ramps,
                 self.unified_span_max_angle,
             )

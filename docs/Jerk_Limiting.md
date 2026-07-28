@@ -89,22 +89,16 @@ unified_notch_freq: 55
   different measured modes — e.g. a bed-slinger whose heavy Y rings low and
   lighter X higher.
 
-- `unified_max_da` (default: 0)
-  Optional cap in mm/s^2 on the positive acceleration step emitted between
-  slices. `0` disables the cap. The emitter shrinks slice time to keep jerk-up
-  steps within this cap — and unlike `unified_jerk_dt` that shrinking has no
-  floor, so a small value here is the quickest way to ask for an unrenderable
-  ramp. Settings that would need more than 4096 slices to ramp
-  `0 -> max_velocity` are rejected at startup and by `SET_VELOCITY_LIMIT`,
-  rather than left to fail on a `G1` mid-print. `M204` is deliberately not
-  checked: slicers emit it per feature, and failing there would be the
-  shutdown this is avoiding.
-
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a
   smoother ramp and more motion-queue entries. The minimum is `0.0001`. It must
   provide at least ten slices across the fastest configured notch edge:
   `unified_jerk_dt * max(f_x, f_y) <= 0.1`.
+
+  This is the one knob on the residual/CPU trade: the emitted notch residual
+  falls monotonically as `jerk_dt` shrinks, at a proportional cost in
+  motion-queue entries and planner CPU. Halving it roughly halves the residual
+  for twice the slices.
 
 ### Two modes in one ramp
 
@@ -171,7 +165,6 @@ flushed first, so the change applies to subsequently planned moves):
 ```
 SET_UNIFIED ENABLE=1 NOTCH_FREQ=55
 SET_UNIFIED NOTCH_FREQ_X=70 NOTCH_FREQ_Y=55   # per-axis modes
-SET_UNIFIED MAX_DA=100
 SET_UNIFIED                       # report current state
 ```
 

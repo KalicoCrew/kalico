@@ -299,12 +299,6 @@ max_accel:
 #   5 degrees is about twice that floor and 18 degrees about eight times it.
 #   Raise it only to span coarser geometry, and expect ringing in return.
 #   The default is 2.0.
-#unified_max_da: 0
-#   Optional cap in mm/s^2 on positive jerk-up acceleration changes between
-#   emitted slices. 0 disables this cap. A small value shrinks the integration
-#   step directly, and unlike unified_jerk_dt it has no floor, so it is checked
-#   at startup: settings needing more than 4096 slices to ramp 0 -> max_velocity
-#   are rejected rather than left to fail mid-print. The default is 0.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
 #   values create more motion-queue entries. The minimum is 0.0001. When the
