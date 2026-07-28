@@ -138,6 +138,24 @@ def test_refuses_when_underdetermined():
     print("  refuses a ramp with fewer slices than constraints OK")
 
 
+def test_returns_none_rather_than_raising():
+    # The contract is that a bad request is answered with None so the caller
+    # emits the uncorrected ramp. Raising would surface as an unhandled
+    # exception out of the emitter, which is a shutdown.
+    slices, _d = ramp(0.0, 100.0)
+    # Duplicate rows: the two frequency pairs are identical, so the Gram is
+    # singular and the rank guard has to catch it.
+    assert pathplan.solve_ramp_null(slices, [55.0, 55.0]) is None
+    # A zero or negative frequency has no spectral row -- w divides.
+    assert pathplan.solve_ramp_null(slices, [55.0, 0.0]) is None
+    assert pathplan.solve_ramp_null(slices, [0.0]) is None
+    assert pathplan.solve_ramp_null(slices, [-55.0]) is None
+    # A ramp that does not change speed has no dv to preserve.
+    flat = [(0.001, 0.0, 0.0, 50.0, 50.0, 0.0, 0.05)] * 30
+    assert pathplan.solve_ramp_null(flat, [F]) is None
+    print("  answers bad requests with None instead of raising OK")
+
+
 def test_emitter_is_inert_unless_enabled():
     # The flag must gate it completely: same profile, slice for slice.
     for vs, vc in ((0.0, 400.0), (0.0, 100.0)):
@@ -208,6 +226,7 @@ def main():
     test_respects_max_accel_and_never_reverses()
     test_two_zero_ramp_improves_both_modes()
     test_refuses_when_underdetermined()
+    test_returns_none_rather_than_raising()
     test_emitter_is_inert_unless_enabled()
     test_decel_ramps_carry_the_null_too()
     print("ALL PASS")

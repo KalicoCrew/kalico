@@ -550,6 +550,11 @@ def solve_ramp_null(slices, freqs, max_accel=None):
     m = 2 + 2 * len(freqs)
     if n <= m:
         return None
+    # A zero or negative frequency has no spectral row to build -- the rows
+    # divide by w. The emitter never passes one, but this is public and the
+    # contract is that it returns None rather than raising.
+    if any(f <= 0.0 for f in freqs):
+        return None
     rows, targets, a0, dv = _null_rows(slices, freqs)
     if abs(dv) <= 1e-12:
         return None
