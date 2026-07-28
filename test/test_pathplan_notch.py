@@ -356,6 +356,27 @@ def test_loss_reasons_are_declared():
     print("  every emitted loss reason is declared in LOSS_REASONS OK")
 
 
+def test_excessive_slice_request_fails_before_integration():
+    cons = pathplan.Constraints(
+        a_const=100000.0,
+        v_ceil=650.0,
+        jerk_dt=0.001,
+        notch_freq=55.0,
+        max_da=0.01,
+    )
+    slices, distance = pathplan._ramp_up_jerk(0.0, 300.0, cons)
+    assert slices is None
+    assert math.isinf(distance)
+    move_d = 2.0 * pathplan.notch_dist(0.0, 300.0, 100000.0, 55.0) + 1.0
+    try:
+        pathplan.validate_profile(0.0, 300.0, 0.0, move_d, cons)
+    except pathplan.InfeasibleProfile:
+        pass
+    else:
+        raise AssertionError("excessive slice request reached emission")
+    print("  excessive slice request fails before integration OK")
+
+
 def test_reach_runway_floor_short_circuit():
     # A notch ramp costs 2/f_n of TIME however small dv is, so its distance
     # bottoms out at 2*v0/f_n rather than at zero. Below that the move cannot
@@ -491,6 +512,7 @@ def main():
     test_zoh_notch_error_scales_with_dt()
     test_notch_loss_reasons()
     test_loss_reasons_are_declared()
+    test_excessive_slice_request_fails_before_integration()
     test_reach_runway_floor_short_circuit()
     test_infeasible_notch_fails_closed()
     test_validation_matches_rendering()

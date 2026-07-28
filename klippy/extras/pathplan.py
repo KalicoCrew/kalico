@@ -46,6 +46,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 
+MAX_RAMP_SLICES = 4096
+
 
 class InfeasibleProfile(Exception):
     pass
@@ -369,13 +371,16 @@ def _ramp_up_jerk(v0, v1, cons, collect=True):
     total = 0.0
     if v1 <= v0 + 1e-12 or J is None or J <= 0.0:
         return slices, total
+    if cons.notch_period and cons.notch_period / dt0 > MAX_RAMP_SLICES:
+        return None, float("inf")
     v = v0
     a = 0.0
     guard = 0
     while v < v1 - 1e-9:
         guard += 1
-        if guard > 500000:
-            # Did not converge to v1 -> signal infeasible, never emit.
+        if guard > MAX_RAMP_SLICES:
+            # Bound planner and trapq work even when max_da requests an
+            # impractically small integration step.
             return None, float("inf")
         rem = v1 - v
         a_curve = cons.a_max(v)

@@ -281,11 +281,12 @@ max_accel:
 #   cancels unified_notch_freq exactly. The runway becomes the run's length
 #   rather than one segment's, which lifts a 0.2 mm segment chain at 55 Hz from
 #   about 11 mm/s to the requested feedrate. A run breaks at any direction
-#   change beyond unified_span_max_angle, at any change of acceleration or notch
-#   target, and wherever a corner or feedrate limit would be exceeded, so a run
-#   is never planned faster than the per-move plan allowed. Boundary speeds are
-#   additionally capped by the stock constant-acceleration reach, so every move
-#   stays individually feasible at max_accel. The default is True.
+#   change beyond unified_span_max_angle, at a notch-target change, and wherever
+#   a corner or feedrate limit would be exceeded. Acceleration limits may vary
+#   inside a run; the emitter uses the lowest limit of all member moves.
+#   Boundary speeds are additionally capped by the stock constant-acceleration
+#   reach, so every move stays individually feasible at max_accel. The default
+#   is True.
 #unified_span_max_angle: 2.0
 #   Largest heading change in degrees that one ramp may span. The ramp shapes
 #   the scalar path speed, so the axes see it scaled by the move direction;
@@ -301,7 +302,9 @@ max_accel:
 #   emitted slices. 0 disables this cap. The default is 0.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
-#   values create more motion-queue entries. The minimum is 0.0001. The default
+#   values create more motion-queue entries. The minimum is 0.0001. When the
+#   planner is enabled it must provide at least 10 slices across the fastest
+#   configured notch edge (jerk_dt * max_notch_frequency <= 0.1). The default
 #   is 0.001.
 ```
 

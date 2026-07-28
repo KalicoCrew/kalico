@@ -523,6 +523,7 @@ class ToolHead:
             "unified_span_max_angle", SPAN_MAX_ANGLE, minval=0.0, maxval=90.0
         )
         self._sync_span_cos()
+        self._check_unified_settings(config.error)
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
@@ -1624,6 +1625,26 @@ class ToolHead:
                 raise error_factory(msg)
             raise self.printer.command_error(msg)
 
+    def _check_unified_settings(self, error_factory):
+        if not self.unified_emit:
+            return
+        if not self._notch_on():
+            raise error_factory(
+                "unified_planner requires unified_notch_freq or both"
+                " unified_notch_freq_x and unified_notch_freq_y"
+            )
+        max_freq = max(self.unified_notch_freq_x, self.unified_notch_freq_y)
+        if self.unified_jerk_dt * max_freq > 0.1 + 1e-12:
+            raise error_factory(
+                "unified_jerk_dt must be at most %.9f for a %.3f Hz notch"
+                " (at least 10 slices per fastest ramp edge)"
+                % (0.1 / max_freq, max_freq)
+            )
+
+    def _reset_unified_warnings(self):
+        self._unified_warned = set()
+        self._unified_all_warned = False
+
     def _warn_unified_profile(self, move, reasons):
         if not reasons:
             return
@@ -1788,10 +1809,13 @@ class ToolHead:
             tuple(self.orig_cfg[n] for n in self._UNIFIED_FIELDS)
         )
         try:
+            self._check_unified_settings(self.printer.command_error)
             self._check_unified_extra_axis_support()
         except:
             self._restore_unified_state(old_unified)
             raise
+        if self._unified_state() != old_unified:
+            self._reset_unified_warnings()
         self._calc_junction_deviation()
         msg.extend(
             (
@@ -1898,10 +1922,13 @@ class ToolHead:
                     "NOTCH_FREQ_X and NOTCH_FREQ_Y must both be set or both be"
                     " 0. Use NOTCH_FREQ to notch both axes at one frequency."
                 )
+            self._check_unified_settings(gcmd.error)
             self._check_unified_extra_axis_support()
         except:
             self._restore_unified_state(old)
             raise
+        if self._unified_state() != old:
+            self._reset_unified_warnings()
         gcmd.respond_info(
             "unified_planner=%d unified_notch_freq=%.2f"
             " notch_freq_x=%.2f notch_freq_y=%.2f unified_max_da=%.0f"

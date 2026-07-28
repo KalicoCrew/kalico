@@ -96,7 +96,9 @@ unified_notch_freq: 55
 
 - `unified_jerk_dt` (default: 0.001)
   Integration time step in seconds for the emitted ramp. Smaller values give a
-  smoother ramp and more motion-queue entries. The minimum is `0.0001`.
+  smoother ramp and more motion-queue entries. The minimum is `0.0001`. It must
+  provide at least ten slices across the fastest configured notch edge:
+  `unified_jerk_dt * max(f_x, f_y) <= 0.1`.
 
 ### Two modes in one ramp
 
@@ -264,10 +266,11 @@ printed at a known speed. Band spacing is the resonance period, so
   | 2 mm    | 110 mm/s     | 300 mm/s    |
   | 5 mm    | 275 mm/s     | 300 mm/s    |
 
-  A run breaks at any direction change beyond `unified_span_max_angle`, at any
-  change of acceleration or notch target, and wherever a corner or feedrate
-  limit would be exceeded — so a run is never planned faster than the per-move
-  plan already allowed at every point along it.
+  A run breaks at any direction change beyond `unified_span_max_angle`, at a
+  notch-target change, and wherever a corner or feedrate limit would be
+  exceeded. Acceleration limits may vary inside a run; the emitter uses the
+  lowest limit among its member moves, so the run remains within every
+  per-move limit.
 
   That angle limit matters more than it looks. The ramp shapes the *scalar*
   path speed, and the axes see `a_x = rx·a(t)`. If the heading changes at time
