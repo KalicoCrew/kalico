@@ -91,12 +91,16 @@ class Constraints:
         jerk_dt=0.001,
         notch_freq=None,
         notch_freq2=None,
+        spectral_null=False,
     ):
         self.a_const = a_const
         self.v_ceil = v_ceil
         self.jerk_dt = jerk_dt
         self.notch_freq = notch_freq
         self.notch_freq2 = notch_freq2
+        # Solve emitted slice accelerations for an exact null instead of
+        # sampling the ideal curve. See solve_ramp_null.
+        self.spectral_null = spectral_null
         # Derived pair. A ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), so it
         # lasts notch_period = 1/f_lo + 1/f_hi and covers
         # 0.5*(v0+v1)*notch_period of path. Writing that as (v0+v1)/notch_f_eq
@@ -426,6 +430,200 @@ def _ramp_up_jerk(v0, v1, cons, collect=True, limit=RAMP_SLICE_BACKSTOP):
     return slices, total
 
 
+def _factor_min_norm(rows):
+    """Invert the m x m Gram matrix A A^T for a minimum-norm solve.
+
+    m is 2 + 2*len(freqs), so at most 6. Returns None when the rows are rank
+    deficient, which callers must treat as "leave the ramp alone".
+    """
+    m = len(rows)
+    n = len(rows[0])
+    aug = [
+        [math.fsum(rows[i][k] * rows[j][k] for k in range(n)) for j in range(m)]
+        + [1.0 if i == j else 0.0 for j in range(m)]
+        for i in range(m)
+    ]
+    scale = max(abs(aug[i][j]) for i in range(m) for j in range(m)) or 1.0
+    for col in range(m):
+        piv = max(range(col, m), key=lambda r: abs(aug[r][col]))
+        if abs(aug[piv][col]) < 1e-12 * scale:
+            return None
+        aug[col], aug[piv] = aug[piv], aug[col]
+        pv = aug[col][col]
+        for c in range(col, 2 * m):
+            aug[col][c] /= pv
+        for r in range(m):
+            if r == col:
+                continue
+            f = aug[r][col]
+            if f:
+                for c in range(col, 2 * m):
+                    aug[r][c] -= f * aug[col][c]
+    return [row[m:] for row in aug]
+
+
+def _rebuild_ramp(slices, accels):
+    """Re-integrate a ramp with new per-slice accelerations, dt unchanged."""
+    out = []
+    v = slices[0][3]
+    for (dt, _c, _d, _sv, _cv, _a, _dist), a in zip(slices, accels):
+        vn = v + a * dt
+        out.append((dt, 0.0, 0.0, v, vn, a, 0.5 * (v + vn) * dt))
+        v = vn
+    return out
+
+
+def _null_rows(slices, freqs):
+    """Equality rows and targets for solve_ramp_null. See it for the model."""
+    n = len(slices)
+    dt = [s[0] for s in slices]
+    a0 = [s[5] for s in slices]
+    dv = math.fsum(a0[i] * dt[i] for i in range(n))
+    dist = math.fsum(s[6] for s in slices)
+    total_t = math.fsum(dt)
+    # d(distance)/d(a_j): raising slice j's accel lifts velocity for the rest
+    # of the ramp, so distance moves by dt_j^2/2 + dt_j * (time after j).
+    tail = []
+    acc_t = 0.0
+    for j in range(n):
+        acc_t += dt[j]
+        tail.append(total_t - acc_t)
+    rows = [dt, [dt[j] * dt[j] * 0.5 + dt[j] * tail[j] for j in range(n)]]
+    # Only the part of the distance the accelerations control. The entry speed
+    # carries v0*T of it regardless, and leaving that in the target makes the
+    # residual non-zero for any ramp that starts moving -- which breaks the
+    # null-space property the alpha scaling depends on.
+    targets = [dv, dist - slices[0][3] * total_t]
+    edges = [0.0]
+    for d in dt:
+        edges.append(edges[-1] + d)
+    for f in freqs:
+        w = 2.0 * math.pi * f
+        re_row = []
+        im_row = []
+        for j in range(n):
+            c0, s0 = math.cos(w * edges[j]), math.sin(w * edges[j])
+            c1, s1 = math.cos(w * edges[j + 1]), math.sin(w * edges[j + 1])
+            re_row.append((s1 - s0) / w)
+            im_row.append((c1 - c0) / w)
+        rows.append(re_row)
+        rows.append(im_row)
+        targets.append(0.0)
+        targets.append(0.0)
+    return rows, targets, a0, dv
+
+
+def solve_ramp_null(slices, freqs, max_accel=None):
+    """Re-solve slice accelerations so the emitted spectrum nulls at `freqs`.
+
+    The ideal ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), whose zeros sit on
+    the modes -- but only in continuous time. Emitting it as constant-accel
+    slices smears them to about 1.3% of dv at the default jerk_dt, and the only
+    lever for that has been jerk_dt itself: halving it halves the residual and
+    doubles the motion-queue traffic, bottoming out near 0.11% at 379 slices.
+
+    It does not have to be approximated. The emitted spectrum is LINEAR in the
+    slice accelerations and there are far more of those than constraints, so
+    the null can be SOLVED for: 2 + 2*len(freqs) equality rows -- preserve dv,
+    preserve distance, zero the real and imaginary parts at each mode --
+    against len(slices) unknowns.
+
+    Sampling the ideal curve was only ever a convenient way to choose those
+    numbers. It makes the profile LOOK like the ideal on a plot, which was
+    never the goal; the solved profile is a slightly worse pointwise fit (~2%)
+    and an exact spectral one.
+
+    dv and distance are preserved by construction, so nothing upstream changes:
+    runway is still sized from notch_dist and the next move still plans from
+    the same exit speed.
+
+    A correction that would exceed max_accel, or reverse acceleration inside
+    the ramp, is SCALED BACK rather than refused. a0 already satisfies the dv
+    and distance rows, so the correction lies in their null space and any
+    multiple of it preserves both exactly -- only the spectral rows trade, and
+    linearly. A ramp with little acceleration of its own takes the largest
+    share it can carry instead of leaving the whole residual in place.
+
+    Returns corrected slices, or None if rank deficient or too few slices.
+    """
+    n = len(slices)
+    m = 2 + 2 * len(freqs)
+    if n <= m:
+        return None
+    rows, targets, a0, dv = _null_rows(slices, freqs)
+    if abs(dv) <= 1e-12:
+        return None
+    if max_accel is not None:
+        # Pin slices already sitting on max_accel. A saturated ramp holds a
+        # plateau there, and those slices have no room to move up -- but the
+        # correction is one vector in the null space of the dv and distance
+        # rows, so its components cannot be scaled independently without
+        # leaving that space. One blocked slice would otherwise force the whole
+        # correction to zero. Pinning them costs a row each and leaves the rest
+        # of the ramp free to carry the null.
+        lim = max_accel * (1.0 - 1e-9)
+        for k in range(n):
+            if abs(a0[k]) >= lim:
+                row = [0.0] * n
+                row[k] = 1.0
+                rows.append(row)
+                targets.append(a0[k])
+        m = len(rows)
+        if n <= m:
+            return None
+    inv = _factor_min_norm(rows)
+    if inv is None:
+        return None
+    resid = [
+        targets[i] - math.fsum(rows[i][k] * a0[k] for k in range(n))
+        for i in range(m)
+    ]
+    lam = [math.fsum(inv[i][j] * resid[j] for j in range(m)) for i in range(m)]
+    delta = [math.fsum(lam[i] * rows[i][k] for i in range(m)) for k in range(n)]
+    alpha = 1.0
+    # Relative: a pinned slice's delta solves to a rounding residual, not to
+    # exactly zero, and an absolute epsilon reads that as a real correction
+    # against zero remaining headroom.
+    tiny = 1e-9 * max(abs(a) for a in a0)
+    for k in range(n):
+        d = delta[k]
+        if abs(d) <= tiny:
+            continue
+        if a0[k] * d > 0.0:
+            if max_accel is None:
+                continue
+            room = max_accel - abs(a0[k])
+            if room <= 0.0:
+                return None
+        else:
+            # Never let acceleration cross zero: past that the slice list is
+            # no longer a ramp and stepcompress rejects the step sequence.
+            room = abs(a0[k])
+        if room < alpha * abs(d):
+            alpha = room / abs(d)
+    if alpha <= 0.0:
+        return None
+    return _rebuild_ramp(slices, [a0[k] + alpha * delta[k] for k in range(n)])
+
+
+def _apply_spectral_null(ramp, cons):
+    """Solve one ramp for an exact null; leave it alone if that is not possible.
+
+    Applied to both the accel ramp and the accel-shaped ramp that
+    _decel_from_accel reverses into the decel. Time reversal preserves the
+    MAGNITUDE spectrum, so a decel built from a solved ramp carries the same
+    null -- there is no external phase for the reversal to disturb.
+    """
+    if not ramp or not cons.spectral_null or not cons.notch_freq:
+        return ramp
+    if cons.notch_lo == cons.notch_hi:
+        freqs = [cons.notch_lo]
+    else:
+        freqs = [cons.notch_lo, cons.notch_hi]
+    solved = solve_ramp_null(ramp, freqs, cons.a_const)
+    return ramp if solved is None else solved
+
+
 def _decel_from_accel(acc_slices):
     # Time-reverse an increasing-velocity jerk ramp into a decel slice list:
     # an accel slice (dt,0,0, v_lo, v_hi, a, dist) becomes decel
@@ -498,12 +696,12 @@ def _emit_jerk_core(vs, vc, ve, move_d, cons, collect=True):
         return None
     if not collect:
         return []
-    segs = list(acc)
+    segs = list(_apply_spectral_null(acc, cons))
     if cruise_d > 1e-9 and vc > 1e-9:
         segs.append((0.0, cruise_d / vc, 0.0, vc, vc, 0.0, cruise_d))
     elif cruise_d > 1e-9:
         return None
-    segs.extend(_decel_from_accel(dec_acc))
+    segs.extend(_decel_from_accel(_apply_spectral_null(dec_acc, cons)))
     if not segs and move_d > 1e-9:
         return None
     return segs

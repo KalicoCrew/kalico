@@ -475,6 +475,11 @@ class ToolHead:
         self.unified_jerk_dt = config.getfloat(
             "unified_jerk_dt", 0.001, minval=0.0001
         )
+        # Solve the emitted slice accelerations for an exact spectral null
+        # instead of sampling the ideal ramp. See pathplan.solve_ramp_null.
+        self.unified_spectral_null = config.getboolean(
+            "unified_spectral_null", False
+        )
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
         # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
@@ -1471,6 +1476,7 @@ class ToolHead:
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             notch_freq2=notch2,
+            spectral_null=getattr(self, "unified_spectral_null", False),
         )
 
     def _z_couples_xy(self):
