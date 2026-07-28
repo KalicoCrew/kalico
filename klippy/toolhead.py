@@ -813,7 +813,9 @@ class ToolHead:
             # has to be the tightest any member allows -- members can differ
             # under a direction-dependent accel limit.
             a_span = min(m.accel for m in group)
-            cons = self._pathplan_cons(first, v_ceil=vc + 1.0, a_const=a_span)
+            cons = self._pathplan_cons(
+                first, v_ceil=vc + 1.0, a_const=a_span, for_span=True
+            )
             pathplan.validate_profile(vs, vc, ve, total_d, cons)
             plan = (group, vs, vc, ve, total_d, cons)
             for index, move in enumerate(group):
@@ -1452,7 +1454,7 @@ class ToolHead:
         move._unified_notch_pair = pair
         return pair
 
-    def _pathplan_cons(self, move, v_ceil=None, a_const=None):
+    def _pathplan_cons(self, move, v_ceil=None, a_const=None, for_span=False):
         # Build the pathplan.Constraints for one move. a_const is the move's
         # constant acceleration ceiling; with a notch frequency the emitter
         # governs ordinary moves via a_peak = dv*f_n instead.
@@ -1476,7 +1478,17 @@ class ToolHead:
             jerk_dt=self.unified_jerk_dt,
             notch_freq=notch,
             notch_freq2=notch2,
-            spectral_null=getattr(self, "unified_spectral_null", False),
+            # NOT on a spanning run. One scalar profile is rendered across the
+            # whole run and split among moves of differing direction, and each
+            # axis sees a_i(t) = r_i(t)*a(t) with a TIME-VARYING ratio once the
+            # heading changes -- so a solved scalar null is not an axis-level
+            # null there. unified_span_max_angle bounds how wrong that gets for
+            # the unsolved emitter, but it bounds it against a discretization
+            # floor the solve removes.
+            spectral_null=(
+                not for_span
+                and getattr(self, "unified_spectral_null", False)
+            ),
         )
 
     def _z_couples_xy(self):

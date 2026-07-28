@@ -61,6 +61,25 @@ MAX_RAMP_SLICES = 4096
 # mid-print, which lengthens a saturated plateau) spend without going fatal.
 RAMP_SLICE_BACKSTOP = 500000
 
+# How much peak jerk a spectral-null correction may add, as a multiple of the
+# baseline ramp's own peak. The correction is minimum-norm in acceleration and
+# says nothing about adjacent slices, so unbounded it parks the zero by
+# emitting acceleration steps larger than the profile the planner asked for.
+# Measured residual against what the bound allows, 0->100 mm/s at jerk_dt=1ms:
+#
+#   limit   55 Hz single   55/75 @55   55/75 @75
+#   1.0     REFUSED        REFUSED     REFUSED     (baseline peak IS the limit)
+#   1.1     4.6e-17        1.2e-02     1.0e-02
+#   1.25    4.6e-17        4.0e-03     3.3e-03
+#   1.5     4.6e-17        5.5e-18     3.0e-17     (bound stops binding)
+#
+# 1.0 is unusable: the baseline's own peak sits exactly on it, so any positive
+# perturbation there drives the correction to zero. 1.5 never binds, which
+# makes it no bound at all. 1.25 keeps the single-notch null exact, still
+# improves a two-notch ramp about 3.5x over the unsolved emitter, and caps the
+# added jerk at a quarter -- against the 32% the unbounded solve took.
+SPECTRAL_NULL_JERK_LIMIT = 1.25
+
 
 class InfeasibleProfile(Exception):
     pass
@@ -99,8 +118,12 @@ class Constraints:
         self.notch_freq = notch_freq
         self.notch_freq2 = notch_freq2
         # Solve emitted slice accelerations for an exact null instead of
-        # sampling the ideal curve. See solve_ramp_null.
+        # sampling the ideal curve. See solve_ramp_null. spectral_loss records
+        # what actually happened so notch_loss_reasons can report it -- a
+        # refused or scaled-back solve loses the null the user asked for, and
+        # losing it silently is worse than not offering it.
         self.spectral_null = spectral_null
+        self.spectral_loss = None
         # Derived pair. A ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), so it
         # lasts notch_period = 1/f_lo + 1/f_hi and covers
         # 0.5*(v0+v1)*notch_period of path. Writing that as (v0+v1)/notch_f_eq
@@ -558,33 +581,45 @@ def solve_ramp_null(slices, freqs, max_accel=None):
     rows, targets, a0, dv = _null_rows(slices, freqs)
     if abs(dv) <= 1e-12:
         return None
+    # Slices already sitting on max_accel cannot move up. A saturated ramp
+    # holds a whole plateau there, and the correction is one vector in the null
+    # space of the dv and distance rows -- its components cannot be scaled
+    # independently without leaving that space, so one blocked slice would
+    # otherwise force the entire correction to zero.
+    #
+    # Drop them from the UNKNOWNS rather than adding an equality row each. A
+    # row each keeps m growing with the plateau, and m is the dimension of the
+    # Gram matrix that gets inverted -- a low runtime M204 acceleration
+    # lengthens the plateau without limit, so that made the solve O(plateau^3)
+    # in pure Python and could stall the planner mid-print. Eliminating the
+    # variables instead leaves m at 4 or 6 whatever the ramp looks like; the
+    # pinned slices just move their fixed contribution to the right-hand side.
+    free = list(range(n))
     if max_accel is not None:
-        # Pin slices already sitting on max_accel. A saturated ramp holds a
-        # plateau there, and those slices have no room to move up -- but the
-        # correction is one vector in the null space of the dv and distance
-        # rows, so its components cannot be scaled independently without
-        # leaving that space. One blocked slice would otherwise force the whole
-        # correction to zero. Pinning them costs a row each and leaves the rest
-        # of the ramp free to carry the null.
         lim = max_accel * (1.0 - 1e-9)
-        for k in range(n):
-            if abs(a0[k]) >= lim:
-                row = [0.0] * n
-                row[k] = 1.0
-                rows.append(row)
-                targets.append(a0[k])
-        m = len(rows)
-        if n <= m:
+        free = [k for k in range(n) if abs(a0[k]) < lim]
+        if len(free) <= m:
             return None
+    if len(free) < n:
+        pinned = set(range(n)) - set(free)
+        targets = [
+            targets[i] - math.fsum(rows[i][k] * a0[k] for k in pinned)
+            for i in range(m)
+        ]
+        rows = [[row[k] for k in free] for row in rows]
     inv = _factor_min_norm(rows)
     if inv is None:
         return None
+    a_free = [a0[k] for k in free]
+    nf = len(free)
     resid = [
-        targets[i] - math.fsum(rows[i][k] * a0[k] for k in range(n))
+        targets[i] - math.fsum(rows[i][k] * a_free[k] for k in range(nf))
         for i in range(m)
     ]
     lam = [math.fsum(inv[i][j] * resid[j] for j in range(m)) for i in range(m)]
-    delta = [math.fsum(lam[i] * rows[i][k] for i in range(m)) for k in range(n)]
+    delta = [0.0] * n
+    for j, k in enumerate(free):
+        delta[k] = math.fsum(lam[i] * rows[i][j] for i in range(m))
     alpha = 1.0
     # Relative: a pinned slice's delta solves to a rounding residual, not to
     # exactly zero, and an absolute epsilon reads that as a real correction
@@ -606,6 +641,40 @@ def solve_ramp_null(slices, freqs, max_accel=None):
             room = abs(a0[k])
         if room < alpha * abs(d):
             alpha = room / abs(d)
+    # Jerk. The correction is minimum-NORM, which says nothing about adjacent
+    # slices, so left alone it parks the zero by introducing acceleration steps
+    # bigger than the profile the planner asked for -- measured 10% to 32%
+    # amplification. Jerk is linear in alpha, so bound it in the same ratio
+    # test instead of validating afterwards, and take a partial null rather
+    # than a violated one.
+    #
+    # Boundary-inclusive: the pulse is embedded in zero acceleration either
+    # side, so (a_0 - 0)/dt_0 and (0 - a_n-1)/dt_n-1 are jerk steps too, and
+    # they are exactly the ones a correction tends to enlarge.
+    dt = [s[0] for s in slices]
+    j_lim = 0.0
+    steps = []
+    prev_a = 0.0
+    prev_d = 0.0
+    for k in range(n + 1):
+        cur_a = a0[k] if k < n else 0.0
+        cur_d = delta[k] if k < n else 0.0
+        span = dt[k] if k < n else dt[-1]
+        if span > 0.0:
+            j0 = (cur_a - prev_a) / span
+            dj = (cur_d - prev_d) / span
+            steps.append((j0, dj))
+            if abs(j0) > j_lim:
+                j_lim = abs(j0)
+        prev_a, prev_d = cur_a, cur_d
+    if j_lim > 0.0:
+        lim = j_lim * SPECTRAL_NULL_JERK_LIMIT
+        for j0, dj in steps:
+            if abs(dj) <= 1e-12:
+                continue
+            hi = (lim - j0) / dj if dj > 0.0 else (-lim - j0) / dj
+            if hi < alpha:
+                alpha = hi
     if alpha <= 0.0:
         return None
     return _rebuild_ramp(slices, [a0[k] + alpha * delta[k] for k in range(n)])
@@ -626,7 +695,34 @@ def _apply_spectral_null(ramp, cons):
     else:
         freqs = [cons.notch_lo, cons.notch_hi]
     solved = solve_ramp_null(ramp, freqs, cons.a_const)
-    return ramp if solved is None else solved
+    if solved is None:
+        # Rank deficient, too few free slices, or nothing the ramp could carry.
+        cons.spectral_loss = "spectral_null_failed"
+        return ramp
+    # Report what was ACHIEVED, not what was attempted. A correction scaled
+    # back for max_accel or jerk leaves residual behind, and the whole point of
+    # the option is that the null is exact -- so say when it is not.
+    if cons.spectral_loss != "spectral_null_failed":
+        dv = math.fsum(s[5] * s[0] for s in solved)
+        if abs(dv) > 1e-12:
+            edges = [0.0]
+            for s in solved:
+                edges.append(edges[-1] + s[0])
+            for f in freqs:
+                w = 2.0 * math.pi * f
+                re = im = 0.0
+                for j, s in enumerate(solved):
+                    c0, s0 = math.cos(w * edges[j]), math.sin(w * edges[j])
+                    c1, s1 = (
+                        math.cos(w * edges[j + 1]),
+                        math.sin(w * edges[j + 1]),
+                    )
+                    re += s[5] * (s1 - s0) / w
+                    im += s[5] * (c1 - c0) / w
+                if math.hypot(re, im) > 1e-6 * abs(dv):
+                    cons.spectral_loss = "spectral_null_partial"
+                    break
+    return solved
 
 
 def _decel_from_accel(acc_slices):
@@ -875,7 +971,9 @@ def split_segments(segs, lengths):
 
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
-LOSS_REASONS = frozenset(("second_notch_saturated",))
+LOSS_REASONS = frozenset(
+    ("second_notch_saturated", "spectral_null_partial", "spectral_null_failed")
+)
 
 
 def notch_loss_reasons(vs, vc, ve, cons):
@@ -912,4 +1010,10 @@ def notch_loss_reasons(vs, vc, ve, cons):
             )
             if worst > SECOND_NOTCH_EPS:
                 reasons.add("second_notch_saturated")
+    # What the spectral solve actually managed, recorded during emission by
+    # _apply_spectral_null. Both of these lose the null the user asked for:
+    # "failed" fell back to the sampled ramp entirely, "partial" got a
+    # correction scaled back to respect max_accel or the jerk bound.
+    if cons.spectral_loss:
+        reasons.add(cons.spectral_loss)
     return sorted(reasons)

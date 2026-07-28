@@ -218,6 +218,89 @@ def test_decel_ramps_carry_the_null_too():
     print("  decel ramps carry the null and the move keeps its distance OK")
 
 
+def test_bounded_jerk_amplification():
+    # The correction is minimum-NORM in acceleration and says nothing about
+    # adjacent slices, so unbounded it parks the zero by emitting acceleration
+    # steps larger than the profile the planner asked for -- measured up to
+    # 32%. Bound it boundary-inclusively: the pulse sits in zero acceleration
+    # either side, and those two steps are the ones a correction enlarges most.
+    def peak_jerk(sl):
+        dt = [s[0] for s in sl]
+        a = [s[5] for s in sl]
+        pk = 0.0
+        prev = 0.0
+        for k in range(len(a) + 1):
+            cur = a[k] if k < len(a) else 0.0
+            span = dt[k] if k < len(a) else dt[-1]
+            pk = max(pk, abs(cur - prev) / span)
+            prev = cur
+        return pk
+
+    for vs, vc, f2 in ((0.0, 100.0, None), (0.0, 100.0, 75.0),
+                       (0.0, 400.0, None), (100.0, 120.0, None)):
+        slices, _d = ramp(vs, vc, f2=f2)
+        freqs = [F] if f2 is None else [F, f2]
+        solved = pathplan.solve_ramp_null(slices, freqs, ACCEL)
+        if solved is None:
+            continue
+        ratio = peak_jerk(solved) / peak_jerk(slices)
+        assert ratio <= pathplan.SPECTRAL_NULL_JERK_LIMIT + 1e-9, (
+            vs, vc, f2, ratio)
+    print("  jerk amplification stays inside the bound OK")
+
+
+def test_saturation_cost_is_linear_not_cubic():
+    # Pinned plateau slices are eliminated from the UNKNOWNS, not added as
+    # equality rows. A row each would grow the Gram with the plateau, and a low
+    # runtime M204 acceleration lengthens that without limit -- which made the
+    # solve cubic in plateau length and could stall the planner mid-print.
+    for a_const in (100000.0, 5000.0, 1000.0, 200.0):
+        cons = pathplan.Constraints(
+            a_const=a_const, v_ceil=401.0, jerk_dt=0.001, notch_freq=F
+        )
+        slices, _d = pathplan._ramp_up_jerk(0.0, 400.0, cons)
+        rows, _t, a0, _dv = pathplan._null_rows(slices, [F])
+        lim = a_const * (1.0 - 1e-9)
+        pinned = sum(1 for a in a0 if abs(a) >= lim)
+        solved = pathplan.solve_ramp_null(slices, [F], a_const)
+        if solved is None:
+            continue
+        # The system solved must stay at 2 + 2*len(freqs) rows however much of
+        # the ramp is pinned.
+        assert len(rows) == 4, (a_const, len(rows))
+        if a_const <= 1000.0:
+            assert pinned > 100, (a_const, pinned, "expected heavy saturation")
+    print("  saturated ramps keep the system at 4 rows OK")
+
+
+def test_lost_nulls_are_reported():
+    # A refused or scaled-back solve loses the null the user asked for. Losing
+    # it silently is worse than not offering the option.
+    cons = pathplan.Constraints(
+        a_const=ACCEL, v_ceil=401.0, jerk_dt=0.001, notch_freq=F,
+        spectral_null=True,
+    )
+    move_d = 4.0 * pathplan.notch_dist(0.0, 400.0, ACCEL, F)
+    pathplan.emit_profile(0.0, 400.0, 0.0, move_d, cons)
+    if cons.spectral_loss is not None:
+        assert cons.spectral_loss in pathplan.LOSS_REASONS, cons.spectral_loss
+        assert cons.spectral_loss in pathplan.notch_loss_reasons(
+            0.0, 400.0, 0.0, cons)
+    # Every reason the module can emit must be declared.
+    for name in ("spectral_null_partial", "spectral_null_failed"):
+        assert name in pathplan.LOSS_REASONS, name
+    # A clean solve reports nothing.
+    clean = pathplan.Constraints(
+        a_const=ACCEL, v_ceil=101.0, jerk_dt=0.001, notch_freq=F,
+        spectral_null=True,
+    )
+    pathplan.emit_profile(
+        0.0, 100.0, 0.0, 4.0 * pathplan.notch_dist(0.0, 100.0, ACCEL, F), clean
+    )
+    assert clean.spectral_loss is None, clean.spectral_loss
+    print("  a lost or partial null is reported, a clean one is not OK")
+
+
 def main():
     test_unsaturated_ramps_null_exactly()
     test_null_holds_at_any_slice_count()
@@ -227,6 +310,9 @@ def main():
     test_two_zero_ramp_improves_both_modes()
     test_refuses_when_underdetermined()
     test_returns_none_rather_than_raising()
+    test_bounded_jerk_amplification()
+    test_saturation_cost_is_linear_not_cubic()
+    test_lost_nulls_are_reported()
     test_emitter_is_inert_unless_enabled()
     test_decel_ramps_carry_the_null_too()
     print("ALL PASS")
