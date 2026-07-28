@@ -101,10 +101,22 @@ unified_notch_freq: 55
   halves the residual for twice the slices, bottoming out near 0.11% at the
   `0.0001` minimum — 379 slices per ramp at 55 Hz.
 
-  With `unified_spectral_null` it stops buying depth entirely. The null is
-  solved for at any slice count, so `jerk_dt` only has to leave more unknowns
-  than constraints, and the sensible direction becomes *coarser* rather than
-  finer: 11 slices null exactly where 36 otherwise leave 1.28%.
+  With `unified_spectral_null` it stops buying depth *at the configured modes* —
+  those are solved exactly at any slice count. What it still sets is the
+  **broadband floor** everywhere else, which no null touches. Measured on a
+  0→100 mm/s ramp with the null solved:
+
+  | `jerk_dt` | slices | at `f_n` | 150 Hz | 100–500 Hz mean |
+  | --------- | ------ | -------- | ------ | --------------- |
+  | 0.003     | 11     | 0.00000% | 2.30%  | 1.47%           |
+  | 0.001     | 34     | 0.00000% | 1.23%  | 0.434%          |
+  | 0.00025   | 143    | 0.00000% | 0.885% | 0.319%          |
+
+  So coarsening is not free once the null is solved: 11 slices costs 4.6x the
+  excitation above 100 Hz, and broadband energy is what reaches modes you have
+  not characterised. The default sits at a reasonable knee — most of the
+  benefit is in by 34 slices, and 143 buys only another 1.4x for four times the
+  motion-queue traffic.
 
 - `unified_spectral_null` (default: False)
   Solve the emitted slice accelerations for the null instead of sampling the

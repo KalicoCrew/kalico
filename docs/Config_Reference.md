@@ -315,9 +315,11 @@ max_accel:
 #   calculation are unchanged. A ramp saturating max_accel pins its plateau and
 #   takes a partial null (1.28% to 0.47%) rather than refusing or exceeding the
 #   limit; a correction that still will not fit leaves the ramp untouched.
-#   Costs roughly 23% more planner CPU. It also makes unified_jerk_dt stop
-#   buying null depth, so the sensible direction for that becomes coarser --
-#   fewer motion-queue entries -- rather than finer. The default is False.
+#   Costs roughly 23% more planner CPU. It changes what unified_jerk_dt buys:
+#   depth at the configured modes stops depending on slice count, but the
+#   BROADBAND floor everywhere else still does, and no null touches that. At 11
+#   slices the response above 100 Hz is 4.6x what it is at 34, so coarsening is
+#   not free. The default is False.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
 #   values create more motion-queue entries. The minimum is 0.0001. When the
