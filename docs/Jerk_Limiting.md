@@ -95,10 +95,46 @@ unified_notch_freq: 55
   provide at least ten slices across the fastest configured notch edge:
   `unified_jerk_dt * max(f_x, f_y) <= 0.1`.
 
-  This is the one knob on the residual/CPU trade: the emitted notch residual
-  falls monotonically as `jerk_dt` shrinks, at a proportional cost in
-  motion-queue entries and planner CPU. Halving it roughly halves the residual
-  for twice the slices.
+  Without `unified_spectral_null` this is the knob on the residual/CPU trade:
+  the emitted notch residual falls monotonically as `jerk_dt` shrinks, at a
+  proportional cost in motion-queue entries and planner CPU. Halving it roughly
+  halves the residual for twice the slices, bottoming out near 0.11% at the
+  `0.0001` minimum — 379 slices per ramp at 55 Hz.
+
+  With `unified_spectral_null` it stops buying depth entirely. The null is
+  solved for at any slice count, so `jerk_dt` only has to leave more unknowns
+  than constraints, and the sensible direction becomes *coarser* rather than
+  finer: 11 slices null exactly where 36 otherwise leave 1.28%.
+
+- `unified_spectral_null` (default: False)
+  Solve the emitted slice accelerations for the null instead of sampling the
+  ideal ramp.
+
+  The notch law's zero is exact only in continuous time. Emitting the ramp as
+  constant-acceleration slices smears it to about 1.3% of `dv` at the default
+  `jerk_dt`. But the emitted spectrum is *linear* in those slice
+  accelerations, and there are far more of them than there are constraints —
+  so the null can be solved for rather than approximated. Four equality rows
+  for one mode (preserve `dv`, preserve distance, zero the real and imaginary
+  parts of the spectrum at `f_n`), six for two modes, against `len(slices)`
+  unknowns.
+
+  Sampling the ideal curve was only ever a convenient way to choose those
+  numbers. It makes the emitted profile *look* like the ideal on a plot, which
+  was never the goal; the solved profile is a slightly worse pointwise fit
+  (about 2%) and an exact spectral one.
+
+  `dv` and distance are preserved as constraints, so nothing upstream moves:
+  runway is still sized from the same analytic model, the next move still
+  plans from the same exit speed, and print time is unchanged.
+
+  A ramp that saturates `max_accel` holds a plateau exactly on the limit, and
+  those slices cannot move up. They are pinned and the rest of the ramp carries
+  what it can, giving a reduced residual rather than a refusal or a violated
+  limit — 1.28% to 0.47% on a 0→400 mm/s ramp. Where even the scaled-back
+  correction will not fit, the ramp is emitted unchanged.
+
+  Costs roughly 23% more planner CPU.
 
 ### Two modes in one ramp
 
@@ -283,8 +319,15 @@ printed at a known speed. Band spacing is the resonance period, so
   has no null at `f_n`. Integrating the ideal pulse gives
   `|A_tail(f_n)| / |a|₁ ≤ 0.159` (worst when the turn lands on the acceleration
   peak), so the residual left on the turning axis is about `2·sin(θ/2)·0.159` —
-  measured against the ~0.0066 the emitter's own ZOH discretization already
-  leaves on a straight run:
+  measured against the ~0.0066 the emitter's own ZOH discretization leaves on a
+  straight run **when `unified_spectral_null` is off**. That floor is what makes
+  a small angle free: below it, the turn is buried in noise the emitter was
+  already making.
+
+  With `unified_spectral_null` on there is no such floor — a straight run nulls
+  exactly — so every degree of turn is measurable, and this limit stops being
+  "free up to 2°" and becomes a direct residual budget. The table below is the
+  floor-relative view and applies to the unsolved emitter:
 
   | heading change | residual at `f_n` | vs. straight-run floor |
   | -------------- | ----------------- | ---------------------- |

@@ -160,6 +160,46 @@ def test_emitter_is_inert_unless_enabled():
     print("  emitter is inert unless spectral_null is set OK")
 
 
+def test_decel_ramps_carry_the_null_too():
+    # A decel is emitted by time-reversing an accel-shaped ramp, so it is
+    # solved in accel form and reversed afterwards -- time reversal preserves
+    # the MAGNITUDE spectrum. Measure it in the decel tuple's own convention:
+    # the time lives in slot 2, not slot 0, and reading slot 0 silently makes
+    # every decel look perfect.
+    for vs, vc, ve, move_d in ((0.0, 300.0, 0.0, 60.0), (0.0, 400.0, 100.0,
+                                                         80.0)):
+        for flag, want in ((False, None), (True, 1e-9)):
+            cons = pathplan.Constraints(
+                a_const=ACCEL,
+                v_ceil=vc + 1.0,
+                jerk_dt=0.001,
+                notch_freq=F,
+                spectral_null=flag,
+            )
+            segs = pathplan.emit_profile(vs, vc, ve, move_d, cons)
+            dec = [s for s in segs if s[2] > 0.0]
+            assert dec, (vs, vc, "no decel emitted")
+            w = 2.0 * math.pi * F
+            t = [0.0]
+            for s in dec:
+                t.append(t[-1] + s[2])
+            acc = sum(
+                s[5]
+                * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
+                / (1j * w)
+                for i, s in enumerate(dec)
+            )
+            dv = math.fsum(s[5] * s[2] for s in dec)
+            got = abs(acc) / abs(dv)
+            if want is None:
+                assert got > 1e-3, (vs, vc, "unsolved decel should not null")
+            else:
+                assert got < want, (vs, vc, got)
+        # and the whole move still covers exactly the distance asked for
+        assert abs(sum(s[6] for s in segs) - move_d) < 1e-9 * move_d
+    print("  decel ramps carry the null and the move keeps its distance OK")
+
+
 def main():
     test_unsaturated_ramps_null_exactly()
     test_null_holds_at_any_slice_count()
@@ -169,6 +209,7 @@ def main():
     test_two_zero_ramp_improves_both_modes()
     test_refuses_when_underdetermined()
     test_emitter_is_inert_unless_enabled()
+    test_decel_ramps_carry_the_null_too()
     print("ALL PASS")
 
 

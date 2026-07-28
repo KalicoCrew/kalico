@@ -295,10 +295,29 @@ max_accel:
 #   turning part-way through a ramp leaves the turning axis a truncated pulse,
 #   which has no null at the mode. The residual it leaves there is about
 #   2 * sin(angle / 2) * 0.159, against the roughly 0.0066 the emitter's own
-#   discretization already leaves - so 2 degrees costs nothing measurable,
-#   5 degrees is about twice that floor and 18 degrees about eight times it.
-#   Raise it only to span coarser geometry, and expect ringing in return.
-#   The default is 2.0.
+#   discretization leaves when unified_spectral_null is off - so 2 degrees
+#   costs nothing measurable, 5 degrees is about twice that floor and 18
+#   degrees about eight times it. With unified_spectral_null on there is no
+#   floor to hide under: a straight run nulls exactly, so every degree of turn
+#   is measurable and this becomes a direct residual budget rather than a free
+#   allowance. Raise it only to span coarser geometry, and expect ringing in
+#   return. The default is 2.0.
+#unified_spectral_null: False
+#   Solve the emitted slice accelerations for the notch null instead of
+#   sampling the ideal ramp. The notch zero is exact only in continuous time;
+#   emitted as constant-acceleration slices it smears to about 1.3% of dv at
+#   the default unified_jerk_dt. But the emitted spectrum is LINEAR in those
+#   accelerations and there are far more of them than constraints, so the null
+#   can be solved for: preserve dv, preserve distance, zero the real and
+#   imaginary parts of the spectrum at each configured mode. Measured 1.395%
+#   to 0.0000% on every unsaturated ramp at 55 Hz.
+#   dv and distance are preserved, so print time and every lookahead
+#   calculation are unchanged. A ramp saturating max_accel pins its plateau and
+#   takes a partial null (1.28% to 0.47%) rather than refusing or exceeding the
+#   limit; a correction that still will not fit leaves the ramp untouched.
+#   Costs roughly 23% more planner CPU. It also makes unified_jerk_dt stop
+#   buying null depth, so the sensible direction for that becomes coarser --
+#   fewer motion-queue entries -- rather than finer. The default is False.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
 #   values create more motion-queue entries. The minimum is 0.0001. When the
