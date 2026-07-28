@@ -1422,13 +1422,13 @@ class IndxToolboardHeater:
         if extruder.extruder_stepper is None:
             raise gcmd.error("Active extruder does not have a stepper")
         stepper = extruder.extruder_stepper.stepper
-        current_helper = stepper.get_tmc_current_helper()
+        current_helper = compat.get_tmc_current_helper(stepper)
         if current_helper is None:
             raise gcmd.error(
                 "Active extruder does not have a TMC current helper"
             )
 
-        run_current, hold_current, req_hold_current, _, _ = (
+        run_current, hold_current, req_hold_current, *_ = (
             current_helper.get_current()
         )
         current = min(current, run_current)
