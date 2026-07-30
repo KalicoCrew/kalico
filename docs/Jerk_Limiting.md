@@ -371,9 +371,10 @@ printed at a known speed. Band spacing is the resonance period, so
   cannot be spanned, and falls back to the per-move ceiling. Small arcs are the
   case that bites: an r=4 mm circle at 0.2 mm chords turns 2.87° per segment,
   just past the default. Widening `unified_span_max_angle` to 3° recovers the
-  full speed there for a residual of 0.0083 — 1.3x the emitter's own floor —
-  which is a far better trade than shaping those moves on the wrong frequency
-  would be. What is left after that is genuinely sharp short-segment geometry,
+  full speed there for a residual of 0.0083 — 1.3x the emitter's own floor
+  *when `unified_spectral_null` is off* — which is a far better trade than
+  shaping those moves on the wrong frequency would be. With the null on there
+  is no floor to compare against, so read 0.0083 as an absolute budget. What is left after that is genuinely sharp short-segment geometry,
   where the corners are already speed-capped by `junction_deviation` and the
   notch runway is usually not the binding constraint.
 
