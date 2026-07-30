@@ -297,10 +297,10 @@ max_accel:
 #   2 * sin(angle / 2) * 0.159, against the roughly 0.0066 the emitter's own
 #   discretization leaves when unified_spectral_null is off - so 2 degrees
 #   costs nothing measurable, 5 degrees is about twice that floor and 18
-#   degrees about eight times it. With unified_spectral_null on there is no
-#   floor to hide under: a straight run nulls exactly, so every degree of turn
-#   is measurable and this becomes a direct residual budget rather than a free
-#   allowance. A spanned run that does not turn keeps the spectral correction
+#   degrees about eight times it. After a successful exact spectral solve there
+#   is no floor to hide under, so every degree of turn is measurable and this
+#   becomes a direct residual budget rather than a free allowance. A spanned
+#   run that does not turn remains eligible for the spectral correction
 #   (constant axis ratios carry a scalar null to every axis); one that turns
 #   anywhere reports spectral_null_span_turned instead. Raise it only to span coarser geometry, and expect ringing in
 #   return. The default is 2.0.
@@ -309,12 +309,14 @@ max_accel:
 #   sampling the ideal ramp. The notch zero is exact only in continuous time;
 #   emitted as constant-acceleration slices it smears to about 1.3% of dv at
 #   the default unified_jerk_dt. But the emitted spectrum is LINEAR in those
-#   accelerations and there are far more of them than constraints, so the null
-#   can be solved for: preserve dv, preserve distance, zero the real and
-#   imaginary parts of the spectrum at each configured mode. Measured 1.395%
-#   to 0.0000% on every unsaturated ramp at 55 Hz.
-#   dv and distance are preserved, so print time and every lookahead
-#   calculation are unchanged. A ramp saturating max_accel pins its plateau and
+#   accelerations and there are far more of them than constraints, so the
+#   solver preserves dv and distance while zeroing the real and imaginary
+#   parts of the spectrum at each configured mode. Measured 1.395% to 0.0000%
+#   on ordinary unsaturated single-mode ramps at 55 Hz. Ill-conditioned or
+#   constrained cases report spectral_null_failed or spectral_null_partial.
+#   dv, distance, and terminal velocity are checked after solving, so print
+#   time and every lookahead calculation are unchanged. A ramp saturating
+#   max_accel pins its plateau and
 #   takes a partial null (1.28% to 0.47%) rather than refusing or exceeding the
 #   limit; a correction that still will not fit leaves the ramp untouched.
 #   Costs roughly 23% more planner CPU. It changes what unified_jerk_dt buys:

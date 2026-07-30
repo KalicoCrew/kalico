@@ -472,19 +472,30 @@ def test_straight_spans_keep_the_spectral_null():
     th = make_unified_toolhead(unified_spectral_null=True)
     straight = [_span_move(1.0, 0.0) for _ in range(4)]
     assert th._group_is_collinear(straight)
-    cons = th._pathplan_cons(straight[0], v_ceil=200.0, a_const=100000.0,
-                             for_span=not th._group_is_collinear(straight))
+    cons = th._pathplan_cons(
+        straight[0],
+        v_ceil=200.0,
+        a_const=100000.0,
+        for_span=not th._group_is_collinear(straight),
+    )
     assert cons.spectral_null, "straight span lost the correction"
     assert cons.spectral_loss is None
 
     # unified_span_max_angle bounds each JUNCTION, not the run, so heading can
     # drift across many small turns -- compare against the first move, not
     # pairwise.
-    drifting = [_span_move(1.0, 0.0), _span_move(0.9999, 0.0141),
-                _span_move(0.9997, 0.0245)]
+    drifting = [
+        _span_move(1.0, 0.0),
+        _span_move(0.9999, 0.0141),
+        _span_move(0.9997, 0.0245),
+    ]
     assert not th._group_is_collinear(drifting)
-    cons = th._pathplan_cons(drifting[0], v_ceil=200.0, a_const=100000.0,
-                             for_span=not th._group_is_collinear(drifting))
+    cons = th._pathplan_cons(
+        drifting[0],
+        v_ceil=200.0,
+        a_const=100000.0,
+        for_span=not th._group_is_collinear(drifting),
+    )
     assert not cons.spectral_null, "turning span kept the correction"
     assert cons.spectral_loss == "spectral_null_span_turned"
     assert cons.spectral_loss in toolhead.pathplan.LOSS_REASONS
@@ -492,8 +503,9 @@ def test_straight_spans_keep_the_spectral_null():
     # With the option off, a turning span says nothing -- there is no loss.
     off = make_unified_toolhead()
     off.unified_spectral_null = False
-    cons = off._pathplan_cons(drifting[0], v_ceil=200.0, a_const=100000.0,
-                              for_span=True)
+    cons = off._pathplan_cons(
+        drifting[0], v_ceil=200.0, a_const=100000.0, for_span=True
+    )
     assert cons.spectral_loss is None
     print("  straight spans keep the null, turning spans report the loss OK")
 

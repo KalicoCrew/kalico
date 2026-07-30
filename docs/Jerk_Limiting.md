@@ -101,10 +101,11 @@ unified_notch_freq: 55
   halves the residual for twice the slices, bottoming out near 0.11% at the
   `0.0001` minimum — 379 slices per ramp at 55 Hz.
 
-  With `unified_spectral_null` it stops buying depth *at the configured modes* —
-  those are solved exactly at any slice count. What it still sets is the
-  **broadband floor** everywhere else, which no null touches. Measured on a
-  0→100 mm/s ramp with the null solved:
+  With `unified_spectral_null` it stops buying depth *at the configured modes*
+  when the solve succeeds exactly. A constrained or rejected solve reports
+  `spectral_null_partial` or `spectral_null_failed`. What `jerk_dt` still sets
+  is the **broadband floor** everywhere else, which no null touches. Measured
+  on a 0→100 mm/s ramp with the null solved:
 
   | `jerk_dt` | slices | at `f_n` | 150 Hz | 100–500 Hz mean |
   | --------- | ------ | -------- | ------ | --------------- |
@@ -133,12 +134,13 @@ unified_notch_freq: 55
 
   Sampling the ideal curve was only ever a convenient way to choose those
   numbers. It makes the emitted profile *look* like the ideal on a plot, which
-  was never the goal; the solved profile is a slightly worse pointwise fit
-  (about 2%) and an exact spectral one.
+  was never the goal; an unconstrained successful solve is a slightly worse
+  pointwise fit (about 2%) and an exact spectral one.
 
-  `dv` and distance are preserved as constraints, so nothing upstream moves:
-  runway is still sized from the same analytic model, the next move still
-  plans from the same exit speed, and print time is unchanged.
+  `dv`, distance, and terminal velocity are checked after the solve, so nothing
+  upstream moves: runway is still sized from the same analytic model, the next
+  move still plans from the same exit speed, and print time is unchanged. A
+  numerically ill-conditioned answer is rejected and reported instead.
 
   A ramp that saturates `max_accel` holds a plateau exactly on the limit, and
   those slices cannot move up. They are pinned and the rest of the ramp carries

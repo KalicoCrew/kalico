@@ -205,13 +205,16 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 # |A_tail(f_n)| / |a|_1 <= 0.159, worst at t_c on the accel peak, so the
 # residual left on the turning axis is about
 #     |r2 - r1| * 0.159,   with |r2 - r1| = 2*sin(theta/2)
-# against the ~0.0066 the emitter's ZOH discretization already leaves there.
-# That puts 18 degrees at 7.5x the existing floor -- far too coarse -- while
-# 2 degrees lands at 0.8x, under the noise already present:
+# against the ~0.0066 the emitter's ZOH discretization leaves there WHEN
+# unified_spectral_null is off. That puts 18 degrees at 7.5x the floor -- far
+# too coarse -- while 2 degrees lands at 0.8x, under the noise already present:
 #     0.5 deg -> 0.2x    2 deg -> 0.8x     10 deg -> 4.2x
 #     1.0 deg -> 0.4x    5 deg -> 2.1x     18 deg -> 7.5x
 # Hence a 2 degree default, tunable via unified_span_max_angle for anyone who
 # wants to trade that residual for spanning across coarser geometry.
+#
+# With the null ON there is no 0.0066 floor to hide under, so this table no
+# longer sets the trade -- see SPAN_COLLINEAR_EPS.
 SPAN_MAX_ANGLE = 2.0
 
 # How exactly two moves must agree on direction for a spanned run to count as
@@ -220,6 +223,19 @@ SPAN_MAX_ANGLE = 2.0
 # real turn makes them time-varying and it does not. Slicer output that is
 # genuinely collinear reproduces the direction bit-for-bit, so this only has to
 # absorb the rounding in axes_r itself.
+#
+# MEASURED 2026-07-29, and this is stricter than the physics needs. Nulling the
+# scalar on a turning run does make the TURNING axis slightly worse (it cannot
+# see the truncated tail, and redistributes ~20% into it), but it takes orders
+# of magnitude off the dominant axis, so the vector residual at f_n still wins
+# by a wide margin. Swept 50 geometries (4-40 moves, 0.2-2 mm segments, 60-300
+# mm/s, 3000-20000 mm/s^2): the null stops helping only past 1.29 deg per
+# junction / 19.3 deg of TOTAL heading drift, worst case. Neither variable
+# collapses the crossover on its own. A drift budget of a few degrees would keep
+# the null on exactly the near-straight runs it still helps -- notably small
+# arcs, the case Jerk_Limiting.md calls out (r=4 mm at 0.2 mm chords turns
+# 2.87 deg per segment). Not taken: all of it is the COMMANDED spectrum on
+# monotone turns, and real gcode zigzags.
 SPAN_COLLINEAR_EPS = 1e-12
 
 

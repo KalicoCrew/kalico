@@ -80,6 +80,13 @@ RAMP_SLICE_BACKSTOP = 500000
 # added jerk at a quarter -- against the 32% the unbounded solve took.
 SPECTRAL_NULL_JERK_LIMIT = 1.25
 
+# A solved profile must preserve the baseline endpoint contract. The Gram solve
+# is deliberately small, but close target frequencies can still make its rows
+# nearly dependent. Reject numerical answers that move velocity or distance
+# instead of handing an inconsistent profile to trapq.
+SPECTRAL_NULL_INVARIANT_RTOL = 1e-9
+SPECTRAL_NULL_INVARIANT_ATOL = 1e-12
+
 
 class InfeasibleProfile(Exception):
     pass
@@ -553,12 +560,13 @@ def solve_ramp_null(slices, freqs, max_accel=None):
 
     Sampling the ideal curve was only ever a convenient way to choose those
     numbers. It makes the profile LOOK like the ideal on a plot, which was
-    never the goal; the solved profile is a slightly worse pointwise fit (~2%)
-    and an exact spectral one.
+    never the goal; an unconstrained successful solve is a slightly worse
+    pointwise fit (~2%) and an exact spectral one.
 
-    dv and distance are preserved by construction, so nothing upstream changes:
-    runway is still sized from notch_dist and the next move still plans from
-    the same exit speed.
+    dv, distance, and terminal velocity are checked after rebuilding, so
+    nothing upstream changes: runway is still sized from notch_dist and the
+    next move still plans from the same exit speed. A numerically unstable
+    answer is rejected.
 
     A correction that would exceed max_accel, or reverse acceleration inside
     the ramp, is SCALED BACK rather than refused. a0 already satisfies the dv
@@ -677,7 +685,24 @@ def solve_ramp_null(slices, freqs, max_accel=None):
                 alpha = hi
     if alpha <= 0.0:
         return None
-    return _rebuild_ramp(slices, [a0[k] + alpha * delta[k] for k in range(n)])
+    solved = _rebuild_ramp(slices, [a0[k] + alpha * delta[k] for k in range(n)])
+    solved_dv = math.fsum(s[5] * s[0] for s in solved)
+    baseline_d = math.fsum(s[6] for s in slices)
+    solved_d = math.fsum(s[6] for s in solved)
+
+    def invariant_close(actual, expected):
+        tol = SPECTRAL_NULL_INVARIANT_ATOL + (
+            SPECTRAL_NULL_INVARIANT_RTOL * abs(expected)
+        )
+        return abs(actual - expected) <= tol
+
+    if not invariant_close(solved_dv, dv) or not invariant_close(
+        solved_d, baseline_d
+    ):
+        return None
+    if not invariant_close(solved[-1][4], slices[-1][4]):
+        return None
+    return solved
 
 
 def _apply_spectral_null(ramp, cons):

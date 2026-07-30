@@ -42,7 +42,8 @@ def residual(slices, freq=F):
     for s in slices:
         t.append(t[-1] + s[0])
     acc = sum(
-        s[5] * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
+        s[5]
+        * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
         / (1j * w)
         for i, s in enumerate(slices)
     )
@@ -50,8 +51,13 @@ def residual(slices, freq=F):
 
 
 def test_unsaturated_ramps_null_exactly():
-    for vs, vc in ((0.0, 20.0), (0.0, 100.0), (5.0, 10.0), (100.0, 120.0),
-                   (200.0, 400.0)):
+    for vs, vc in (
+        (0.0, 20.0),
+        (0.0, 100.0),
+        (5.0, 10.0),
+        (100.0, 120.0),
+        (200.0, 400.0),
+    ):
         slices, _d = ramp(vs, vc)
         solved = pathplan.solve_ramp_null(slices, [F], ACCEL)
         assert solved is not None, (vs, vc)
@@ -87,6 +93,32 @@ def test_preserves_dv_distance_and_exit_speed():
         for a, b in zip(solved, solved[1:]):
             assert abs(a[4] - b[3]) < 1e-12, (vs, vc)
     print("  dv, distance and exit speed are preserved OK")
+
+
+def test_ill_conditioned_targets_fail_closed():
+    # The minimum-norm solve uses a small Gram matrix. Very close target
+    # frequencies can be accepted before the rank threshold trips while still
+    # accumulating enough numerical error to move the ramp endpoint. The
+    # post-solve invariant check must reject that intermediate region.
+    slices, _d = ramp(0.0, 100.0, f2=55.0001, a_const=100000.0)
+    assert pathplan.solve_ramp_null(slices, [55.0, 55.0001], 100000.0) is None
+
+    # A less pathological pair remains usable and keeps the same contract.
+    solved = pathplan.solve_ramp_null(slices, [55.0, 55.01], 100000.0)
+    assert solved is not None
+    dv0 = math.fsum(s[5] * s[0] for s in slices)
+    dv1 = math.fsum(s[5] * s[0] for s in solved)
+    d0 = math.fsum(s[6] for s in slices)
+    d1 = math.fsum(s[6] for s in solved)
+    assert abs(dv1 - dv0) <= (
+        pathplan.SPECTRAL_NULL_INVARIANT_ATOL
+        + pathplan.SPECTRAL_NULL_INVARIANT_RTOL * abs(dv0)
+    )
+    assert abs(d1 - d0) <= (
+        pathplan.SPECTRAL_NULL_INVARIANT_ATOL
+        + pathplan.SPECTRAL_NULL_INVARIANT_RTOL * abs(d0)
+    )
+    print("  ill-conditioned targets fail closed on endpoint drift OK")
 
 
 def test_saturated_ramps_take_a_partial_null():
@@ -184,8 +216,10 @@ def test_decel_ramps_carry_the_null_too():
     # the MAGNITUDE spectrum. Measure it in the decel tuple's own convention:
     # the time lives in slot 2, not slot 0, and reading slot 0 silently makes
     # every decel look perfect.
-    for vs, vc, ve, move_d in ((0.0, 300.0, 0.0, 60.0), (0.0, 400.0, 100.0,
-                                                         80.0)):
+    for vs, vc, ve, move_d in (
+        (0.0, 300.0, 0.0, 60.0),
+        (0.0, 400.0, 100.0, 80.0),
+    ):
         for flag, want in ((False, None), (True, 1e-9)):
             cons = pathplan.Constraints(
                 a_const=ACCEL,
@@ -236,8 +270,12 @@ def test_bounded_jerk_amplification():
             prev = cur
         return pk
 
-    for vs, vc, f2 in ((0.0, 100.0, None), (0.0, 100.0, 75.0),
-                       (0.0, 400.0, None), (100.0, 120.0, None)):
+    for vs, vc, f2 in (
+        (0.0, 100.0, None),
+        (0.0, 100.0, 75.0),
+        (0.0, 400.0, None),
+        (100.0, 120.0, None),
+    ):
         slices, _d = ramp(vs, vc, f2=f2)
         freqs = [F] if f2 is None else [F, f2]
         solved = pathplan.solve_ramp_null(slices, freqs, ACCEL)
@@ -245,7 +283,11 @@ def test_bounded_jerk_amplification():
             continue
         ratio = peak_jerk(solved) / peak_jerk(slices)
         assert ratio <= pathplan.SPECTRAL_NULL_JERK_LIMIT + 1e-9, (
-            vs, vc, f2, ratio)
+            vs,
+            vc,
+            f2,
+            ratio,
+        )
     print("  jerk amplification stays inside the bound OK")
 
 
@@ -277,7 +319,10 @@ def test_lost_nulls_are_reported():
     # A refused or scaled-back solve loses the null the user asked for. Losing
     # it silently is worse than not offering the option.
     cons = pathplan.Constraints(
-        a_const=ACCEL, v_ceil=401.0, jerk_dt=0.001, notch_freq=F,
+        a_const=ACCEL,
+        v_ceil=401.0,
+        jerk_dt=0.001,
+        notch_freq=F,
         spectral_null=True,
     )
     move_d = 4.0 * pathplan.notch_dist(0.0, 400.0, ACCEL, F)
@@ -285,13 +330,17 @@ def test_lost_nulls_are_reported():
     if cons.spectral_loss is not None:
         assert cons.spectral_loss in pathplan.LOSS_REASONS, cons.spectral_loss
         assert cons.spectral_loss in pathplan.notch_loss_reasons(
-            0.0, 400.0, 0.0, cons)
+            0.0, 400.0, 0.0, cons
+        )
     # Every reason the module can emit must be declared.
     for name in ("spectral_null_partial", "spectral_null_failed"):
         assert name in pathplan.LOSS_REASONS, name
     # A clean solve reports nothing.
     clean = pathplan.Constraints(
-        a_const=ACCEL, v_ceil=101.0, jerk_dt=0.001, notch_freq=F,
+        a_const=ACCEL,
+        v_ceil=101.0,
+        jerk_dt=0.001,
+        notch_freq=F,
         spectral_null=True,
     )
     pathplan.emit_profile(
@@ -309,34 +358,51 @@ def spectrum(slices, freq):
     t = [0.0]
     for s in slices:
         t.append(t[-1] + s[0])
-    return abs(sum(
-        s[5] * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
-        / (1j * w)
-        for i, s in enumerate(slices)
-    ))
+    return abs(
+        sum(
+            s[5]
+            * (cmath.exp(-1j * w * t[i]) - cmath.exp(-1j * w * t[i + 1]))
+            / (1j * w)
+            for i, s in enumerate(slices)
+        )
+    )
 
 
-def test_broadband_response_is_not_made_worse():
+def test_broadband_response_stays_bounded():
     # An exact point null can pay for itself by pushing energy elsewhere -- the
     # waterbed effect -- and a solver that only minimises the acceleration norm
-    # has nothing stopping it. Sweep well past the modes and gate on three
-    # things: total energy, worst pointwise amplification, and whether a new
-    # peak appears that is worse than the baseline already had.
-    for vs, vc, f2 in ((0.0, 100.0, None), (0.0, 400.0, None),
-                       (0.0, 100.0, 75.0), (100.0, 120.0, None)):
-        slices, _d = ramp(vs, vc, f2=f2)
+    # has nothing stopping it. A raw solved/base ratio is not a useful gate at
+    # the baseline's own spectral zeros, where an arbitrarily small response
+    # has an arbitrarily large ratio. Gate both meaningful-band amplification
+    # and the absolute response introduced near those zeros.
+    cases = (
+        (0.0, 100.0, None, ACCEL),
+        (0.0, 400.0, None, ACCEL),
+        (0.0, 100.0, 75.0, ACCEL),
+        (100.0, 120.0, None, ACCEL),
+        # Saturated and close-mode cases exercise the correction's least
+        # favorable broadband behavior. The 55/65 case previously introduced
+        # a 0.83% response at 75.5 Hz and was absent from this gate.
+        (0.0, 200.0, 65.0, 3000.0),
+        (0.0, 20.0, 56.0, 1000.0),
+        (0.0, 5.0, 56.0, 1000.0),
+        (0.0, 400.0, 75.0, 5000.0),
+    )
+    for vs, vc, f2, a_const in cases:
+        slices, _d = ramp(vs, vc, f2=f2, a_const=a_const)
         freqs = [F] if f2 is None else [F, f2]
-        solved = pathplan.solve_ramp_null(slices, freqs, ACCEL)
-        assert solved is not None, (vs, vc, f2)
+        solved = pathplan.solve_ramp_null(slices, freqs, a_const)
+        assert solved is not None, (vs, vc, f2, a_const)
         dc0 = spectrum(slices, 0.0)
         dc1 = spectrum(solved, 0.0)
         worst_amp = 0.0
+        worst_new = 0.0
         base_peak = solved_peak = 0.0
         e0 = e1 = 0.0
         for i in range(1, 1001):
             f = 0.5 * i
-            # Skip the immediate neighbourhood of each null: the ratio there is
-            # meaningless because the denominator is what we removed.
+            # Skip the immediate neighbourhood of each requested null: that is
+            # the response deliberately removed by this feature.
             if any(abs(f - q) < 3.0 for q in freqs):
                 continue
             b = spectrum(slices, f) / dc0
@@ -345,23 +411,31 @@ def test_broadband_response_is_not_made_worse():
             e1 += a * a
             base_peak = max(base_peak, b)
             solved_peak = max(solved_peak, a)
-            if b > 1e-12:
+            worst_new = max(worst_new, a - b)
+            # Ratios become meaningful once the baseline is at least 0.2% of
+            # DC; below that, the absolute-response gate is the real bound.
+            if b >= 0.002:
                 worst_amp = max(worst_amp, a / b)
-        # Total emitted energy must not grow.
-        assert math.sqrt(e1 / e0) < 1.05, (vs, vc, f2, math.sqrt(e1 / e0))
-        # No single frequency may be amplified without bound.
-        assert worst_amp < 5.0, (vs, vc, f2, worst_amp)
-        # And no NEW peak worse than the one the baseline already had -- the
-        # amplification above lands where the response is small.
+        energy_ratio = math.sqrt(e1 / e0)
+        assert energy_ratio < 1.05, (vs, vc, f2, a_const, energy_ratio)
+        assert worst_amp < 5.0, (vs, vc, f2, a_const, worst_amp)
+        assert worst_new < 0.02, (vs, vc, f2, a_const, worst_new)
         assert solved_peak <= base_peak * 1.05, (
-            vs, vc, f2, base_peak, solved_peak)
-    print("  broadband response is not made worse by the null OK")
+            vs,
+            vc,
+            f2,
+            a_const,
+            base_peak,
+            solved_peak,
+        )
+    print("  broadband response stays bounded across adverse cases OK")
 
 
 def main():
     test_unsaturated_ramps_null_exactly()
     test_null_holds_at_any_slice_count()
     test_preserves_dv_distance_and_exit_speed()
+    test_ill_conditioned_targets_fail_closed()
     test_saturated_ramps_take_a_partial_null()
     test_respects_max_accel_and_never_reverses()
     test_two_zero_ramp_improves_both_modes()
@@ -370,7 +444,7 @@ def main():
     test_bounded_jerk_amplification()
     test_saturation_cost_is_linear_not_cubic()
     test_lost_nulls_are_reported()
-    test_broadband_response_is_not_made_worse()
+    test_broadband_response_stays_bounded()
     test_emitter_is_inert_unless_enabled()
     test_decel_ramps_carry_the_null_too()
     print("ALL PASS")
