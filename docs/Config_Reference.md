@@ -259,7 +259,12 @@ max_accel:
 #   must be at least 5 Hz: every ramp lasts 2 / unified_notch_freq seconds, so a
 #   very low frequency stalls the toolhead rather than shaping it gently. Note
 #   that this frequency also caps throughput on short-segment geometry - see the
-#   Throughput section of docs/Jerk_Limiting.md. The default is 0.
+#   Throughput section of docs/Jerk_Limiting.md. Setting this also means
+#   pressure_advance_smooth_time should usually be LOWERED: its 0.040 default
+#   smooths a discontinuity a notched ramp does not produce, and once the window
+#   approaches the ramp duration it blurs pressure advance across the whole
+#   acceleration event - see the Pressure advance section of
+#   docs/Jerk_Limiting.md. The default is 0.
 #unified_notch_freq_x: 0
 #unified_notch_freq_y: 0
 #   Optional per-axis resonance frequencies in Hz. These must be set together,

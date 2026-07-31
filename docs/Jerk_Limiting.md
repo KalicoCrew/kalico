@@ -240,6 +240,53 @@ An independent cross-check: measure the spacing of a ghost band on a surface
 printed at a known speed. Band spacing is the resonance period, so
 `f = print_speed / spacing`.
 
+## Pressure advance
+
+Enabling the notch law means `pressure_advance_smooth_time` should usually be
+**lowered**. The pressure advance *value* does not need retuning — linear
+advance adds filament proportional to extruder velocity with no acceleration
+term, so the coefficient is a property of the melt and nozzle, not of the
+planner. Only the smoothing window needs to track the ramp.
+
+The 0.040 s default exists to fix a problem this planner does not have. On a
+stock trapezoid, acceleration is a step function, so velocity has a kink at
+every ramp boundary and the pressure advance term — proportional to velocity —
+inherits it. Differentiating that gives a step in *extruder* velocity, which
+would demand unbounded extruder acceleration; the smoothing rounds it off.
+
+A notched ramp is already a trapezoid in acceleration lasting
+`1/f_lo + 1/f_hi`, so velocity is C1 and the pressure advance term is already
+continuous. There is no discontinuity left to smooth. What remains is the
+`unified_jerk_dt` slice staircase, which is far shorter and needs a far smaller
+window.
+
+Leaving the default in place is actively harmful once it approaches the ramp
+duration: at 55/65 Hz the ramp is `1/55 + 1/65` = 33.6 ms, so a 40 ms window is
+**wider than the entire acceleration event**. The correction is then averaged
+across more than the whole ramp, which flattens and delays exactly the corner
+signal a pressure advance tuning tower is read on — the tower's optimum goes
+broad and its location moves between runs.
+
+Aim for roughly a third of the notch period, with a floor of a few times
+`unified_jerk_dt` so the slice staircase is still smoothed:
+
+| notch                | ramp `1/f_lo + 1/f_hi` | suggested `smooth_time` |
+| -------------------- | ---------------------- | ----------------------- |
+| 30 Hz                | 66.7 ms                | 0.020                   |
+| 40 Hz                | 50.0 ms                | 0.015                   |
+| 55 Hz                | 36.4 ms                | 0.012                   |
+| 55 / 65 Hz           | 33.6 ms                | 0.010                   |
+| 80 Hz                | 25.0 ms                | 0.008                   |
+| 100 Hz               | 20.0 ms                | 0.006                   |
+
+```
+[extruder]
+pressure_advance_smooth_time: 0.01
+```
+
+Tune pressure advance itself *after* setting this. A tower read through an
+oversized smoothing window measures the window as much as the melt.
+
 ## Limitations
 
 - **Runway.** A jerk-limited ramp needs `(v0 + v1) / f_n` of travel to complete.
