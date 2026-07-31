@@ -6235,9 +6235,11 @@ mcu:
 #   used by the thermal model to compensate for part cooling airflow.
 #   Set to an empty string to disable.
 #pid_kp: 4.0
-#pid_ti: 0.0
+#pid_ti: 0.2
 #pid_td: 0.0
 #pid_b: 1.0
+#pid_i_window: 0.2
+#pid_i_limit: 0.5
 #   Parameters for the PID controller running on the toolboard. The
 #   defaults should work for most setups.
 #max_temp_nozzle: 305.0
