@@ -1090,7 +1090,8 @@ thermal model parameters at runtime. Updated values are staged for
 SAVE_CONFIG.
 
 #### INDX_SET_PID
-`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]`:
+`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]
+[I_WINDOW=<degrees>] [I_LIMIT=<duty>]`:
 Update the PID parameters of the controller running on the toolboard.
 
 #### INDX_MEASURE_POWER
