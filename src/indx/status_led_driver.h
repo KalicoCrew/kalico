@@ -43,8 +43,6 @@ constexpr auto col_black = color_t(0, 0, 0);
 constexpr auto col_red = color_t(255, 0, 0);
 constexpr auto col_green = color_t(0, 255, 0);
 constexpr auto col_blue = color_t(0, 0, 255);
-constexpr auto col_amber = color_t(255, 64, 0);
-constexpr auto col_half_amber = color_t(128, 32, 0);
 constexpr auto col_purple = color_t(255, 0, 255);
 
 constexpr auto pattern_off = pattern_t{col_black, 0, 0, 0.0f, 0.0f};
@@ -59,14 +57,13 @@ constexpr auto pattern_error_heat_max = pattern_t{col_red, 2, 1, 0.0f, 0.0f};
 constexpr auto pattern_error_heat_input = pattern_t{col_red, 2, 2, 0.0f, 0.0f};
 constexpr auto pattern_error_internal_temp =
     pattern_t{col_red, 5, 3, 0.0f, 0.0f};
-constexpr auto pattern_heating = pattern_t{col_amber, 0, 0, 0.5f, 0.0f};
+constexpr auto pattern_heating = pattern_t{col_red, 0, 0, 0.5f, 0.0f};
 constexpr auto pattern_cold = pattern_t{col_green, 0, 0, 0.0f, 0.5f};
-constexpr auto pattern_target = pattern_t{col_amber, 0, 0, 0.0f, 0.5f};
-constexpr auto pattern_cooling_down =
-    pattern_t{col_half_amber, 0, 0, 0.0f, 0.5f};
-constexpr auto pattern_cooled_down = pattern_t{col_blue, 0, 0, 0.0f, 0.5f};
+constexpr auto pattern_target = pattern_t{col_red, 0, 0, 0.0f, 0.5f};
+constexpr auto pattern_cooling_down = pattern_t{col_red, 0, 0, 0.25f, 0.5f};
+constexpr auto pattern_cooled_down = pattern_t{col_blue, 0, 0, 0.25f, 0.5f};
 constexpr auto pattern_dfu = pattern_t{col_blue, 1, 0, 0.0f, 0.0f};
-constexpr auto pattern_transient = pattern_t{col_amber, 1, 0, 0.0f, 0.0f};
+constexpr auto pattern_transient = pattern_t{col_purple, 1, 0, 0.0f, 0.0f};
 
 struct blending_t {
     blending_t(color_t initial_color, float time)
