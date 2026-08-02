@@ -32,11 +32,12 @@ cc-option=$(shell if test -z "`$(1) $(2) -S -o /dev/null -xc /dev/null 2>&1`" \
     ; then echo "$(2)"; else echo "$(3)"; fi ;)
 
 CFLAGS := -iquote $(OUT) -iquote src -iquote $(OUT)board-generic/ \
-		-std=gnu11 -MD -Wall \
-		-Wold-style-definition $(call cc-option,$(CC),-Wtype-limits,) \
+		-MD -Wall $(call cc-option,$(CC),-Wtype-limits,) \
     -ffunction-sections -fdata-sections -fno-delete-null-pointer-checks
 CFLAGS += -flto=auto -fwhole-program -fno-use-linker-plugin -ggdb3
 CFLAGS += $(EXTRA_CFLAGS)
+CONLYFLAGS := -std=gnu11 -Wold-style-definition
+CXXFLAGS := -std=c++20 -fno-rtti -fno-exceptions
 
 ifeq ($(CONFIG_WANT_OPTIMIZE_SIZE), y)
 CFLAGS += -Os
@@ -44,7 +45,9 @@ else
 CFLAGS += -O2
 endif
 
-OBJS_klipper.elf = $(patsubst %.c, $(OUT)src/%.o,$(src-y))
+OBJS_klipper.elf = \
+	$(filter %.o,$(patsubst %.c, $(OUT)src/%.o,$(src-y))) \
+	$(filter %.o,$(patsubst %.c++, $(OUT)src/%.o,$(src-y)))
 OBJS_klipper.elf += $(OUT)compile_time_request.o
 CFLAGS_klipper.elf = $(CFLAGS) -Wl,--gc-sections -Wl,--print-memory-usage
 
@@ -66,13 +69,20 @@ endif
 # Include board specific makefile
 include src/Makefile
 -include src/extras/Makefile
+ifeq ($(CONFIG_WANT_INDX_HEATER), y)
+include src/indx/Makefile
+endif
 -include src/$(patsubst "%",%,$(CONFIG_BOARD_DIRECTORY))/Makefile
 
 ################ Main build rules
 
 $(OUT)%.o: %.c $(OUT)autoconf.h
 	@echo "  Compiling $@"
-	$(Q)$(CC) $(CFLAGS) -c $< -o $@
+	$(Q)$(CC) $(CFLAGS) $(CONLYFLAGS) -c $< -o $@
+
+$(OUT)%.o: %.c++ $(OUT)autoconf.h
+	@echo "  Compiling $@"
+	$(Q)$(CC) $(CFLAGS) $(CXXFLAGS) -c $< -o $@
 
 $(OUT)%.ld: %.lds.S $(OUT)autoconf.h
 	@echo "  Preprocessing $@"
@@ -88,9 +98,13 @@ $(OUT)klipper.elf: $(OBJS_klipper.elf)
 $(OUT)%.o.ctr: $(OUT)%.o
 	$(Q)$(OBJCOPY) -j '.compile_time_request' -O binary $^ $@
 
-$(OUT)compile_time_request.o: $(patsubst %.c, $(OUT)src/%.o.ctr,$(src-y)) ./scripts/buildcommands.py
+ctrs-y = \
+	$(filter %.o.ctr,$(patsubst %.c, $(OUT)src/%.o.ctr,$(src-y))) \
+	$(filter %.o.ctr,$(patsubst %.c++, $(OUT)src/%.o.ctr,$(src-y)))
+
+$(OUT)compile_time_request.o: $(ctrs-y) ./scripts/buildcommands.py
 	@echo "  Building $@"
-	$(Q)cat $(patsubst %.c, $(OUT)src/%.o.ctr,$(src-y)) | tr -s '\0' '\n' > $(OUT)compile_time_request.txt
+	$(Q)cat $(ctrs-y) | tr -s '\0' '\n' > $(OUT)compile_time_request.txt
 	$(Q)$(PYTHON) ./scripts/buildcommands.py -d $(OUT)klipper.dict -t "$(CC);$(AS);$(LD);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)compile_time_request.txt $(OUT)compile_time_request.c
 	$(Q)$(CC) $(CFLAGS) -c $(OUT)compile_time_request.c -o $@
 

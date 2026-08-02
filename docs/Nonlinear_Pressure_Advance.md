@@ -62,8 +62,8 @@ This can be useful when tuning high speed machines to know what the limits of yo
 
 Depending on the specific settings, nonlinear PA can request higher speeds and almost always requests higher accelerations than standard PA, so you can use this in combination with testing to ensure new settings combinations you are trying don't have issues.
 
-Note that there are two different nonlinear functions: reciprocal and tanh.
-They both can have similar results, but reciprocal provides better independence between low and high speed PA so we recommend you use that for ease of tuning.
+Note that there are two different nonlinear functions: recipr and tanh.
+They both can have similar results, but recipr provides better independence between low and high speed PA so we recommend you use that for ease of tuning.
 
 ## Setup
 

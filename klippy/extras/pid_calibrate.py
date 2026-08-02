@@ -5,6 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import math
+import os
+import tempfile
 
 from . import heaters
 
@@ -31,10 +33,10 @@ class PIDCalibrate:
     ):
         if isinstance(heater.control, heaters.ControlDualLoopPID):
             if calibrate_secondary:
-                delta = heater.control.secondary_max_temp - target
+                delta = heater.control.inner_target_temp - target
                 if delta <= 15.0:
                     gcmd.respond_raw(
-                        "!! Target calibration temperature of %d°C is <= 15°C below `secondary_max_temp`."
+                        "!! Target calibration temperature of %d°C is <= 15°C below `inner_target_temp`."
                         % target
                     )
                     gcmd.respond_raw(
@@ -42,12 +44,14 @@ class PIDCalibrate:
                     )
 
                 gcmd.respond_info(
-                    "Calibrating secondary pid loop (target=%.1f)"
-                    % (heater.control.secondary_max_temp)
+                    "Calibrating secondary pid loop around %.1fC. "
+                    "The inner sensor temperature will oscillate above "
+                    "and below this target during calibration; this is "
+                    "expected." % (heater.control.inner_target_temp)
                 )
                 calibrate = ControlAutoTune(
                     heater,
-                    heater.control.secondary_max_temp,
+                    heater.control.inner_target_temp,
                     tolerance,
                     calibrate_secondary=calibrate_secondary,
                 )
@@ -64,7 +68,7 @@ class PIDCalibrate:
                 max_temp = max(0.0, calibrate.temp_low - 5.0)
                 gcmd.respond_info(
                     "Waiting for heater %s to cool down to %.1f for calibration."
-                    % (heater.get_name(), target)
+                    % (heater.get_name(), max_temp)
                 )
                 pheaters.set_temperature(heater, max_temp, True)
         else:
@@ -79,9 +83,10 @@ class PIDCalibrate:
         heater.set_control(old_control, False)
 
         if write_file:
-            fname = "/tmp/heattest.csv"
+            tmpdir = tempfile.gettempdir()
+            fname = os.path.join(tmpdir, "heattest.csv")
             if calibrate_secondary:
-                fname = "/tmp/heattest_secondary.csv"
+                fname = os.path.join(tmpdir, "heattest_secondary.csv")
             calibrate.write_file(fname)
 
         if calibrate.check_busy(0.0, 0.0, 0.0):
@@ -332,7 +337,7 @@ class ControlAutoTune:
             is_dual_loop = isinstance(self.control, heaters.ControlDualLoopPID)
             if is_dual_loop and not self.calibrate_secondary:
                 pid = self.control.secondary_pid
-                secondary_target_temp = self.control.secondary_max_temp
+                secondary_target_temp = self.control.inner_target_temp
                 _, bounded_co = pid.calculate_output(
                     read_time, secondary_temp, secondary_target_temp
                 )

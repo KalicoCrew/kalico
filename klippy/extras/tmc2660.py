@@ -216,11 +216,14 @@ class MCU_TMC2660_SPI:
     def get_fields(self):
         return self.fields
 
-    def get_register(self, reg_name):
+    def get_register_raw(self, reg_name):
         new_rdsel = ReadRegisters.index(reg_name)
         reg = self.name_to_reg["DRVCONF"]
         if self.printer.get_start_args().get("debugoutput") is not None:
-            return 0
+            return {
+                "data": 0,
+                "#receive_time": 0.0,
+            }
         with self.mutex:
             old_rdsel = self.fields.get_field("rdsel")
             val = self.fields.set_field("rdsel", new_rdsel)
@@ -230,7 +233,13 @@ class MCU_TMC2660_SPI:
                 self.spi.spi_send(msg)
             params = self.spi.spi_transfer(msg)
         pr = bytearray(params["response"])
-        return (pr[0] << 16) | (pr[1] << 8) | pr[2]
+        return {
+            "data": (pr[0] << 16) | (pr[1] << 8) | pr[2],
+            "#receive_time": params["#receive_time"],
+        }
+
+    def get_register(self, reg_name):
+        return self.get_register_raw(reg_name)["data"]
 
     def set_register(self, reg_name, val, print_time=None):
         minclock = 0
@@ -243,6 +252,9 @@ class MCU_TMC2660_SPI:
 
     def get_tmc_frequency(self):
         return None
+
+    def get_mcu(self):
+        return self.spi.get_mcu()
 
 
 ######################################################################

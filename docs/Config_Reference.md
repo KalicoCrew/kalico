@@ -175,6 +175,9 @@ configuration between multiple sections. References take the form of
 `${section.option}` to look up a value elsewhere in your configuration. Note,
 that constants must always be lower case.
 
+References are a plain text substitution: the referenced value is copied
+as-is. Expressions and Python-like functions are not evaluated.
+
 Optionally, a `[constants]` section can be used specifically to store
 these values. Unused constants will display a warning. However, `[constants]`
 will display an error if none of the constants are used.
@@ -245,8 +248,6 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
-#max_accel_to_decel:
-#   This parameter is deprecated and should no longer be used.
 ```
 
 ### [stepper]
@@ -786,6 +787,12 @@ max_z_accel:
 # stepper controlling the X-Y movement.
 [stepper_x]
 
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction. Combined with additional Y steppers
+# ([stepper_y1]) this supports four motor hybrid machines such as the
+# RatRig V-Core hybrid.
+
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
 [stepper_y]
@@ -822,6 +829,10 @@ max_z_accel:
 # The stepper_x section is used to describe the X axis as well as the
 # stepper controlling the X-Z movement.
 [stepper_x]
+
+# Additional steppers may be added to the X rail as [stepper_x1],
+# [stepper_x2], etc. Each additional X stepper is driven with the
+# mirrored belt direction.
 
 # The stepper_y section is used to describe the stepper controlling
 # the Y axis.
@@ -1171,13 +1182,16 @@ per_move_pressure_advance: False
 #
 #   If: control: dual_loop_pid
 #inner_sensor_name:
-#   The temperature_sensor name of a second sensor to use for temperature
-#   control with 'dual_loop_pid'. This sensor will limit the heater power
-#   to not allow the temperature to exceed the 'inner_max_temp' value.
+#   The temperature_sensor name of a second sensor used by
+#   'dual_loop_pid' for the inner PID loop.
 #
 #   If: control: dual_loop_pid
+#inner_target_temp:
+#   The target temperature for the inner PID loop. During calibration,
+#   the temperature will oscillate above and below this value. This
+#   behavior is expected and does not indicate a safety failure.
 #inner_max_temp:
-#   The maximum temperature target that the inner sensor will allow.
+#   Deprecated alias for inner_target_temp.
 #
 #   If control: dual_loop_pid
 #inner_pid_Kp:
@@ -1186,9 +1200,9 @@ per_move_pressure_advance: False
 #   'dual_loop_pid' control uses two PID loops to control the temperature.
 #   The inner(secondary) PID loop controls the temperature directly. The
 #   primary PID loop controls the power to the secondary PID loop. This
-#   allows the primary PID loop to be tuned for temperature control, while
-#   the secondary PID loop can be tuned for power control, not exceeding
-#   the temperature limit set on 'inner_max_temp'.
+#   allows the primary PID loop to be tuned for temperature control,
+#   while the secondary PID loop can be tuned for power control while
+#   tracking 'inner_target_temp'.
 #   The primary sensor is positioned close where the temperature
 #   measurament should be more accurate (e.g. on the bed surface). The
 #   secondary sensor is positioned where the temperature measurament
@@ -3179,6 +3193,13 @@ printer kinematics.
 #   Endstop switch detection pin. If specified, then one may perform
 #   "homing moves" by adding a STOP_ON_ENDSTOP parameter to
 #   MANUAL_STEPPER movement commands.
+#position_min:
+#position_max:
+#   The minimum and maximum position the stepper can be commanded to
+#   move to. If specified then one may not command the stepper to move
+#   past the given position. Note that these limits do not prevent
+#   setting an arbitrary position with the `MANUAL_STEPPER
+#   SET_POSITION=x` command. The default is to not enforce a limit.
 ```
 
 ### [mixing_extruder]
@@ -3729,6 +3750,23 @@ max_temp: 325
 #   Ignore the temp limits (if set to true, the min and max temp can be omitted)
 #echo_limits_to_console: False
 #   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+```
+
+### INDX temperature sensor
+
+Temperature reported by a [Bondtech INDX toolboard](#indx). The
+default "heater" kind reports the nozzle temperature and is the one
+to use for the extruder; the other kinds are mainly diagnostic.
+
+```
+sensor_type: indx
+#indx_sensor: heater
+#   The temperature to report. Available kinds are "heater" (nozzle
+#   temperature), "sensor" (IR sensor die temperature), "board"
+#   (toolboard temperature), "bracket" (sensor bracket temperature),
+#   "ldc_coil" (eddy current probe coil temperature), "check_model"
+#   (thermal model prediction) and "check_model_delta" (difference
+#   between the model prediction and the measured temperature).
 ```
 
 
@@ -4867,6 +4905,7 @@ run_current:
 #driver_SEDN: 0
 #driver_SEIMIN: 0
 #driver_SFILT: 0
+#driver_SG4_THRS: 0
 #driver_SG4_ANGLE_OFFSET: 1
 #   Set the given register during the configuration of the TMC2240
 #   chip. This may be used to set custom motor parameters. The
@@ -4879,8 +4918,8 @@ run_current:
 #   is "active low" and is thus normally prefaced with "^!". Setting
 #   this creates a "tmc2240_stepper_x:virtual_endstop" virtual pin
 #   which may be used as the stepper's endstop_pin. Doing this enables
-#   "sensorless homing". (Be sure to also set driver_SGT to an
-#   appropriate sensitivity value.) The default is to not enable
+#   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
+#   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
 ```
 
@@ -6172,6 +6211,91 @@ sensor_type:
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
 ## Board specific hardware support
+
+### [indx]
+
+Support for the Bondtech INDX toolboard with its inductive nozzle
+heater, contactless IR temperature sensor and on-board PID
+controller. The toolboard must run Kalico firmware built with the
+"Bondtech INDX Heater" option enabled. See the
+[INDX document](INDX.md) for setup and calibration instructions and
+[G-Codes](G-Codes.md#indx) for the available commands.
+
+The module registers named aliases for the toolboard pins (e.g.
+`<mcu>:motor_step`, `<mcu>:part_cooling`, `<mcu>:endstop`), exposes
+the nozzle heater as the virtual pin `indx:heater`, the nozzle
+temperature as `sensor_type: indx`, and automatically manages the
+heatsink fan. The heater will not heat until INDX_CALIBRATE has been
+run.
+
+```
+[indx]
+mcu:
+#   The name of the mcu config section for the INDX toolboard (e.g.
+#   "indxmcu" when the toolboard is defined as "[mcu indxmcu]"). This
+#   parameter must be provided.
+#part_cooling_fan: fan
+#   Name of the part cooling fan object on the tool. The fan speed is
+#   used by the thermal model to compensate for part cooling airflow.
+#   Set to an empty string to disable.
+#pid_kp: 4.0
+#pid_ti: 0.0
+#pid_td: 0.0
+#pid_b: 1.0
+#   Parameters for the PID controller running on the toolboard. The
+#   defaults should work for most setups.
+#max_temp_nozzle: 305.0
+#max_temp_sensor: 130.0
+#max_temp_bracket: 130.0
+#max_temp_board: 100.0
+#   Maximum allowed temperature for the nozzle, the IR sensor die,
+#   the sensor bracket and the toolboard. Exceeding any of these
+#   triggers a shutdown.
+#max_model_error: 50.0
+#   Maximum allowed difference (in Celsius) between the measured
+#   nozzle temperature and the thermal model prediction before a
+#   shutdown is triggered.
+#coil_time_on:
+#coil_time_off:
+#coil_time_on_first:
+#   Inductive coil drive timings in microseconds. These are measured
+#   by INDX_CALIBRATE and stored by SAVE_CONFIG; they should not
+#   normally be set by hand.
+#max_power:
+#model_max_power_temp_coeff:
+#model_thermal_capacity:
+#model_to_ambient_r:
+#   Thermal model parameters. These are measured by INDX_CALIBRATE
+#   and stored by SAVE_CONFIG; they should not normally be set by
+#   hand.
+#model_filament_diameter: 1.75
+#model_filament_density: 1.20
+#model_filament_heat_capacity: 1.8
+#   Filament parameters used by the thermal model to account for the
+#   energy carried away by extruded filament. The density is in
+#   g/cm^3 and the heat capacity in J/(g*K). These can also be
+#   measured with INDX_LOAD_FILAMENT or changed at runtime with
+#   INDX_SET_MODEL_PARAMS.
+#model_part_cooling_fan_a: 0.0
+#model_part_cooling_fan_k: 0.0
+#   Part cooling fan compensation for the thermal model, measured by
+#   INDX_FAN_CALIBRATE and stored by SAVE_CONFIG.
+#model_ambient_blend_board: 0.0
+#model_ambient_blend_bracket: 1.0
+#model_ambient_blend_sensor: 1.0
+#   Relative weights of the toolboard, sensor bracket and IR sensor
+#   die temperatures when estimating the ambient temperature for the
+#   thermal model.
+#model_error_application: 1.0
+#   Fraction of the observed model error fed back into the thermal
+#   model on each update.
+#ir_sensor_exponent:
+#ir_sensor_obj_gain:
+#ir_sensor_bracket_gain:
+#   Override the IR sensor tuning parameters stored in the sensor
+#   EEPROM. All three must be provided if any is given. These should
+#   not normally be set.
+```
 
 ### [sx1509]
 

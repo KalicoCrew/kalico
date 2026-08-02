@@ -220,7 +220,10 @@ class MCU_TMC_uart_bitbang:
             self.analog_mux.activate(instance_id)
         msg = self._encode_read(0xF5, addr, reg)
         params = self.tmcuart_send_cmd.send([self.oid, msg, 10])
-        return self._decode_read(reg, params["read"])
+        return {
+            "data": self._decode_read(reg, params["read"]),
+            "#receive_time": params["#receive_time"],
+        }
 
     def reg_write(self, instance_id, addr, reg, val, print_time=None):
         minclock = 0
@@ -230,6 +233,9 @@ class MCU_TMC_uart_bitbang:
             self.analog_mux.activate(instance_id)
         msg = self._encode_write(0xF5, addr, reg | 0x80, val)
         self.tmcuart_send_cmd.send([self.oid, msg, 0], minclock=minclock)
+
+    def get_mcu(self):
+        return self.mcu
 
 
 # Lookup a (possibly shared) tmc uart
@@ -280,18 +286,24 @@ class MCU_TMC_uart:
     def _do_get_register(self, reg_name):
         reg = self.name_to_reg[reg_name]
         if self.printer.get_start_args().get("debugoutput") is not None:
-            return 0
+            return {
+                "data": 0,
+                "#receive_time": 0.0,
+            }
         for retry in range(5):
             val = self.mcu_uart.reg_read(self.instance_id, self.addr, reg)
-            if val is not None:
+            if val["data"] is not None:
                 return val
         raise self.printer.command_error(
             "Unable to read tmc uart '%s' register %s" % (self.name, reg_name)
         )
 
-    def get_register(self, reg_name):
+    def get_register_raw(self, reg_name):
         with self.mutex:
             return self._do_get_register(reg_name)
+
+    def get_register(self, reg_name):
+        return self.get_register_raw(reg_name)["data"]
 
     def set_register(self, reg_name, val, print_time=None):
         reg = self.name_to_reg[reg_name]
@@ -301,11 +313,11 @@ class MCU_TMC_uart:
             for retry in range(5):
                 ifcnt = self.ifcnt
                 if ifcnt is None:
-                    self.ifcnt = ifcnt = self._do_get_register("IFCNT")
+                    self.ifcnt = ifcnt = self._do_get_register("IFCNT")["data"]
                 self.mcu_uart.reg_write(
                     self.instance_id, self.addr, reg, val, print_time
                 )
-                self.ifcnt = self._do_get_register("IFCNT")
+                self.ifcnt = self._do_get_register("IFCNT")["data"]
                 if self.ifcnt == (ifcnt + 1) & 0xFF:
                     return
         raise self.printer.command_error(
@@ -314,3 +326,6 @@ class MCU_TMC_uart:
 
     def get_tmc_frequency(self):
         return self.tmc_frequency
+
+    def get_mcu(self):
+        return self.mcu_uart.get_mcu()

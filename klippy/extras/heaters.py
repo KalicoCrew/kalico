@@ -35,6 +35,30 @@ PID_PROFILE_OPTIONS = {
     "pid_ki": (float, "%.3f"),
     "pid_kd": (float, "%.3f"),
 }
+PID_CONTROL_TYPES = ("pid", "pid_v", "dual_loop_pid")
+DUAL_LOOP_PID_INNER_TARGET_OPTION = "inner_target_temp"
+DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION = "inner_max_temp"
+
+
+def lookup_dual_loop_pid_inner_target_temp(config):
+    inner_target_temp = config.getfloat(DUAL_LOOP_PID_INNER_TARGET_OPTION, None)
+    inner_max_temp = config.getfloat(
+        DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION, None
+    )
+    if inner_target_temp is not None and inner_max_temp is not None:
+        raise config.error(
+            "Options '%s' and '%s' may not both be specified"
+            % (
+                DUAL_LOOP_PID_INNER_TARGET_OPTION,
+                DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION,
+            )
+        )
+    if inner_target_temp is not None:
+        return inner_target_temp
+    if inner_max_temp is not None:
+        config.deprecate(DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION)
+        return inner_max_temp
+    return config.getfloat(DUAL_LOOP_PID_INNER_TARGET_OPTION)
 
 
 class Heater:
@@ -639,6 +663,33 @@ class Heater:
                 "pid_ki": ki,
                 "pid_kd": kd,
             }
+            if control == "dual_loop_pid":
+                # The inner loop has its own gains, default to the values from
+                # the current profile when not overridden on the command line.
+                inner_kp = self._check_value_gcmd(
+                    "INNER_KP",
+                    current_profile.get("inner_pid_kp"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                inner_ki = self._check_value_gcmd(
+                    "INNER_KI",
+                    current_profile.get("inner_pid_ki"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                inner_kd = self._check_value_gcmd(
+                    "INNER_KD",
+                    current_profile.get("inner_pid_kd"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                temp_profile["inner_pid_kp"] = inner_kp
+                temp_profile["inner_pid_ki"] = inner_ki
+                temp_profile["inner_pid_kd"] = inner_kd
             temp_control = self.outer_instance.lookup_control(
                 temp_profile, load_clean
             )
@@ -651,15 +702,34 @@ class Heater:
             )
             if smooth_time is not None:
                 msg += "Smooth Time: %.3f\n" % smooth_time
-            msg += (
-                "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "have been set as current profile." % (kp, ki, kd)
-            )
+            msg += "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n" % (kp, ki, kd)
+            if control == "dual_loop_pid":
+                msg += (
+                    "inner_pid_Kp=%.3f inner_pid_Ki=%.3f "
+                    "inner_pid_Kd=%.3f\n" % (inner_kp, inner_ki, inner_kd)
+                )
+            msg += "have been set as current profile."
             self.outer_instance.gcode.respond_info(msg)
             self.save_profile(profile_name=profile_name, verbose=True)
 
+        def _profile_fields_msg(self, profile):
+            # Generic field dump for non-PID profile types
+            msg = "Control: %s\n" % (profile["control"],)
+            for key, value in sorted(profile.items()):
+                if key in ("control", "name") or value is None:
+                    continue
+                if isinstance(value, (int, float, str)):
+                    msg += "%s: %s\n" % (key, value)
+            msg += "name: %s" % (profile["name"],)
+            return msg
+
         def get_values(self, profile_name, gcmd, verbose):
             temp_profile = self.outer_instance.get_control().get_profile()
+            if temp_profile["control"] not in PID_CONTROL_TYPES:
+                self.outer_instance.gcode.respond_info(
+                    self._profile_fields_msg(temp_profile)
+                )
+                return
             target = temp_profile["pid_target"]
             tolerance = temp_profile["pid_tolerance"]
             control = temp_profile["control"]
@@ -672,31 +742,71 @@ class Heater:
                 else temp_profile["smooth_time"]
             )
             name = temp_profile["name"]
-            self.outer_instance.gcode.respond_info(
+            msg = (
                 "PID Parameters:\n"
                 "Target: %.2f,\n"
                 "Tolerance: %.4f\n"
                 "Control: %s\n"
                 "Smooth Time: %.3f\n"
                 "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "name: %s"
-                % (target, tolerance, control, smooth_time, kp, ki, kd, name)
+                % (target, tolerance, control, smooth_time, kp, ki, kd)
             )
+            if control == "dual_loop_pid":
+                msg += (
+                    "inner_pid_Kp=%.3f inner_pid_Ki=%.3f "
+                    "inner_pid_Kd=%.3f\n"
+                    % (
+                        temp_profile["inner_pid_kp"],
+                        temp_profile["inner_pid_ki"],
+                        temp_profile["inner_pid_kd"],
+                    )
+                )
+            msg += "name: %s" % name
+            self.outer_instance.gcode.respond_info(msg)
 
         def save_profile(self, profile_name=None, gcmd=None, verbose=True):
             temp_profile = self.outer_instance.get_control().get_profile()
+            control = temp_profile["control"]
+            if control not in PID_CONTROL_TYPES and control != "watermark":
+                self.outer_instance.gcode.respond_info(
+                    "Saving [%s] profiles with PID_PROFILE SAVE"
+                    " is not supported." % (control,)
+                )
+                return
             if profile_name is None:
                 profile_name = temp_profile["name"]
             section_name = self._compute_section_name(profile_name)
             self.outer_instance.configfile.set(
                 section_name, "pid_version", PID_PROFILE_VERSION
             )
-            for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
-                value = temp_profile[key]
-                if value is not None:
-                    self.outer_instance.configfile.set(
-                        section_name, key, placeholder % value
-                    )
+            if control == "watermark":
+                self.outer_instance.configfile.set(
+                    section_name, "control", control
+                )
+                self.outer_instance.configfile.set(
+                    section_name,
+                    "max_delta",
+                    "%.4f" % (temp_profile["max_delta"],),
+                )
+            else:
+                is_dual_loop = control == "dual_loop_pid"
+                for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
+                    value = temp_profile[key]
+                    if value is not None:
+                        self.outer_instance.configfile.set(
+                            section_name, key, placeholder % value
+                        )
+                    # Mirror the inner/secondary loop keys read in
+                    # _init_profile
+                    if is_dual_loop and key in ("pid_kp", "pid_ki", "pid_kd"):
+                        inner_key = "inner_" + key
+                        inner_value = temp_profile.get(inner_key)
+                        if inner_value is not None:
+                            self.outer_instance.configfile.set(
+                                section_name,
+                                inner_key,
+                                placeholder % inner_value,
+                            )
             temp_profile["name"] = profile_name
             self.profiles[profile_name] = temp_profile
             if verbose:
@@ -763,6 +873,11 @@ class Heater:
                 % (profile["name"], self.outer_instance.short_name)
             )
             if verbose == "high":
+                if profile["control"] not in PID_CONTROL_TYPES:
+                    self.outer_instance.gcode.respond_info(
+                        self._profile_fields_msg(profile)
+                    )
+                    return
                 smooth_time = (
                     self.outer_instance.get_smooth_time()
                     if profile["smooth_time"] is None
@@ -783,6 +898,16 @@ class Heater:
                         profile["pid_kd"],
                     )
                 )
+                if profile["control"] == "dual_loop_pid":
+                    msg += (
+                        "Inner PID Parameters: inner_pid_Kp=%.3f "
+                        "inner_pid_Ki=%.3f inner_pid_Kd=%.3f\n"
+                        % (
+                            profile["inner_pid_kp"],
+                            profile["inner_pid_ki"],
+                            profile["inner_pid_kd"],
+                        )
+                    )
                 self.outer_instance.gcode.respond_info(msg)
 
         def remove_profile(self, profile_name, gcmd, verbose):
@@ -1119,7 +1244,9 @@ class ControlDualLoopPID:
             load_clean=load_clean,
         )
 
-        self.secondary_max_temp = self.heater.config.getfloat("inner_max_temp")
+        self.inner_target_temp = lookup_dual_loop_pid_inner_target_temp(
+            self.heater.config
+        )
 
     def temperature_update(
         self,
@@ -1131,20 +1258,30 @@ class ControlDualLoopPID:
         if secondary_temp is None:
             raise ValueError("Secondary temperature must be provided!")
 
+        primary_prev_temp_integ = self.primary_pid.prev_temp_integ
         primary_co, _ = self.primary_pid.calculate_output(
             read_time,
             primary_temp,
             target_temp,
         )
 
+        secondary_prev_temp_integ = self.secondary_pid.prev_temp_integ
         secondary_co, _ = self.secondary_pid.calculate_output(
             read_time,
             secondary_temp,
-            self.secondary_max_temp,
+            self.inner_target_temp,
         )
 
         co = min(primary_co, secondary_co)
         bounded_co = max(0.0, min(self.heater_max_power, co))
+
+        # If the other loop reduced the final heater output, don't let this
+        # loop retain an integrator update based on power that was never
+        # actually applied to the heater.
+        if primary_co != bounded_co:
+            self.primary_pid.prev_temp_integ = primary_prev_temp_integ
+        if secondary_co != bounded_co:
+            self.secondary_pid.prev_temp_integ = secondary_prev_temp_integ
 
         self.heater.set_pwm(read_time, bounded_co)
 

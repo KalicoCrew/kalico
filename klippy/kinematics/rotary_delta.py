@@ -32,9 +32,6 @@ class RotaryDeltaKinematics:
             units_in_radians=True,
         )
         self.rails = [rail_a, rail_b, rail_c]
-        config.get_printer().register_event_handler(
-            "stepper_enable:motor_off", self._motor_off
-        )
         # Read config
         max_velocity, max_accel = toolhead.get_max_velocity()
         self.max_z_velocity = config.getfloat(
@@ -112,8 +109,8 @@ class RotaryDeltaKinematics:
         max_xy = math.sqrt(self.max_xy2)
         self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.0)
         self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.0)
-        self.set_position([0.0, 0.0, 0.0], ())
         self.supports_dual_carriage = False
+        self.set_position([0.0, 0.0, 0.0], "")
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
@@ -126,12 +123,15 @@ class RotaryDeltaKinematics:
         for rail in self.rails:
             rail.set_position(newpos)
         self.limit_xy2 = -1.0
-        if tuple(homing_axes) == (0, 1, 2):
+        if homing_axes == "xyz":
             self.need_home = False
 
-    def clear_homing_state(self, axes):
+    def note_z_not_homed(self):
+        self.clear_homing_state("z")
+
+    def clear_homing_state(self, clear_axes):
         # Clearing homing state for each axis individually is not implemented
-        if 0 in axes or 1 in axes or 2 in axes:
+        if clear_axes:
             self.limit_xy2 = -1
             self.need_home = True
 
@@ -143,9 +143,6 @@ class RotaryDeltaKinematics:
         # forcepos[2] = self.calibration.actuator_to_cartesian(min_angles)[2]
         forcepos[2] = -1.0
         homing_state.home_rails(self.rails, forcepos, self.home_position)
-
-    def _motor_off(self, print_time):
-        self.clear_homing_state((0, 1, 2))
 
     def check_move(self, move):
         end_pos = move.end_pos

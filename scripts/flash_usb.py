@@ -13,6 +13,7 @@ import subprocess
 import sys
 import termios
 import time
+import zlib
 
 
 class error(Exception):
@@ -187,6 +188,28 @@ def flash_dfuutil(device, binfile, extra_flags=None, sudo=True):
         call_dfuutil(["-p", buspath] + extra_flags, binfile, sudo)
 
 
+def fix_indx_crc(binfile, start):
+    if start is None:
+        raise error("INDX flashing requires a start address")
+    with open(binfile, "r+b") as f:
+        data = bytearray(f.read())
+        if len(data) < 0x20:
+            raise error("INDX firmware image is too small")
+        crcpos = struct.unpack("<I", data[0x1C:0x20])[0] - start
+        if crcpos == len(data) - 4:
+            crc = zlib.crc32(data[:crcpos]) & 0xFFFFFFFF
+            if struct.unpack("<I", data[crcpos : crcpos + 4])[0] == crc:
+                return
+            f.seek(crcpos)
+            f.write(struct.pack("<I", crc))
+            return
+        if crcpos != len(data):
+            data[0x1C:0x20] = struct.pack("<I", start + len(data))
+        f.seek(0)
+        f.write(data)
+        f.write(struct.pack("<I", zlib.crc32(data) & 0xFFFFFFFF))
+
+
 def call_hidflash(binfile, sudo):
     args = ["lib/hidflash/hid-flash", binfile]
     if sudo:
@@ -307,6 +330,17 @@ def flash_lpc176x(options, binfile):
         sys.exit(-1)
 
 
+def flash_indx(options, binfile):
+    try:
+        fix_indx_crc(binfile, options.start)
+        flash_dfuutil(options.device, binfile, [], options.sudo)
+    except error as e:
+        sys.stderr.write(
+            "Failed to flash to %s: %s\n" % (options.device, str(e))
+        )
+        sys.exit(-1)
+
+
 STM32F1_HELP = """
 Failed to flash to %s: %s
 
@@ -405,6 +439,7 @@ MCUTYPES = {
     "same70": flash_atsam4,
     "samd": flash_atsamd,
     "same5": flash_atsamd,
+    "indx": flash_indx,
     "lpc176": flash_lpc176x,
     "stm32f103": flash_stm32f1,
     "stm32f4": flash_stm32f4,

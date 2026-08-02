@@ -222,6 +222,8 @@ defs_trdispatch = """
     void trdispatch_start(struct trdispatch *td, uint32_t dispatch_reason);
     void trdispatch_stop(struct trdispatch *td);
     struct trdispatch *trdispatch_alloc(void);
+    void trdispatch_free(struct trdispatch *td);
+    void trdispatch_mcu_free(struct trdispatch_mcu *tdm);
     struct trdispatch_mcu *trdispatch_mcu_alloc(struct trdispatch *td
         , struct serialqueue *sq, struct command_queue *cq, uint32_t trsync_oid
         , uint32_t set_timeout_msgtag, uint32_t trigger_msgtag

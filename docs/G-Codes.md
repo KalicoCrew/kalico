@@ -777,18 +777,51 @@ state; issue a G28 afterwards to reset the kinematics. This command is
 intended for low-level diagnostics and debugging.
 
 #### SET_KINEMATIC_POSITION
+
 `SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]
-[CLEAR=<[X][Y][Z]>]`: Force the low-level kinematic code to believe the
-toolhead is at the given cartesian position. This is a diagnostic and
-debugging command; use SET_GCODE_OFFSET and/or G92 for regular axis
-transformations. If an axis is not specified then it will default to the
-position that the head was last commanded to. Setting an incorrect or
-invalid position may lead to internal software errors. Use the CLEAR
-parameter to forget the homing state for the given axes. Note that CLEAR
-will not override the previous functionality; if an axis is not specified
-to CLEAR it will have its kinematic position set as per above. This
-command may invalidate future boundary checks; issue a G28 afterwards to
-reset the kinematics.
+[SET_HOMED=<[X][Y][Z]>] [CLEAR_HOMED=<[X][Y][Z]>]`: Force the
+low-level kinematic code to believe the toolhead is at the given
+cartesian position and set/clear homed status. This is a diagnostic
+and debugging command; use SET_GCODE_OFFSET and/or G92 for regular
+axis transformations. Setting an incorrect or invalid position may
+lead to internal software errors.
+
+The `X`, `Y`, and `Z` parameters are used to alter the low-level
+kinematic position tracking. If any of these parameters are not set
+then the position is not changed - for example `SET_KINEMATIC_POSITION
+Z=10` would set all axes as homed, set the internal Z position to 10,
+and leave the X and Y positions unchanged. Changing the internal
+position tracking is not dependent on the internal homing state - one
+may alter the position for both homed and not homed axes, and
+similarly one may set or clear the homing state of an axis without
+altering its internal position.
+
+The `SET_HOMED` parameter defaults to `XYZ` which instructs the
+kinematics to consider all axes as homed. A bare
+`SET_KINEMATIC_POSITION` command will result in all axes being
+considered homed (and not change its current position). If it is not
+desired to change the state of homed axes then assign `SET_HOMED` to
+an empty string - for example:
+`SET_KINEMATIC_POSITION SET_HOMED= X=10`. It is also possible to
+request an individual axis be considered homed (eg, `SET_HOMED=X`),
+but note that non-cartesian style kinematics (such as delta
+kinematics) may not support setting an individual axis as homed.
+
+The `CLEAR_HOMED` parameter instructs the kinematics to consider the
+given axes as not homed. For example, `CLEAR_HOMED=XYZ` would request
+all axes to be considered not homed (and thus require homing prior to
+movement on those axes). The default is `SET_HOMED=XYZ` even if
+`CLEAR_HOMED` is present, so the command `SET_KINEMATIC_POSITION
+CLEAR_HOMED=Z` will set X and Y as homed and clear the homing state
+for Z.  Use `SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=Z` if the
+goal is to clear only the Z homing state. If an axis is specified in
+neither `SET_HOMED` nor `CLEAR_HOMED` then its homing state is not
+changed and if it is specified in both then `CLEAR_HOMED` has
+precedence. It is possible to request clearing of an individual axis,
+but on non-cartesian style kinematics (such as delta kinematics) doing
+so may result in clearing the homing state of additional axes. Note
+the `CLEAR` parameter is currently an alias for the `CLEAR_HOMED`
+parameter, but this alias will be removed in the future.
 
 ### [gcode]
 
@@ -1000,6 +1033,117 @@ The idle_timeout module is automatically loaded.
 `SET_IDLE_TIMEOUT [TIMEOUT=<timeout>]`: Allows the user to set the
 idle timeout (in seconds).
 
+### [indx]
+
+The following commands are available when an
+[indx config section](Config_Reference.md#indx) is enabled (also see
+the [INDX document](INDX.md)).
+
+#### INDX_CALIBRATE
+`INDX_CALIBRATE [MIN_TEMP=<temp>] [MAX_TEMP=<temp>]
+[HOLD_TIME=<seconds>] [COOLDOWN_TIME=<seconds>]`: Tune the inductive
+coil drive timings and fit the heater thermal model. The nozzle must
+be cold (below MIN_TEMP, default 60) and the heater off; the nozzle
+is then heated to MAX_TEMP (default 200), held for HOLD_TIME (default
+10 seconds) and allowed to cool for COOLDOWN_TIME (default 15
+seconds). The heater will not heat until this calibration has been
+performed. Run SAVE_CONFIG afterwards to persist the results.
+
+#### INDX_FAN_CALIBRATE
+`INDX_FAN_CALIBRATE [BREAKS=<count>] [HOLD_TIME=<seconds>]
+[MIN_SPEED=<value>] [TEMP=<temp>] [SETTLE_TIME=<seconds>]`: Measure
+the cooling effect of the part cooling fan at BREAKS (default 6) fan
+speeds between MIN_SPEED (default 0.20) and full speed while holding
+the nozzle at TEMP (default 200). Run SAVE_CONFIG afterwards to
+persist the results.
+
+#### INDX_LOAD_FILAMENT
+`INDX_LOAD_FILAMENT [SPEED=<mm/s>] [MAX_LENGTH=<mm>]
+[PRIME_TIME=<seconds>] [PRIME_LENGTH=<mm>] [THRESHOLD=<value>]
+[SEGMENT_TIME=<seconds>] [APPLY=[0|1]]`: Load filament while
+measuring its thermal properties (the density and heat capacity used
+by the thermal model). Requires a calibrated thermal model and the
+active extruder to be at printing temperature. If APPLY is 1 (the
+default) the measured values are applied and staged for SAVE_CONFIG.
+
+#### INDX_CLEAR_FILAMENT
+`INDX_CLEAR_FILAMENT`: Reset the filament thermal parameters to zero
+(no filament compensation). Run SAVE_CONFIG to persist.
+
+#### INDX_EXTRUDER_MOVE
+`INDX_EXTRUDER_MOVE DISTANCE=<mm> SPEED=<mm/s> CURRENT=<amps>`:
+Perform an extruder move that bypasses the cold extrude check, with
+the TMC run current temporarily lowered to CURRENT (think of it as
+M302 plus a move in a single command). Mainly intended for loading
+and unloading INDX tools without needing to set a low minimum
+extrusion temperature.
+
+#### INDX_SET_MODEL_PARAMS
+`INDX_SET_MODEL_PARAMS [MAX_POWER=<value>]
+[MAX_POWER_TEMP_COEFF=<value>] [THERMAL_CAPACITY=<value>]
+[TO_AMBIENT_R=<value>] [FILAMENT_DIAMETER=<mm>]
+[FILAMENT_DENSITY=<g/cm3>] [FILAMENT_HEAT_CAPACITY=<J/g/K>]
+[PART_COOLING_FAN_A=<value>] [PART_COOLING_FAN_K=<value>]
+[AMBIENT_BLEND_BOARD=<value>] [AMBIENT_BLEND_BRACKET=<value>]
+[AMBIENT_BLEND_SENSOR=<value>] [ERROR_APPLICATION=<value>]`: Set
+thermal model parameters at runtime. Updated values are staged for
+SAVE_CONFIG.
+
+#### INDX_SET_PID
+`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]`:
+Update the PID parameters of the controller running on the toolboard.
+
+#### INDX_MEASURE_POWER
+`INDX_MEASURE_POWER [DURATION=<seconds>]`: Measure the heater power
+draw over DURATION (default 5) seconds and report the total energy
+and average power.
+
+#### INDX_DOCK_MEASURE
+`INDX_DOCK_MEASURE [X_FIRST=[0|1]]`: Measure the dock X/Y position of
+an INDX toolchanger by energizing the XY motors and homing. Set
+X_FIRST=1 to home X before Y. The result is reported and exported in
+the module status.
+
+#### INDX_FORCE_BRACKET_TEMP
+`INDX_FORCE_BRACKET_TEMP [TEMP=<temp>]`: Override the sensor bracket
+temperature reported to the toolboard. Run without TEMP to remove the
+override.
+
+#### INDX_SET_IR_SENSOR_PARAMS
+`INDX_SET_IR_SENSOR_PARAMS EXPONENT=<value> OBJ_GAIN=<value>
+BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
+stored in the sensor EEPROM. These should not normally be changed.
+
+#### INDX_SET_CYCLE_LIMIT
+`INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty
+(mainly for development and testing).
+
+#### INDX_LED_FORCE_COLOR
+`INDX_LED_FORCE_COLOR [RED=<0-255>] [GREEN=<0-255>] [BLUE=<0-255>]
+[CLEAR=1]`: Force the toolboard status LED to the given color,
+overriding the automatic status indication. Use CLEAR=1 to return the
+LED to automatic control.
+
+#### INDX_LED_SET_CURRENT
+`INDX_LED_SET_CURRENT RED=<0-255> GREEN=<0-255> BLUE=<0-255>`: Set
+the per-channel drive current of the toolboard status LED.
+
+#### INDX_LOG
+`INDX_LOG`: Toggle logging of heater temperature, model and power
+data to "/tmp/indx_log.csv" (for debugging).
+
+#### INDX_DUMP_MODEL_UPDATE
+`INDX_DUMP_MODEL_UPDATE`: Report the internal state of the last
+thermal model update (for debugging).
+
+#### INDX_DEBUG_IR_SENSOR_EEPROM
+`INDX_DEBUG_IR_SENSOR_EEPROM`: Dump the IR sensor EEPROM contents
+(for debugging).
+
+#### INDX_DEBUG_STREAM_RAW_IR_SENSOR
+`INDX_DEBUG_STREAM_RAW_IR_SENSOR`: Toggle streaming of raw IR sensor
+readings to a timestamped csv file under /tmp (for debugging).
+
 ### [input_shaper]
 
 The following command is enabled if an
@@ -1145,6 +1289,25 @@ reports not triggered). Normally future G-Code commands will be
 scheduled to run after the stepper move completes, however if a manual
 stepper move uses SYNC=0 then future G-Code movement commands may run
 in parallel with the stepper movement.
+
+`MANUAL_STEPPER STEPPER=config_name GCODE_AXIS=[A-Z]
+[LIMIT_VELOCITY=<velocity>] [LIMIT_ACCEL=<accel>]
+[INSTANTANEOUS_CORNER_VELOCITY=<velocity>]`: If the `GCODE_AXIS`
+parameter is specified then it configures the stepper motor as an
+extra axis on `G1` move commands.  For example, if one were to issue a
+`MANUAL_STEPPER ... GCODE_AXIS=R` command then one could issue
+commands like `G1 X10 Y20 R30` to move the stepper motor.  The
+resulting moves will occur synchronously with the associated toolhead
+xyz movements.  If the motor is associated with a `GCODE_AXIS` then
+one may no longer issue movements using the above `MANUAL_STEPPER`
+command - one may unregister the stepper with a `MANUAL_STEPPER
+... GCODE_AXIS=` command to resume manual control of the motor. The
+`LIMIT_VELOCITY` and `LIMIT_ACCEL` parameters allow one to reduce the
+speed of `G1` moves if those moves would result in a velocity or
+acceleration above the specified limits. The
+`INSTANTANEOUS_CORNER_VELOCITY` specifies the maximum instantaneous
+velocity change (in mm/s) of the motor during the junction of two
+moves (the default is 1mm/s).
 
 ### [mcp4018]
 
@@ -1299,6 +1462,11 @@ HEATER generally takes the short name (so for `heater_generic chamber` you would
 only write `chamber`)
 
 #### PID_PROFILE
+Despite the name, profiles are not limited to PID control: a profile
+carries a control algorithm (`pid`, `pid_v`, `dual_loop_pid`,
+`watermark` or `mpc`) along with its settings, and loading a profile
+switches the heater to that algorithm.
+
 `PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
 [VERBOSE=<verbosity>] [KEEP_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
@@ -1317,7 +1485,9 @@ if you encounter weird behaviour while switching profiles.
 
 `PID_PROFILE SAVE=<profile_name> HEATER=<heater_name>`:
 Saves the currently loaded profile of the specified heater to the config under
-the given name.
+the given name. Supported for the PID control types and `watermark`;
+`mpc` profiles cannot be saved this way (use the
+[MPC calibration flow](MPC.md) and SAVE_CONFIG instead).
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
 Removes the given profile from the profiles List for the current session and
@@ -1338,8 +1508,11 @@ started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
-`PID_PROFILE GET_VALUES HEATER=<heater_name>`:
-Outputs the values of the current loaded pid_profile of the given heater to the console.
+`PID_PROFILE GET_VALUES=<profile_name> HEATER=<heater_name>`:
+Outputs the values of the currently loaded profile of the given heater to the
+console (the `GET_VALUES` value is required by the command syntax but
+ignored; the active profile is always shown). For non-PID control types
+(`watermark`, `mpc`) the profile fields are listed generically.
 
 ### [pause_resume]
 

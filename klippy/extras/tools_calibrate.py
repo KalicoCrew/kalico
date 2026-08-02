@@ -341,7 +341,7 @@ class PrinterProbeMultiAxis:
             raise self.printer.command_error("Must home before probe")
         pos = toolhead.get_position()
         kin_status = toolhead.get_kinematics().get_status(curtime)
-        if "axis_minimum" not in kin_status or "axis_minimum" not in kin_status:
+        if "axis_minimum" not in kin_status or "axis_maximum" not in kin_status:
             raise self.gcode.error(
                 "Tools calibrate only works with cartesian kinematics"
             )
