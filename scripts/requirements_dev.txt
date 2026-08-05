@@ -34,7 +34,7 @@ pytest==8.4.2
 pytest-xdist==3.8.0
 pyyaml==6.0.2
     # via pre-commit
-ruff==0.9.3
+ruff==0.15.22
 tomli==2.2.1 ; python_full_version < '3.11'
     # via pytest
 typing-extensions==4.13.2 ; python_full_version < '3.11'
