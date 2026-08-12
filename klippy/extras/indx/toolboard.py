@@ -96,9 +96,11 @@ class IndxToolboard:
         gcode.register_command("INDX_LED_SET_CURRENT", self.cmd_LED_SET_CURRENT)
 
     def get_status(self, eventtime):
-        return {
+        status = {
             "last_dock_measurement": self.dock_measurement.last_dock_measurement
         }
+        status.update(self.heater.get_ringdown_status(eventtime))
+        return status
 
     def cmd_LED_FORCE_COLOR(self, gcmd):
         cmd = self.mcu.lookup_command(

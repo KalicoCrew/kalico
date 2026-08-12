@@ -118,5 +118,44 @@ INDX_LOAD_FILAMENT
 Use `INDX_CLEAR_FILAMENT` to reset the filament parameters, and
 `SAVE_CONFIG` to persist any of these values.
 
+## Nozzle presence (LC ringdown)
+
+The toolboard classifies whether a steel nozzle is coupled to the
+induction coil by firing a soft single-cycle impulse and measuring the
+**peak voltage of the first resonance lobe**. On Bondtech hardware a
+seated nozzle loads the coil (lower peak); an empty coil rings higher.
+Ambiguous values between the thresholds are reported as `unknown`.
+
+This is independent of load-cell latch preload: ringdown answers "is
+steel in the coil?", while a load cell answers "is the latch
+preloaded?".
+
+Defaults are off. Amplitude thresholds
+(`ringdown_present_peak_v` / `ringdown_absent_peak_v`) and
+`ringdown_excite_scale` (default 0.8) come from Bondtech characterisation
+and should be checked on your head before enabling the heat gate:
+
+1. With coil timings calibrated, seat a tool and run
+   `INDX_RINGDOWN_PROBE`. Note the reported `peak_v` and presence.
+   If classification looks wrong, run `INDX_RINGDOWN_PROBE DUMP=1` and
+   inspect `/tmp/indx_ringdown_waveform.csv` on the host.
+2. Remove the tool (latch open / empty head) and probe again. Empty
+   peak should be clearly higher than seated.
+3. If empty probes report `overvoltage`, lower `EXCITE_SCALE` (do not
+   use 1.0 empty on Bondtech - it OV'd in characterisation). Soften
+   toward 0.7-0.8. Excitation cannot be raised above calibrated
+   soft-start (`EXCITE_SCALE` max 1.0).
+4. Optionally check a half-seated tool; expect `unknown` between the
+   two peak thresholds.
+5. Set `PRESENT_PEAK_V` / `ABSENT_PEAK_V` (present must be less than
+   absent) with a clear hysteresis gap via `INDX_SET_RINGDOWN_PARAMS`,
+   then `SAVE_CONFIG`. Defaults 87 V / 91 V suit EXCITE_SCALE=0.8.
+6. Only then consider `HEAT_GATE=1` / `ringdown_heat_gate: True`, which
+   refuses to heat unless presence is `present`.
+
+Enable continuous probing with `ringdown_enable: True` (about every
+500 ms while idle and while heating by default). Soft probes briefly
+pause heating; keep periods conservative.
+
 See the [G-Code reference](G-Codes.md#indx) for the full list of INDX
 commands and their parameters.

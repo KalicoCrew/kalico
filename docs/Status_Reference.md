@@ -348,6 +348,24 @@ The following information is available in the
 - `last_dock_measurement`: The result of the last INDX_DOCK_MEASURE
   command (None if no measurement has been taken). It is a dictionary
   containing the keys `x`, `y`, `position` and `axis_order`.
+- `nozzle_presence`: Latest LC ringdown classification (`present`,
+  `absent`, or `unknown`).
+- `nozzle_presence_peak_v`: Peak tank voltage from the last probe
+  (float, volts).
+- `nozzle_presence_n_peaks`: Number of local maxima found in the last
+  capture window (DUMP annotation; not used for classification).
+- `nozzle_presence_status`: Probe outcome (`idle`, `running`, `valid`,
+  `not_enough_peaks`, `aborted`, `overvoltage`, `timeout`).
+- `nozzle_presence_age`: Seconds since the last completed probe, or
+  None if no probe has completed yet.
+- `ringdown_enable`: Whether continuous ringdown probing is enabled.
+- `ringdown_heat_gate`: Whether heating is gated on `present`.
+- `ringdown_excite_scale`: Soft-start ON multiplier for the probe pulse
+  (max 1.0; default 0.8).
+- `ringdown_zero_margin_v`: ADC floor (volts) for DUMP off_start.
+- `ringdown_present_peak_v` / `ringdown_absent_peak_v` /
+  `ringdown_min_peak_v`: Peak-amplitude classification thresholds
+  (volts). Present must be less than absent.
 
 ## led
 

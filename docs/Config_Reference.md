@@ -6291,6 +6291,33 @@ mcu:
 #   Override the IR sensor tuning parameters stored in the sensor
 #   EEPROM. All three must be provided if any is given. These should
 #   not normally be set.
+#ringdown_enable: False
+#ringdown_heat_gate: False
+#ringdown_present_peak_v: 87.0
+#ringdown_absent_peak_v: 91.0
+#   Peak tank volts for classification. Seated (present) peaks are
+#   lower than empty (absent) on Bondtech. present must be < absent.
+#   Peak <= present → present; peak >= absent → absent; else unknown.
+#ringdown_min_peak_v: 20.0
+#   Reject captures weaker than this (status=not_enough_peaks).
+#ringdown_idle_ms: 500
+#ringdown_heat_ms: 500
+#ringdown_excite_scale: 0.8
+#   Multiplier on calibrated soft-start ON ticks for the probe pulse
+#   (0.05-1.0). Soften below 1.0 if empty-head probes trip overvoltage
+#   (Bondtech empty often OV at 1.0). Cannot exceed 1.0 (never hotter
+#   than coil_time_on_first).
+#ringdown_zero_margin_v: 1.0
+#   ADC floor in volts used for DUMP off_start annotation (not for
+#   peak-amplitude classification). Overvoltage mid-probe always
+#   aborts (status=overvoltage).
+#   LC ringdown nozzle-presence detection. When ringdown_enable is
+#   True the toolboard periodically fires a soft coil impulse and
+#   classifies coupling from first-lobe peak amplitude (present /
+#   absent / unknown). Defaults are from Bondtech characterisation;
+#   confirm on your head before enabling ringdown_heat_gate (which
+#   refuses to heat unless presence is present). Use
+#   INDX_RINGDOWN_PROBE DUMP=1 to inspect waveforms. See INDX.md.
 ```
 
 ### [sx1509]
