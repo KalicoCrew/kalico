@@ -1,9 +1,10 @@
-from klippy.configfile import PrinterConfig
 import logging
 import math
 import struct
 from collections import namedtuple
 from time import strftime
+
+from klippy.configfile import PrinterConfig
 
 from ..thermistor import CustomThermistor
 from . import calibration, compat
