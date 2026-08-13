@@ -215,10 +215,14 @@ class PrinterExtruder:
         self.max_extrude_cross_section = config.getfloat(
             "max_extrude_cross_section", def_max_cross_section, above=0.0
         )
-        self.has_explicit_max_extrude_cross_section = config.fileconfig.has_option(
-            config.section, "max_extrude_cross_section"
+        self.has_explicit_max_extrude_cross_section = (
+            config.fileconfig.has_option(
+                config.section, "max_extrude_cross_section"
+            )
         )
-        self.max_extrude_ratio = self.max_extrude_cross_section / self.filament_area
+        self.max_extrude_ratio = (
+            self.max_extrude_cross_section / self.filament_area
+        )
         logging.info("Extruder max_extrude_ratio=%.6f", self.max_extrude_ratio)
         toolhead = self.printer.lookup_object("toolhead")
         max_velocity, max_accel = toolhead.get_max_velocity()
