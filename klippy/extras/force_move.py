@@ -176,18 +176,25 @@ class ForceMove:
         x = gcmd.get_float("X", curpos[0])
         y = gcmd.get_float("Y", curpos[1])
         z = gcmd.get_float("Z", curpos[2])
-        clear = gcmd.get("CLEAR", "").upper()
-        axes = ["X", "Y", "Z"]
-        clear_axes = [axes.index(a) for a in axes if a in clear]
+        set_homed = gcmd.get("SET_HOMED", "xyz").lower()
+        set_homed_axes = "".join([a for a in "xyz" if a in set_homed])
+        if gcmd.get("CLEAR_HOMED", None) is None:
+            # "CLEAR" is an alias for "CLEAR_HOMED"; should deprecate
+            clear_homed = gcmd.get("CLEAR", "").lower()
+        else:
+            clear_homed = gcmd.get("CLEAR_HOMED", "").lower()
+        clear_homed_axes = "".join([a for a in "xyz" if a in clear_homed])
         logging.info(
-            "SET_KINEMATIC_POSITION pos=%.3f,%.3f,%.3f clear=%s",
+            "SET_KINEMATIC_POSITION pos=%.3f,%.3f,%.3f"
+            " set_homed=%s clear_homed=%s",
             x,
             y,
             z,
-            ",".join((axes[i] for i in clear_axes)),
+            set_homed_axes,
+            clear_homed_axes,
         )
-        toolhead.set_position([x, y, z, curpos[3]], homing_axes=(0, 1, 2))
-        toolhead.get_kinematics().clear_homing_state(clear_axes)
+        toolhead.set_position([x, y, z], homing_axes=set_homed_axes)
+        toolhead.get_kinematics().clear_homing_state(clear_homed_axes)
 
 
 def load_config(config):

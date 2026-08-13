@@ -18,7 +18,6 @@ MAX_MCU_SIZE = 500  # Sanity check on LED chain length
 class PrinterNeoPixel:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
-        self.mutex = printer.get_reactor().mutex()
         # Configure neopixel
         ppins = printer.lookup_object("pins")
         pin_params = ppins.lookup_pin(config.get("pin"))
@@ -49,6 +48,9 @@ class PrinterNeoPixel:
         self.old_color_data = bytearray([d ^ 1 for d in self.color_data])
         # Register callbacks
         printer.register_event_handler("klippy:connect", self.send_data)
+        printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(), self.send_data
+        )
 
     def build_config(self):
         bmt = self.mcu.seconds_to_clock(BIT_MAX_TIME)
@@ -75,6 +77,8 @@ class PrinterNeoPixel:
             color_data[cdidx] = int(led_state[lidx][cidx] * 255.0 + 0.5)
 
     def send_data(self, print_time=None):
+        if self.mcu.non_critical_disconnected:
+            return
         old_data, new_data = self.old_color_data, self.color_data
         if new_data == old_data:
             return
@@ -116,12 +120,8 @@ class PrinterNeoPixel:
             logging.info("Neopixel update did not succeed")
 
     def update_leds(self, led_state, print_time):
-        def reactor_bgfunc(eventtime):
-            with self.mutex:
-                self.update_color_data(led_state)
-                self.send_data(print_time)
-
-        self.printer.get_reactor().register_callback(reactor_bgfunc)
+        self.update_color_data(led_state)
+        self.send_data(print_time)
 
     def get_status(self, eventtime=None):
         return self.led_helper.get_status(eventtime)

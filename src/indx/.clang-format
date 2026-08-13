@@ -1,0 +1,5 @@
+IndentWidth: 4
+BreakAfterReturnType: All
+AlignTrailingComments: false
+ColumnLimit: 80
+AllowAllArgumentsOnNextLine: true

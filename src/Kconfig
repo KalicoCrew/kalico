@@ -78,19 +78,36 @@ config USB_SERIAL_NUMBER
     default "12345"
 config USB_MANUFACTURER
     default "Klipper"
+config USB_PRODUCT
+    depends on USB
+    default MCU
 
 menu "USB ids"
     depends on USB && LOW_LEVEL_OPTIONS
+comment "USB vendor/device ids are not used in USB to CAN bridge mode"
+    depends on USBCANBUS
 config USB_VENDOR_ID
     hex "USB vendor ID" if USBSERIAL
+    help
+        USB vendor id reported by the device. Not used in "USB to CAN
+        bus bridge" mode - the bridge always reports the gs_usb id
+        1d50:606f so that the kernel gs_usb driver binds to it. The
+        value stored in .config has no effect on bridge builds.
 config USB_DEVICE_ID
     hex "USB device ID" if USBSERIAL
+    help
+        USB device id reported by the device. Not used in "USB to CAN
+        bus bridge" mode - the bridge always reports the gs_usb id
+        1d50:606f so that the kernel gs_usb driver binds to it. The
+        value stored in .config has no effect on bridge builds.
 config USB_SERIAL_NUMBER_CHIPID
     bool "USB serial number from CHIPID" if HAVE_CHIPID
 config USB_SERIAL_NUMBER
     string "USB serial number" if !USB_SERIAL_NUMBER_CHIPID
 config USB_MANUFACTURER
     string "USB manufacturer"
+config USB_PRODUCT
+    string "USB product"
 endmenu
 
 menu "CAN bus UUID"
@@ -254,6 +271,10 @@ config WANT_NEOPIXEL
 config WANT_PULSE_COUNTER
     bool "Support measuring fan tachometer GPIO pins"
     depends on HAVE_GPIO
+config WANT_INDX_HEATER
+    bool "Bondtech INDX Heater"
+    depends on MACH_SAME51J19 && CLOCK_REF_X25M_XOSC0 && SAMD51_FREQ_120
+    select HAVE_SOFTWARE_DIVIDE_REQUIRED
 
 comment "LCD chips"
 config WANT_ST7920

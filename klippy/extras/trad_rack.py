@@ -12,7 +12,7 @@ from collections import deque
 
 from .. import chelper, toolhead
 from ..gcode import CommandError
-from ..kinematics import extruder
+from ..kinematics import extruder as kinematics_extruder
 from ..stepper import LookupMultiRail
 from .homing import Homing, HomingMove
 
@@ -2323,7 +2323,7 @@ class TradRackToolHead(toolhead.ToolHead, object):
         ]
         self.mcu = self.all_mcus[0]
         if hasattr(toolhead, "LookAheadQueue"):
-            self.lookahead = toolhead.LookAheadQueue(self)
+            self.lookahead = toolhead.LookAheadQueue()
             self.lookahead.set_flush_time(toolhead.BUFFER_TIME_HIGH)
         else:
             self.move_queue = toolhead.MoveQueue(self)
@@ -2374,7 +2374,6 @@ class TradRackToolHead(toolhead.ToolHead, object):
         self.print_time = 0.0
         self.special_queuing_state = "NeedPrime"
         self.priming_timer = None
-        self.drip_completion = None
         # Flush tracking
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.do_kick_flush_timer = True
@@ -2392,11 +2391,14 @@ class TradRackToolHead(toolhead.ToolHead, object):
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        # Motion flushing
         self.step_generators = []
+        self.flush_trapqs = [self.trapq]
         # Create kinematic class
         gcode = self.printer.lookup_object("gcode")
         self.Coord = gcode.Coord
-        self.extruder = extruder.DummyExtruder(self.printer)
+        extruder = kinematics_extruder.DummyExtruder(self.printer)
+        self.extra_axes = [extruder]
         try:
             self.kin = TradRackKinematics(self, config, is_extruder_synced)
         except config.error as e:

@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260201: The manual_stepper `STOP_ON_ENDSTOP` feature may now take
+less time to complete. Previously, the command would wait the entire
+time the move could possibly take even if the endstop triggered
+earlier. Now, the command finishes shortly after the endstop trigger.
+
 20260121: Kalico now uses automatic monthly release tags in the format
 `vYYYY.MM.NN` (e.g., `v2026.01.00`). Users can configure Moonraker to track
 stable monthly releases instead of the latest commits. See
@@ -17,6 +22,11 @@ for configuration details.
 20250817: The gcode_button section adds a new option `debounce_delay` that
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
+
+20250811: Support for the `max_accel_to_decel` parameter in the
+`[printer]` config section has been removed and support for the
+`ACCEL_TO_DECEL` parameter in the `SET_VELOCITY_LIMIT` command has
+been removed. These capabilities were deprecated on 20240313.
 
 20250721: The `[pca9632]` and `[mcp4018]` modules no longer accept the
 `scl_pin` and `sda_pin` options. Use `i2c_software_scl_pin` and

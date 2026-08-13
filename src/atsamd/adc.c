@@ -53,11 +53,13 @@ static const uint8_t adc_pins[] = {
     GPIO('A', 5), GPIO('A', 6), GPIO('A', 7), GPIO('A', 8), GPIO('A', 9),
     GPIO('A', 10), GPIO('A', 11), GPIO('B', 0), GPIO('B', 1), GPIO('B', 2),
     GPIO('B', 3),
+#if !CONFIG_WANT_INDX_HEATER
     /* ADC1 */
     GPIO('B', 8), GPIO('B', 9), GPIO('A', 8), GPIO('A', 9), GPIO('C', 2),
     GPIO('C', 3), GPIO('B', 4), GPIO('B', 5), GPIO('B', 6), GPIO('B', 7),
     GPIO('C', 0), GPIO('C', 1), GPIO('C', 30), GPIO('C', 31), GPIO('D', 0),
     GPIO('D', 1)
+#endif
 };
 #endif
 
