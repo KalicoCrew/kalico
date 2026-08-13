@@ -178,6 +178,27 @@ trdispatch_alloc(void)
     return td;
 }
 
+// Free a 'struct trdispatch' object and any trdispatch_mcu still attached
+//
+// Used as the cffi destructor for the trdispatch cdata.  Children are freed
+// here rather than via their own destructors: Python's cyclic collector runs
+// finalizers in an arbitrary order within a reference cycle, so a child
+// destructor cannot rely on its parent still being alive.
+void __visible
+trdispatch_free(struct trdispatch *td)
+{
+    if (!td)
+        return;
+    while (!list_empty(&td->tdm_list)) {
+        struct trdispatch_mcu *tdm = list_first_entry(
+            &td->tdm_list, struct trdispatch_mcu, node);
+        list_del(&tdm->node);
+        free(tdm);
+    }
+    pthread_mutex_destroy(&td->lock);
+    free(td);
+}
+
 // Create a new 'struct trdispatch_mcu' object
 struct trdispatch_mcu * __visible
 trdispatch_mcu_alloc(struct trdispatch *td, struct serialqueue *sq
@@ -207,6 +228,37 @@ trdispatch_mcu_alloc(struct trdispatch *td, struct serialqueue *sq
     list_add_tail(&tdm->node, &td->tdm_list);
 
     return tdm;
+}
+
+// Free a 'struct trdispatch_mcu' object
+//
+// trdispatch_mcu_alloc() links the object into td->tdm_list.  It must be
+// unlinked before the memory is released, otherwise handle_trsync_state(),
+// trdispatch_start() and trdispatch_stop() walk into freed memory.
+//
+// The caller must guarantee 'td' is still alive.  Callers are:
+//   - MCU_trsync._build_config(), explicitly, before allocating a replacement
+//   - trdispatch_free(), while tearing down the parent
+void __visible
+trdispatch_mcu_free(struct trdispatch_mcu *tdm)
+{
+    if (!tdm)
+        return;
+    struct trdispatch *td = tdm->td;
+
+    // Unlink under td->lock - handle_trsync_state() walks tdm_list with it held
+    pthread_mutex_lock(&td->lock);
+    uint32_t was_active = td->is_active;
+    list_del(&tdm->node);
+    pthread_mutex_unlock(&td->lock);
+
+    // If trdispatch_start() registered the fastreader then trdispatch_stop()
+    // will no longer see this node - deregister it here.  rm_fastreader() also
+    // acts as a barrier against an in-flight dispatch on the background thread.
+    if (was_active)
+        serialqueue_rm_fastreader(tdm->sq, &tdm->fr);
+
+    free(tdm);
 }
 
 // Setup for a trigger test
