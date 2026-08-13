@@ -6,6 +6,7 @@
 import logging
 import math
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 
@@ -649,7 +650,7 @@ class ResonanceTester:
         if point:
             name += "_%.3f_%.3f_%.3f" % (point[0], point[1], point[2])
         name += "_" + name_suffix
-        return os.path.join("/tmp", name + ".csv")
+        return os.path.join(tempfile.gettempdir(), name + ".csv")
 
     def save_calibration_data(
         self,

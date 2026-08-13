@@ -325,6 +325,7 @@ class Homing:
             hmove.homing_move(homepos, hi.speed)
         finally:
             self._set_homing_accel(hi.accel, pre_homing=False)
+            self._set_homing_current(homing_axes, pre_homing=False)
 
         needs_rehome = False
         retract_dist = hi.retract_dist

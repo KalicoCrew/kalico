@@ -1167,13 +1167,16 @@ per_move_pressure_advance: False
 #
 #   If: control: dual_loop_pid
 #inner_sensor_name:
-#   The temperature_sensor name of a second sensor to use for temperature
-#   control with 'dual_loop_pid'. This sensor will limit the heater power
-#   to not allow the temperature to exceed the 'inner_max_temp' value.
+#   The temperature_sensor name of a second sensor used by
+#   'dual_loop_pid' for the inner PID loop.
 #
 #   If: control: dual_loop_pid
+#inner_target_temp:
+#   The target temperature for the inner PID loop. During calibration,
+#   the temperature will oscillate above and below this value. This
+#   behavior is expected and does not indicate a safety failure.
 #inner_max_temp:
-#   The maximum temperature target that the inner sensor will allow.
+#   Deprecated alias for inner_target_temp.
 #
 #   If control: dual_loop_pid
 #inner_pid_Kp:
@@ -1182,9 +1185,9 @@ per_move_pressure_advance: False
 #   'dual_loop_pid' control uses two PID loops to control the temperature.
 #   The inner(secondary) PID loop controls the temperature directly. The
 #   primary PID loop controls the power to the secondary PID loop. This
-#   allows the primary PID loop to be tuned for temperature control, while
-#   the secondary PID loop can be tuned for power control, not exceeding
-#   the temperature limit set on 'inner_max_temp'.
+#   allows the primary PID loop to be tuned for temperature control,
+#   while the secondary PID loop can be tuned for power control while
+#   tracking 'inner_target_temp'.
 #   The primary sensor is positioned close where the temperature
 #   measurament should be more accurate (e.g. on the bed surface). The
 #   secondary sensor is positioned where the temperature measurament
@@ -4863,6 +4866,7 @@ run_current:
 #driver_SEDN: 0
 #driver_SEIMIN: 0
 #driver_SFILT: 0
+#driver_SG4_THRS: 0
 #driver_SG4_ANGLE_OFFSET: 1
 #   Set the given register during the configuration of the TMC2240
 #   chip. This may be used to set custom motor parameters. The
@@ -4875,8 +4879,8 @@ run_current:
 #   is "active low" and is thus normally prefaced with "^!". Setting
 #   this creates a "tmc2240_stepper_x:virtual_endstop" virtual pin
 #   which may be used as the stepper's endstop_pin. Doing this enables
-#   "sensorless homing". (Be sure to also set driver_SGT to an
-#   appropriate sensitivity value.) The default is to not enable
+#   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
+#   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
 ```
 
