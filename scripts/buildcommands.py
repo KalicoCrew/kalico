@@ -665,6 +665,23 @@ class HandleVersions:
 Handlers.append(HandleVersions())
 
 
+class HandleKConfig:
+    def __init__(self):
+        self.ctr_dispatch = {}
+        self.defconfig = ""
+
+    def update_data_dictionary(self, data):
+        data["kconfig"] = self.defconfig
+
+    def generate_code(self, options):
+        with open(options.kconfig) as f:
+            self.defconfig = f.read()
+        return ""
+
+
+Handlers.append(HandleKConfig())
+
+
 ######################################################################
 # Identify data dictionary generation
 ######################################################################
@@ -731,6 +748,11 @@ def main():
         "-d",
         dest="write_dictionary",
         help="file to write mcu protocol dictionary",
+    )
+    opts.add_option(
+        "-k",
+        dest="kconfig",
+        help="file containing the minimal (savedefconfig) build configuration",
     )
     opts.add_option(
         "-t",
