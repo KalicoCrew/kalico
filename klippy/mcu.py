@@ -1294,6 +1294,7 @@ class MCU:
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
+        self._get_status_info["mcu_kconfig"] = msgparser.get_kconfig()
         if app in ("Klipper", "Danger-Klipper"):
             pconfig = self._printer.lookup_object("configfile")
             pconfig.runtime_warning(

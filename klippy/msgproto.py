@@ -293,6 +293,7 @@ class MessageParser:
         self.msgid_by_format = {}
         self.msgid_parser = PT_int32()
         self.config = {}
+        self.kconfig = None
         self.version = self.build_versions = ""
         self.raw_identify_data = ""
         self._init_messages(DefaultMessages)
@@ -485,6 +486,7 @@ class MessageParser:
                 all_messages, commands.values(), output.values()
             )
             self.config.update(data.get("config", {}))
+            self.kconfig = data.get("kconfig")
             self.app = data.get("app", "")
             self.version = data.get("version", "")
             self.build_versions = data.get("build_versions", "")
@@ -511,6 +513,9 @@ class MessageParser:
 
     def get_constants(self):
         return dict(self.config)
+
+    def get_kconfig(self):
+        return self.kconfig
 
     class sentinel:
         pass
