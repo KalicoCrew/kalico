@@ -1112,7 +1112,34 @@ override.
 #### INDX_SET_IR_SENSOR_PARAMS
 `INDX_SET_IR_SENSOR_PARAMS EXPONENT=<value> OBJ_GAIN=<value>
 BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
-stored in the sensor EEPROM. These should not normally be changed.
+stored in the sensor EEPROM. All three must be provided.
+
+#### INDX_RINGDOWN_PROBE
+`INDX_RINGDOWN_PROBE [DUMP=0|1]`: Fire a oneshot ringdown probe and
+report nozzle presence (`present` / `absent` / `unknown`), `peak_v`,
+and status. Requires calibrated coil timings
+(`INDX_CALIBRATE`). Useful for characterising peak-amplitude thresholds
+and excitation before enabling continuous ringdown or the heat gate.
+Status may be `valid`, `weak_signal`, `overvoltage`, `timeout`,
+or `aborted`. With `DUMP=1`, the MCU streams the capture buffer; the
+host writes `/tmp/indx_ringdown_waveform.csv` (index, ns, counts, mv,
+is_peak; header includes `peak_mv`). Use DUMP when classification
+looks wrong to inspect the waveform.
+
+#### INDX_SET_RINGDOWN_PARAMS
+`INDX_SET_RINGDOWN_PARAMS [ENABLE=0|1] [HEAT_GATE=0|1]
+[PRESENT_PEAK_V=<v>] [ABSENT_PEAK_V=<v>] [MIN_PEAK_V=<v>]
+[IDLE_MS=<ms>] [HEAT_MS=<ms>] [EXCITE_SCALE=<0.05-1.0>]`:
+Configure continuous ringdown probing, the optional heat gate, and
+peak-amplitude thresholds. PRESENT_PEAK_V must be less than
+ABSENT_PEAK_V (seated peak is lower than empty on Bondtech). Peak at
+or below PRESENT_PEAK_V → present; at or above ABSENT_PEAK_V → absent;
+between → unknown. MIN_PEAK_V rejects weak captures. EXCITE_SCALE
+multiplies the soft-start ON pulse but cannot exceed 1.0 (never hotter
+than coil_time_on_first); default 0.8. Empty at 1.0 may overvoltage.
+Overvoltage mid-probe always aborts. Updated values are staged for
+SAVE_CONFIG. Keep HEAT_GATE disabled until thresholds are confirmed
+on your hardware (see INDX.md).
 
 #### INDX_SET_CYCLE_LIMIT
 `INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty

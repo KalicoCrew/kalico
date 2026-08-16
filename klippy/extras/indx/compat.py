@@ -1,5 +1,11 @@
+import struct
+
 from klippy.configfile import ConfigWrapper as RealConfigWrapper
 from klippy.configfile import error as ConfigError
+
+
+def float_to_u32(val):
+    return int(struct.unpack("!i", struct.pack("!f", val))[0])
 
 
 class ConfigWrapper(RealConfigWrapper):
@@ -74,6 +80,23 @@ def register_adc_callback(adc, callback):
     # Old klipper and Kalico ADC callback style
     adc.setup_adc_callback(0.3, callback)
     adc.setup_minmax(0.001, 8)
+
+
+def poll_query_until(
+    reactor, query_cmd, status_key, running_value, timeout, poll_interval
+):
+    """Poll an MCU query command until status is no longer running_value.
+
+    Returns the last params dict, or None on timeout.
+    """
+    deadline = reactor.monotonic() + timeout
+    while True:
+        result = query_cmd.send([])
+        if result[status_key] != running_value:
+            return result
+        if reactor.monotonic() > deadline:
+            return None
+        reactor.pause(reactor.monotonic() + poll_interval)
 
 
 def get_tmc_current_helper(stepper):

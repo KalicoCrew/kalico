@@ -1,0 +1,5 @@
+# Ringdown config limits: present_peak_v < absent_peak_v, excite_scale <= 1.0
+DICTIONARY atmega2560.dict indxmcu=bondtech_indx.dict
+SHOULD_FAIL
+CONFIG indx_ringdown_bad_peak.cfg
+CONFIG indx_ringdown_bad_excite.cfg

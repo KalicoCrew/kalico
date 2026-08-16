@@ -1,13 +1,13 @@
 import logging
 import math
-import struct
 from collections import namedtuple
 from time import strftime
 
 from ..thermistor import CustomThermistor
 from . import calibration, compat
-from .compat import ConfigWrapper
+from .compat import ConfigWrapper, float_to_u32, poll_query_until
 from .heatsink_fan import IndxHeatsinkFan
+from .ringdown import IndxRingdown
 
 KELVIN_OFFSET = 273.15
 
@@ -27,6 +27,7 @@ COIL_TUNE_STATUS_RUNNING = 1
 COIL_TUNE_TIMEOUT = 15.0  # seconds. The MCU self-aborts a stuck tune at 10 s
 COIL_TUNE_POLL_INTERVAL = 0.2  # seconds between latched-status polls
 COIL_TUNE_WAVE_PATH = "/tmp/indx_coil_waveform.csv"
+
 FILAMENT_LOAD_THRESHOLD = 10.0
 FILAMENT_LOAD_PRIME_TIME = 5.0
 FILAMENT_LOAD_MAX_LENGTH = 120.0
@@ -46,10 +47,6 @@ NozzleTemperature = namedtuple(
         "delta_pwm_energy",
     ],
 )
-
-
-def float_to_u32(val):
-    return int(struct.unpack("!i", struct.pack("!f", val))[0])
 
 
 class IndxThermistorWrapper:
@@ -302,6 +299,7 @@ class IndxToolboardHeater:
         self.toolboard.mcu.register_config_callback(self.build_config)
         self.temperature_callbacks = []
         self.cmd_queue = self.toolboard.mcu.alloc_command_queue()
+        self.ringdown = IndxRingdown(self, config)
 
         self.toolboard.printer.register_event_handler(
             "klippy:connect", self.handle_connect
@@ -344,6 +342,9 @@ class IndxToolboardHeater:
         self.raw_ir_log_file = None
         self.raw_ir_log_sensors = []
 
+    def get_ringdown_status(self, eventtime):
+        return self.ringdown.get_status(eventtime)
+
     def build_config(self):
         mcu = self.toolboard.mcu
 
@@ -358,6 +359,7 @@ class IndxToolboardHeater:
             self.handle_debug_raw_ir,
             "indx_debug_raw_ir object=%u ambient=%u",
         )
+
         self.cmd_debug_stream_raw_ir = mcu.lookup_command(
             "indx_debug_stream_raw_ir_sensor enable=%c", cq=self.cmd_queue
         )
@@ -423,6 +425,13 @@ class IndxToolboardHeater:
                     raise self.toolboard.printer.command_error(
                         "INDX heater has not been calibrated yet. "
                         "Run INDX_CALIBRATE to perform calibration."
+                    )
+                if degrees and not self.ringdown.heating_allowed():
+                    raise self.toolboard.printer.command_error(
+                        "INDX ringdown heat gate: nozzle not present "
+                        "(presence=%s). Seat a tool, run INDX_RINGDOWN_PROBE, "
+                        "or disable ringdown_heat_gate."
+                        % (self.ringdown.nozzle_presence,)
                     )
                 base_set_temp(degrees)
 
@@ -707,15 +716,17 @@ class IndxToolboardHeater:
         )
         try:
             self.tune_coil_cmd.send([int(capture)])
-            deadline = reactor.monotonic() + COIL_TUNE_TIMEOUT
-            while True:
-                result = self.query_coil_tune_cmd.send([])
-                if result["status"] != COIL_TUNE_STATUS_RUNNING:
-                    break
-                if reactor.monotonic() > deadline:
-                    self.coil_timings = None
-                    raise gcmd.error("INDX coil driver tuning timed out")
-                reactor.pause(reactor.monotonic() + COIL_TUNE_POLL_INTERVAL)
+            result = poll_query_until(
+                reactor,
+                self.query_coil_tune_cmd,
+                "status",
+                COIL_TUNE_STATUS_RUNNING,
+                COIL_TUNE_TIMEOUT,
+                COIL_TUNE_POLL_INTERVAL,
+            )
+            if result is None:
+                self.coil_timings = None
+                raise gcmd.error("INDX coil driver tuning timed out")
         finally:
             wave.unregister()
             finished.unregister()
@@ -1391,9 +1402,11 @@ class IndxToolboardHeater:
                 loaded_at_pos - start_pos,
                 last_pos - loaded_at_pos,
                 heat_capacity,
-                "Run SAVE_CONFIG to save the new filament parameters."
-                if apply_result
-                else "Use APPLY=1 to apply the measured filament parameters.",
+                (
+                    "Run SAVE_CONFIG to save the new filament parameters."
+                    if apply_result
+                    else "Use APPLY=1 to apply the measured filament parameters."
+                ),
             )
         )
 
@@ -1576,9 +1589,11 @@ class IndxToolboardHeater:
         path = "/tmp/indx_raw_ir_%s.csv" % strftime("%Y%m%d_%H%M%S")
         self.raw_ir_log_file = open(path, "w")
         names = [
-            n[len("temperature_sensor ") :]
-            if n.startswith("temperature_sensor ")
-            else n
+            (
+                n[len("temperature_sensor ") :]
+                if n.startswith("temperature_sensor ")
+                else n
+            )
             for n in self.raw_ir_log_sensors
         ]
         header = ["time", "raw_object", "raw_ambient"] + names

@@ -6,6 +6,23 @@ extern "C" {
 #include <stdint.h>
 }
 
+// Latched outcome of a nozzle-presence ringdown probe.
+enum class ringdown_status : uint8_t {
+    idle = 0,
+    running = 1,
+    valid = 2,
+    weak_signal = 3,
+    aborted = 4,
+    overvoltage = 5,
+    timeout = 6,
+};
+
+enum class nozzle_presence : uint8_t {
+    unknown = 0,
+    present = 1,
+    absent = 2,
+};
+
 struct coil_driver {
     // Maximum number of fired cycles per 512-cycle frame (0 = no limit).
     uint32_t duty_limit{0};
@@ -50,6 +67,41 @@ struct coil_driver {
     // Send the drive timings currently in effect to the host.
     void
     report_params();
+
+    // --- Nozzle presence via ringdown ---
+
+    // Configure continuous probe, heat gate, and amplitude thresholds.
+    // present_peak_v / absent_peak_v / min_peak_v are tank volts (Bondtech:
+    // seated loads the coil so peak is lower; require present < absent).
+    // Periods are milliseconds. excite_scale multiplies soft-start ON ticks
+    // (clamped to <= 1.0 so the pulse cannot exceed coil_time_on_first).
+    // Overvoltage mid-probe always aborts.
+    void
+    set_ringdown_params(bool enable, bool heat_gate, float present_peak_v,
+                        float absent_peak_v, uint32_t idle_ms, uint32_t heat_ms,
+                        float excite_scale, float min_peak_v);
+
+    // Start a oneshot ringdown probe. Fails closed if tune is active or coil
+    // timings are not set. report=true sends indx_nozzle_presence when done.
+    // dump=true streams the capture buffer before the status.
+    void
+    start_ringdown(bool report, bool dump);
+
+    bool
+    ringdown_active();
+
+    // Advance the ringdown state machine; also starts background probes when
+    // enabled. heating=true selects the longer recheck period.
+    void
+    ringdown_step(bool heating);
+
+    // Last presence classification (unknown until a valid probe).
+    nozzle_presence
+    get_nozzle_presence();
+
+    // Send latched ringdown outcome to the host.
+    void
+    report_ringdown_status();
 };
 
 coil_driver
