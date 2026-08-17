@@ -1104,6 +1104,14 @@ an INDX toolchanger by energizing the XY motors and homing. Set
 X_FIRST=1 to home X before Y. The result is reported and exported in
 the module status.
 
+#### INDX_COIL_PRESENCE
+`INDX_COIL_PRESENCE`: Sample whether a steel nozzle is in the inductive
+coil. If the heater already has a target, report the live value from
+temperature reports. If idle, fire one tuned first-cycle burst and
+classify from whether the 100 V overvoltage comparator tripped (a trip
+means the coil is empty). Coil timings must already be set. This is
+not a bed-levelling probe.
+
 #### INDX_FORCE_BRACKET_TEMP
 `INDX_FORCE_BRACKET_TEMP [TEMP=<temp>]`: Override the sensor bracket
 temperature reported to the toolboard. Run without TEMP to remove the
