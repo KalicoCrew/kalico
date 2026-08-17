@@ -1099,10 +1099,12 @@ draw over DURATION (default 5) seconds and report the total energy
 and average power.
 
 #### INDX_DOCK_MEASURE
-`INDX_DOCK_MEASURE [X_FIRST=[0|1]]`: Measure the dock X/Y position of
-an INDX toolchanger by energizing the XY motors and homing. Set
-X_FIRST=1 to home X before Y. The result is reported and exported in
-the module status.
+`INDX_DOCK_MEASURE [X_FIRST=[0|1]] [RETREAT=X,Y]`: Measure the dock
+X/Y position of an INDX toolchanger by energizing the XY motors and
+homing. Set X_FIRST=1 to home X before Y. The result is reported and
+exported in the module status. RETREAT can optionally be specified,
+in which case the toolhead will perform this move before doing the
+homing operations.
 
 #### INDX_FORCE_BRACKET_TEMP
 `INDX_FORCE_BRACKET_TEMP [TEMP=<temp>]`: Override the sensor bracket

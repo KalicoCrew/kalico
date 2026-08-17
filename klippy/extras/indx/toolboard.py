@@ -157,7 +157,16 @@ class IndxDockMeasurement:
         x_first = gcmd.get_int("X_FIRST", 0, minval=0, maxval=1)
         axes = [0, 1] if x_first else [1, 0]
         try:
-            measurement = self.measure(axes)
+            retreat = [
+                float(v.strip()) for v in gcmd.get("RETREAT", "0,0").split(",")
+            ]
+        except:
+            raise gcmd.error(
+                "Unable to parse RETREAT parameter. Should be of format '<x>,<y>'."
+            )
+        retreat_speed = gcmd.get_float("RETREAT_SPEED", 10.0, above=0.0)
+        try:
+            measurement = self.measure(axes, retreat, retreat_speed)
         except self.printer.command_error:
             self.printer.lookup_object("stepper_enable").motor_off()
             raise
@@ -187,11 +196,19 @@ class IndxDockMeasurement:
         }
         return kin.calc_position(stepper_positions)
 
-    def measure(self, axes):
+    def measure(self, axes, retreat, retreat_speed):
         toolhead = self.printer.lookup_object("toolhead")
         kin = toolhead.get_kinematics()
         self._enable_motors(toolhead, kin)
+
         kinematic_position_before = self._get_kinematic_position(kin)
+
+        if retreat[0] != 0.0 or retreat[1] != 0.0:
+            curpos = toolhead.get_position()
+            toolhead.set_position([0.0, 0.0, curpos[2], curpos[3]], "xy")
+            toolhead.manual_move(retreat, retreat_speed)
+            toolhead.wait_moves()
+            kin.clear_homing_state("xy")
 
         start_position = [0.0, 0.0]
 
