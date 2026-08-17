@@ -558,7 +558,7 @@ class IndxToolboardHeater:
 
         charge = params["charge"]
         self._update_inductive_presence_from_report(
-            params["overvoltage"], power, charge
+            params["overvoltage"], power
         )
         if self.last_report is not None:
             delta_time = time - self.last_report[0]
@@ -661,7 +661,7 @@ class IndxToolboardHeater:
             self.toolboard.printer.get_reactor().monotonic()
         )
 
-    def _update_inductive_presence_from_report(self, ov_count, power, charge):
+    def _update_inductive_presence_from_report(self, ov_count, power):
         # First report, or MCU count reset: store the count and leave
         # presence unchanged (unknown until the coil has been driven).
         if self._ov_count is None or ov_count < self._ov_count:
@@ -672,13 +672,7 @@ class IndxToolboardHeater:
         if tripped:
             self._set_inductive_presence("absent")
             return
-        driven = power > 0.0
-        if not driven and self.last_report is not None:
-            delta_charge = charge - self.last_report[1]
-            if delta_charge < 0:
-                delta_charge += 2**32
-            driven = delta_charge > 0
-        if driven:
+        if power > 0.0:
             self._set_inductive_presence("present")
 
     def handle_vin_mon(self, _read_time, read_value):
