@@ -367,6 +367,28 @@ command_indx_query_coil_driver_params(uint32_t *args) {
 DECL_COMMAND(command_indx_query_coil_driver_params,
              "indx_query_coil_driver_params");
 
+// Fire one tuned first-cycle burst so the host can classify coil-target
+// presence from COMP0 while the heater is idle.
+extern "C" void
+command_indx_coil_presence(uint32_t *args) {
+    (void)args;
+    if (!indx_heater_instance)
+        return;
+
+    indx_heater_instance->coil_driver_inst.start_coil_presence();
+}
+DECL_COMMAND(command_indx_coil_presence, "indx_coil_presence");
+
+extern "C" void
+command_indx_query_coil_presence(uint32_t *args) {
+    (void)args;
+    if (!indx_heater_instance)
+        return;
+
+    indx_heater_instance->coil_driver_inst.report_coil_presence();
+}
+DECL_COMMAND(command_indx_query_coil_presence, "indx_query_coil_presence");
+
 extern "C" void
 command_indx_led_force_color(uint32_t *args) {
     if (!indx_heater_instance)
