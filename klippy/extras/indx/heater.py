@@ -310,6 +310,9 @@ class IndxToolboardHeater:
         self.last_report = None
         self.power_scale = 0
         self.heaters = []
+        self.inductive_presence = "unknown"
+        self.inductive_presence_time = None
+        self._ov_count = None
 
         gcode = self.toolboard.printer.lookup_object("gcode")
         gcode.register_command("INDX_SET_PID", self.cmd_SET_PID)
@@ -532,6 +535,9 @@ class IndxToolboardHeater:
             self.thermal_model.force_temp(nozzle_temp)
 
         charge = params["charge"]
+        self._update_inductive_presence_from_report(
+            params["overvoltage"], power, charge
+        )
         if self.last_report is not None:
             delta_time = time - self.last_report[0]
             delta_charge = charge - self.last_report[1]
@@ -618,6 +624,40 @@ class IndxToolboardHeater:
                     * (delta_time or 0.0),
                 )
             )
+
+    def get_inductive_presence(self, eventtime):
+        if self.inductive_presence == "unknown":
+            return "unknown", None
+        return (
+            self.inductive_presence,
+            eventtime - self.inductive_presence_time,
+        )
+
+    def _set_inductive_presence(self, value):
+        self.inductive_presence = value
+        self.inductive_presence_time = (
+            self.toolboard.printer.get_reactor().monotonic()
+        )
+
+    def _update_inductive_presence_from_report(self, ov_count, power, charge):
+        # First report, or MCU count reset: store the count and leave
+        # presence unchanged (unknown until the coil has been driven).
+        if self._ov_count is None or ov_count < self._ov_count:
+            self._ov_count = ov_count
+            return
+        tripped = ov_count != self._ov_count
+        self._ov_count = ov_count
+        if tripped:
+            self._set_inductive_presence("absent")
+            return
+        driven = power > 0.0
+        if not driven and self.last_report is not None:
+            delta_charge = charge - self.last_report[1]
+            if delta_charge < 0:
+                delta_charge += 2**32
+            driven = delta_charge > 0
+        if driven:
+            self._set_inductive_presence("present")
 
     def handle_vin_mon(self, _read_time, read_value):
         vin = read_value * 3.3 * (4700 + 60400) / 4700

@@ -96,8 +96,11 @@ class IndxToolboard:
         gcode.register_command("INDX_LED_SET_CURRENT", self.cmd_LED_SET_CURRENT)
 
     def get_status(self, eventtime):
+        presence, age = self.heater.get_inductive_presence(eventtime)
         return {
-            "last_dock_measurement": self.dock_measurement.last_dock_measurement
+            "last_dock_measurement": self.dock_measurement.last_dock_measurement,
+            "inductive_presence": presence,
+            "inductive_presence_age": age,
         }
 
     def cmd_LED_FORCE_COLOR(self, gcmd):
