@@ -193,20 +193,20 @@ class IndxDockMeasurement:
         self._enable_motors(toolhead, kin)
         kinematic_position_before = self._get_kinematic_position(kin)
 
-        homing_state = Homing(self.printer)
-        homing_state.set_axes(axes)
-        kin.home(homing_state)
+        start_position = [0.0, 0.0]
 
-        final_position = toolhead.get_position()
-        kinematic_position_after = self._get_kinematic_position(kin)
-        start_position = [
-            final + before - after
-            for final, after, before in zip(
-                final_position[:2],
-                kinematic_position_after[:2],
-                kinematic_position_before[:2],
+        for axis in axes:
+            homing_state = Homing(self.printer)
+            homing_state.set_axes([axis])
+            kin.home(homing_state)
+            final_position = toolhead.get_position()
+            kinematic_position_after = self._get_kinematic_position(kin)
+            start_position[axis] = (
+                final_position[axis]
+                + kinematic_position_before[axis]
+                - kinematic_position_after[axis]
             )
-        ]
+
         measurement = {
             "position": start_position,
             "x": start_position[0],
