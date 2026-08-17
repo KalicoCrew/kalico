@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import logging
 import math
 import struct
 from collections import namedtuple
+from enum import Enum
 from time import strftime
+from typing import Literal, TypeAlias
 
 from ..thermistor import CustomThermistor
 from . import calibration, compat
@@ -52,14 +56,21 @@ NozzleTemperature = namedtuple(
 )
 
 
+class InductivePresence(str, Enum):
+    UNKNOWN = "unknown"
+    PRESENT = "present"
+    ABSENT = "absent"
+
+
+InductivePresenceValue: TypeAlias = Literal["unknown", "present", "absent"]
+
+
 def float_to_u32(val):
     return int(struct.unpack("!i", struct.pack("!f", val))[0])
 
 
 class IndxThermistorWrapper:
-    def __init__(
-        self, toolboard, sensor, config, def_max_temp, thermistor_config
-    ):
+    def __init__(self, toolboard, sensor, config, def_max_temp, thermistor_config):
         self.toolboard = toolboard
         self.temperature_callbacks = []
 
@@ -111,9 +122,7 @@ class IndxBracketTempSensor:
         self.force_temp = None
 
         gcode = self.toolboard.printer.lookup_object("gcode")
-        gcode.register_command(
-            "INDX_FORCE_BRACKET_TEMP", self.cmd_FORCE_BRACKET_TEMP
-        )
+        gcode.register_command("INDX_FORCE_BRACKET_TEMP", self.cmd_FORCE_BRACKET_TEMP)
 
     def build_config(self):
         self.cmd_set_ambient_temp = self.toolboard.mcu.lookup_command(
@@ -178,9 +187,7 @@ class IndxToolboardHeater:
         self.vin_adc = toolboard.mcu.setup_pin("adc", {"pin": "vin_mon"})
         compat.register_adc_callback(self.vin_adc, self.handle_vin_mon)
         query_adc = toolboard.printer.load_object(config, "query_adc")
-        query_adc.register_adc(
-            f"{toolboard.mcu.get_name()}_vin_mon", self.vin_adc
-        )
+        query_adc.register_adc(f"{toolboard.mcu.get_name()}_vin_mon", self.vin_adc)
         self.supply_voltage = 24.0
 
         # The autotuned thermal-model parameters have no defaults.
@@ -193,26 +200,18 @@ class IndxToolboardHeater:
             thermal_capacity=config.getfloat(
                 "model_thermal_capacity", default=None, above=0.0
             ),
-            to_ambient_r=config.getfloat(
-                "model_to_ambient_r", default=None, above=0.0
-            ),
+            to_ambient_r=config.getfloat("model_to_ambient_r", default=None, above=0.0),
             filament_radius=config.getfloat(
                 "model_filament_diameter",
                 default=1.75,
             )
             / 2.0,
-            filament_density=config.getfloat(
-                "model_filament_density", default=1.20
-            ),
+            filament_density=config.getfloat("model_filament_density", default=1.20),
             filament_heat_capacity=config.getfloat(
                 "model_filament_heat_capacity", default=1.8
             ),
-            part_cooling_fan_a=config.getfloat(
-                "model_part_cooling_fan_a", default=0.0
-            ),
-            part_cooling_fan_k=config.getfloat(
-                "model_part_cooling_fan_k", default=0.0
-            ),
+            part_cooling_fan_a=config.getfloat("model_part_cooling_fan_a", default=0.0),
+            part_cooling_fan_k=config.getfloat("model_part_cooling_fan_k", default=0.0),
             ambient_blend_board=config.getfloat(
                 "model_ambient_blend_board", default=0.0
             ),
@@ -222,9 +221,7 @@ class IndxToolboardHeater:
             ambient_blend_sensor=config.getfloat(
                 "model_ambient_blend_sensor", default=1.0
             ),
-            error_application=config.getfloat(
-                "model_error_application", default=1.0
-            ),
+            error_application=config.getfloat("model_error_application", default=1.0),
         )
         self.thermal_model = ThermalModel(model_params)
         self.max_model_error = config.getfloat("max_model_error", default=50.0)
@@ -232,18 +229,14 @@ class IndxToolboardHeater:
         self.pid_kp = config.getfloat("pid_kp", default=4.0)
         self.pid_ti = config.getfloat("pid_ti", minval=0.0, default=0.0)
         self.pid_td = config.getfloat("pid_td", minval=0.0, default=0.0)
-        self.pid_b = config.getfloat(
-            "pid_b", minval=0.0, maxval=1.0, default=1.0
-        )
+        self.pid_b = config.getfloat("pid_b", minval=0.0, maxval=1.0, default=1.0)
         self.max_temp_nozzle = config.getfloat("max_temp_nozzle", default=305.0)
         self.max_temp_sensor = config.getfloat("max_temp_sensor", default=130.0)
 
         self.ir_sensor_tuning = None
         ir_sensor_exponent = config.getfloat("ir_sensor_exponent", default=None)
         ir_sensor_obj_gain = config.getfloat("ir_sensor_obj_gain", default=None)
-        ir_sensor_bracket_gain = config.getfloat(
-            "ir_sensor_bracket_gain", default=None
-        )
+        ir_sensor_bracket_gain = config.getfloat("ir_sensor_bracket_gain", default=None)
         tuning = (
             ir_sensor_exponent,
             ir_sensor_obj_gain,
@@ -260,23 +253,15 @@ class IndxToolboardHeater:
         # heating can't be done, but we allow not setting them so the user can run the
         # tuning routine. These are specified in microseconds by the user.
         coil_timings = (
-            config.getfloat(
-                "coil_time_on", default=None, above=0.0, below=10.0
-            ),
-            config.getfloat(
-                "coil_time_off", default=None, above=0.0, below=10.0
-            ),
-            config.getfloat(
-                "coil_time_on_first", default=None, above=0.0, below=10.0
-            ),
+            config.getfloat("coil_time_on", default=None, above=0.0, below=10.0),
+            config.getfloat("coil_time_off", default=None, above=0.0, below=10.0),
+            config.getfloat("coil_time_on_first", default=None, above=0.0, below=10.0),
         )
         self.coil_timings = None
         if all(coil_timings):
             t_on, t_off, t_on_first = coil_timings
             if t_on_first > t_on:
-                raise config.error(
-                    "coil_time_on_first must not exceed coil_time_on"
-                )
+                raise config.error("coil_time_on_first must not exceed coil_time_on")
             # microseconds -> seconds for the MCU
             self.coil_timings = (t_on * 1e-6, t_off * 1e-6, t_on_first * 1e-6)
         elif any(coil_timings):
@@ -292,12 +277,8 @@ class IndxToolboardHeater:
             if fan_obj is None:
                 fan_obj = toolboard.printer.lookup_object(fan_name)
             if fan_obj is None:
-                raise config.error(
-                    f"Unknown cooling_fan '{fan_name}' specified"
-                )
-            if not hasattr(fan_obj, "fan") or not hasattr(
-                fan_obj.fan, "set_speed"
-            ):
+                raise config.error(f"Unknown cooling_fan '{fan_name}' specified")
+            if not hasattr(fan_obj, "fan") or not hasattr(fan_obj.fan, "set_speed"):
                 raise config.error(
                     f"cooling_fan '{fan_name}' is not a valid fan object"
                 )
@@ -314,7 +295,7 @@ class IndxToolboardHeater:
         self.last_report = None
         self.power_scale = 0
         self.heaters = []
-        self.inductive_presence = "unknown"
+        self.inductive_presence = InductivePresence.UNKNOWN
         self.inductive_presence_time = None
         self._ov_count = None
         self.coil_presence_cmd = None
@@ -332,12 +313,8 @@ class IndxToolboardHeater:
         gcode.register_command("INDX_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT)
         gcode.register_command("INDX_CLEAR_FILAMENT", self.cmd_CLEAR_FILAMENT)
         gcode.register_command("INDX_EXTRUDER_MOVE", self.cmd_EXTRUDER_MOVE)
-        gcode.register_command(
-            "INDX_SET_MODEL_PARAMS", self.cmd_SET_MODEL_PARAMS
-        )
-        gcode.register_command(
-            "INDX_DUMP_MODEL_UPDATE", self.cmd_DUMP_MODEL_UPDATE
-        )
+        gcode.register_command("INDX_SET_MODEL_PARAMS", self.cmd_SET_MODEL_PARAMS)
+        gcode.register_command("INDX_DUMP_MODEL_UPDATE", self.cmd_DUMP_MODEL_UPDATE)
         gcode.register_command(
             "INDX_COIL_PRESENCE",
             self.cmd_COIL_PRESENCE,
@@ -396,9 +373,7 @@ class IndxToolboardHeater:
                 "indx_coil_presence_result status=%c tripped=%c",
                 cq=self.cmd_queue,
             )
-        amp_per_count = mcu.get_constant_float(
-            "INDX_CURRENT_SENSE_AMP_PER_COUNT"
-        )
+        amp_per_count = mcu.get_constant_float("INDX_CURRENT_SENSE_AMP_PER_COUNT")
         current_sense_rate = mcu.get_constant_float("INDX_CURRENT_SENSE_RATE")
         self.power_scale = amp_per_count / current_sense_rate
 
@@ -494,11 +469,7 @@ class IndxToolboardHeater:
     def cur_target_temp(self):
         time = self.toolboard.printer.get_reactor().monotonic()
         return next(
-            (
-                h.get_temp(time)[1]
-                for h in self.heaters
-                if h.get_temp(time)[1] != 0.0
-            ),
+            (h.get_temp(time)[1] for h in self.heaters if h.get_temp(time)[1] != 0.0),
             None,
         )
 
@@ -517,9 +488,7 @@ class IndxToolboardHeater:
     def fan_speed(self, time):
         if self.part_cooling_fan is None:
             return 0.0
-        return max(
-            0.0, min(1.0, self.part_cooling_fan.get_status(time)["speed"])
-        )
+        return max(0.0, min(1.0, self.part_cooling_fan.get_status(time)["speed"]))
 
     def _blend_ambient_temp(self, sensor_temp):
         # Weighted blend of the board/bracket thermistors and the IR sensor's
@@ -557,9 +526,7 @@ class IndxToolboardHeater:
             self.thermal_model.force_temp(nozzle_temp)
 
         charge = params["charge"]
-        self._update_inductive_presence_from_report(
-            params["overvoltage"], power
-        )
+        self._update_inductive_presence_from_report(params["overvoltage"], power)
         if self.last_report is not None:
             delta_time = time - self.last_report[0]
             delta_charge = charge - self.last_report[1]
@@ -594,9 +561,7 @@ class IndxToolboardHeater:
                 # because the user isn't allowed to start heating when no thermal
                 # model is set. We need this check to allow the tuner to work.
                 if self.thermal_model.is_valid():
-                    filament_distance = max(
-                        0.0, extruder_pos - self.last_report[3]
-                    )
+                    filament_distance = max(0.0, extruder_pos - self.last_report[3])
                     fan_speed = self.fan_speed(time)
 
                     ambient_temp = self._blend_ambient_temp(sensor_temp)
@@ -647,19 +612,19 @@ class IndxToolboardHeater:
                 )
             )
 
-    def get_inductive_presence(self, eventtime):
-        if self.inductive_presence == "unknown":
-            return "unknown", None
-        return (
-            self.inductive_presence,
-            eventtime - self.inductive_presence_time,
+    def get_inductive_presence(
+        self, eventtime
+    ) -> tuple[InductivePresenceValue, float | None]:
+        time_since_entry = (
+            eventtime - self.inductive_presence_time
+            if self.inductive_presence_time is not None
+            else None
         )
+        return self.inductive_presence.value, time_since_entry
 
     def _set_inductive_presence(self, value):
-        self.inductive_presence = value
-        self.inductive_presence_time = (
-            self.toolboard.printer.get_reactor().monotonic()
-        )
+        self.inductive_presence = InductivePresence(value)
+        self.inductive_presence_time = self.toolboard.printer.get_reactor().monotonic()
 
     def _update_inductive_presence_from_report(self, ov_count, power):
         # First report, or MCU count reset: store the count and leave
@@ -670,10 +635,10 @@ class IndxToolboardHeater:
         tripped = ov_count != self._ov_count
         self._ov_count = ov_count
         if tripped:
-            self._set_inductive_presence("absent")
+            self._set_inductive_presence(InductivePresence.ABSENT)
             return
         if power > 0.0:
-            self._set_inductive_presence("present")
+            self._set_inductive_presence(InductivePresence.PRESENT)
 
     def handle_vin_mon(self, _read_time, read_value):
         vin = read_value * 3.3 * (4700 + 60400) / 4700
@@ -818,9 +783,7 @@ class IndxToolboardHeater:
         (t_on, t_off, t_on_first) = self.coil_timings
         configfile.set(section, "coil_time_on", "%.3f" % (t_on * 1e6))
         configfile.set(section, "coil_time_off", "%.3f" % (t_off * 1e6))
-        configfile.set(
-            section, "coil_time_on_first", "%.3f" % (t_on_first * 1e6)
-        )
+        configfile.set(section, "coil_time_on_first", "%.3f" % (t_on_first * 1e6))
 
     def _toggle_steppers(self, toolhead, ets, enable):
         # Enable/disable a set of EnableTracking lines with proper toolhead
@@ -846,9 +809,7 @@ class IndxToolboardHeater:
                 return
             if reactor.monotonic() > deadline:
                 raise gcmd.error(timeout_msg)
-            reactor.pause(
-                reactor.monotonic() + calibration.MODEL_CAL_POLL_INTERVAL
-            )
+            reactor.pause(reactor.monotonic() + calibration.MODEL_CAL_POLL_INTERVAL)
 
     def _wait_cooldown(self, gcmd, min_temp):
         # Block until the nozzle has cooled below min_temp (the heater must
@@ -873,9 +834,7 @@ class IndxToolboardHeater:
                 "INDX: no temperature reports received",
             )
             if last_temp[0] > min_temp:
-                gcmd.respond_info(
-                    "INDX: cooling below %.0f C before tuning" % min_temp
-                )
+                gcmd.respond_info("INDX: cooling below %.0f C before tuning" % min_temp)
                 self._model_cal_wait_temp(
                     reactor,
                     gcmd,
@@ -990,9 +949,7 @@ class IndxToolboardHeater:
             # Baseline (heater off) draw to subtract from measured power.
             phase[0] = "baseline"
             gcmd.respond_info("INDX: measuring baseline power")
-            reactor.pause(
-                reactor.monotonic() + calibration.MODEL_CAL_BASELINE_TIME
-            )
+            reactor.pause(reactor.monotonic() + calibration.MODEL_CAL_BASELINE_TIME)
             baseline_power = calibration.mean_phase_power(samples, "baseline")
             if baseline_power is None:
                 raise gcmd.error("INDX: no baseline power samples received")
@@ -1000,8 +957,7 @@ class IndxToolboardHeater:
             # Heatup to MAX_TEMP.
             phase[0] = "heat"
             gcmd.respond_info(
-                "INDX: heating to %.0f C (baseline %.2f W)"
-                % (max_temp, baseline_power)
+                "INDX: heating to %.0f C (baseline %.2f W)" % (max_temp, baseline_power)
             )
             self.heater_raw_set_temp(max_temp)
             self._model_cal_wait_temp(
@@ -1023,9 +979,7 @@ class IndxToolboardHeater:
             self.heater.set_temp(0.0)
             if cooldown_time > 0.0:
                 phase[0] = "cooldown"
-                gcmd.respond_info(
-                    "INDX: measuring cooldown for %.0f s" % cooldown_time
-                )
+                gcmd.respond_info("INDX: measuring cooldown for %.0f s" % cooldown_time)
                 reactor.pause(reactor.monotonic() + cooldown_time)
 
             self.temperature_callbacks.remove(sampler)
@@ -1052,9 +1006,7 @@ class IndxToolboardHeater:
             self._toggle_steppers(toolhead, reenable, True)
 
         if result.get("error"):
-            raise gcmd.error(
-                "INDX thermal model fit failed: %s" % result["error"]
-            )
+            raise gcmd.error("INDX thermal model fit failed: %s" % result["error"])
         self._apply_model_calibration(gcmd, result)
 
     def _apply_model_calibration(self, gcmd, result):
@@ -1110,16 +1062,13 @@ class IndxToolboardHeater:
                 % (p_lo, t_min, p_hi, t_max, -drop_pct)
             )
         lines.append(
-            "thermal_capacity: "
-            + fmt(capacity, result["thermal_capacity_ci"], "J/K")
+            "thermal_capacity: " + fmt(capacity, result["thermal_capacity_ci"], "J/K")
         )
         lines.append(
-            "to_ambient_r: "
-            + fmt(to_ambient_r, result["to_ambient_r_ci"], "K/W")
+            "to_ambient_r: " + fmt(to_ambient_r, result["to_ambient_r_ci"], "K/W")
         )
         lines.append(
-            "fit RMS error: %.2f C over %d samples"
-            % (result["rms"], result["n_fit"])
+            "fit RMS error: %.2f C over %d samples" % (result["rms"], result["n_fit"])
         )
         gcmd.respond_info("INDX thermal model calibrated:\n" + "\n".join(lines))
 
@@ -1129,9 +1078,7 @@ class IndxToolboardHeater:
         if self.part_cooling_fan is None:
             raise gcmd.error("INDX part cooling fan is not configured")
 
-        breaks = gcmd.get_int(
-            "BREAKS", calibration.FAN_CAL_BREAKS_DEFAULT, minval=3
-        )
+        breaks = gcmd.get_int("BREAKS", calibration.FAN_CAL_BREAKS_DEFAULT, minval=3)
         hold_time = gcmd.get_float(
             "HOLD_TIME", calibration.FAN_CAL_HOLD_TIME_DEFAULT, above=0.0
         )
@@ -1185,9 +1132,7 @@ class IndxToolboardHeater:
             self.temperature_callbacks.append(sampler)
             installed = True
             self.heater_raw_set_temp(target)
-            gcmd.respond_info(
-                "INDX: waiting for %.0f C for fan calibration" % target
-            )
+            gcmd.respond_info("INDX: waiting for %.0f C for fan calibration" % target)
             self._model_cal_wait_temp(
                 reactor,
                 gcmd,
@@ -1283,9 +1228,7 @@ class IndxToolboardHeater:
             self.temperature_callbacks.remove(cb)
 
         if totals[0] == 0:
-            raise gcmd.error(
-                "No power meansurements received over entire duration"
-            )
+            raise gcmd.error("No power meansurements received over entire duration")
 
         power = totals[1] / totals[0]
         gcmd.respond_info(
@@ -1316,27 +1259,19 @@ class IndxToolboardHeater:
             )
 
         speed = gcmd.get_float("SPEED", FILAMENT_LOAD_SPEED, above=0.0)
-        max_length = gcmd.get_float(
-            "MAX_LENGTH", FILAMENT_LOAD_MAX_LENGTH, above=0.0
-        )
-        prime_time = gcmd.get_float(
-            "PRIME_TIME", FILAMENT_LOAD_PRIME_TIME, above=0.0
-        )
+        max_length = gcmd.get_float("MAX_LENGTH", FILAMENT_LOAD_MAX_LENGTH, above=0.0)
+        prime_time = gcmd.get_float("PRIME_TIME", FILAMENT_LOAD_PRIME_TIME, above=0.0)
         prime_length = gcmd.get_float("PRIME_LENGTH", None, above=0.0)
         if prime_length is None:
             prime_length = speed * prime_time
-        threshold = gcmd.get_float(
-            "THRESHOLD", FILAMENT_LOAD_THRESHOLD, above=0.0
-        )
+        threshold = gcmd.get_float("THRESHOLD", FILAMENT_LOAD_THRESHOLD, above=0.0)
         segment_time = gcmd.get_float(
             "SEGMENT_TIME", FILAMENT_LOAD_SEGMENT_TIME, above=0.0
         )
         apply_result = gcmd.get_int("APPLY", 1, minval=0, maxval=1)
 
         params = self.thermal_model.params
-        filament_area = (
-            params.filament_radius * params.filament_radius * math.pi
-        )
+        filament_area = params.filament_radius * params.filament_radius * math.pi
         last_temp = last_pos = start_pos = loaded_at_pos = None
         load_energy = loaded_energy = loaded_denominator = 0.0
         loaded = False
@@ -1358,9 +1293,7 @@ class IndxToolboardHeater:
                 return
             dt = reading.delta_time
             ambient = self._blend_ambient_temp(reading.sensor_temperature)
-            loss_ambient = (
-                reading.nozzle_temperature - ambient
-            ) / params.to_ambient_r
+            loss_ambient = (reading.nozzle_temperature - ambient) / params.to_ambient_r
             loss_part_cooling = 0.0
             fan_speed = self.fan_speed(reading.time)
             if fan_speed > 0.0:
@@ -1372,9 +1305,7 @@ class IndxToolboardHeater:
                         0.0,
                         (reading.nozzle_temperature - ambient) / pcf_ambient_r,
                     )
-            stored = params.thermal_capacity * (
-                reading.nozzle_temperature - last_temp
-            )
+            stored = params.thermal_capacity * (reading.nozzle_temperature - last_temp)
             loss = (loss_ambient + loss_part_cooling) * dt
             residual = reading.delta_pwm_energy - loss - stored
             load_energy = max(0.0, load_energy + residual)
@@ -1382,9 +1313,7 @@ class IndxToolboardHeater:
             temp_delta = max(0.0, reading.nozzle_temperature - ambient)
             if loaded:
                 loaded_energy += max(0.0, residual)
-                loaded_denominator += (
-                    pos_delta * filament_area / 1000.0 * temp_delta
-                )
+                loaded_denominator += pos_delta * filament_area / 1000.0 * temp_delta
             elif load_energy >= threshold:
                 loaded = True
                 loaded_at_pos = pos
@@ -1447,9 +1376,11 @@ class IndxToolboardHeater:
                 loaded_at_pos - start_pos,
                 last_pos - loaded_at_pos,
                 heat_capacity,
-                "Run SAVE_CONFIG to save the new filament parameters."
-                if apply_result
-                else "Use APPLY=1 to apply the measured filament parameters.",
+                (
+                    "Run SAVE_CONFIG to save the new filament parameters."
+                    if apply_result
+                    else "Use APPLY=1 to apply the measured filament parameters."
+                ),
             )
         )
 
@@ -1462,9 +1393,7 @@ class IndxToolboardHeater:
         section = self.toolboard.name
         configfile.set(section, "model_filament_density", "0.0000")
         configfile.set(section, "model_filament_heat_capacity", "0.0000")
-        gcmd.respond_info(
-            "INDX filament model cleared. Run SAVE_CONFIG to save."
-        )
+        gcmd.respond_info("INDX filament model cleared. Run SAVE_CONFIG to save.")
 
     def cmd_EXTRUDER_MOVE(self, gcmd):
         distance = gcmd.get_float("DISTANCE")
@@ -1480,13 +1409,9 @@ class IndxToolboardHeater:
         stepper = extruder.extruder_stepper.stepper
         current_helper = compat.get_tmc_current_helper(stepper)
         if current_helper is None:
-            raise gcmd.error(
-                "Active extruder does not have a TMC current helper"
-            )
+            raise gcmd.error("Active extruder does not have a TMC current helper")
 
-        run_current, hold_current, req_hold_current, *_ = (
-            current_helper.get_current()
-        )
+        run_current, hold_current, req_hold_current, *_ = current_helper.get_current()
         current = min(current, run_current)
         restore_hold_current = (
             req_hold_current if req_hold_current is not None else hold_current
@@ -1507,16 +1432,12 @@ class IndxToolboardHeater:
             toolhead.wait_moves()
         finally:
             print_time = toolhead.get_last_move_time()
-            current_helper.set_current(
-                run_current, restore_hold_current, print_time
-            )
+            current_helper.set_current(run_current, restore_hold_current, print_time)
 
     def cmd_SET_MODEL_PARAMS(self, gcmd):
         cur = self.thermal_model.params
 
-        max_power = gcmd.get_float(
-            "MAX_POWER", default=cur.max_power, minval=0.0
-        )
+        max_power = gcmd.get_float("MAX_POWER", default=cur.max_power, minval=0.0)
         max_power_temp_coeff = gcmd.get_float(
             "MAX_POWER_TEMP_COEFF", default=cur.max_power_temp_coeff
         )
@@ -1591,9 +1512,7 @@ class IndxToolboardHeater:
         else:
             gcmd.respond_info("Thermal model has not yet run")
 
-    cmd_COIL_PRESENCE_help = (
-        "Sample whether a steel nozzle is coupled to the INDX coil"
-    )
+    cmd_COIL_PRESENCE_help = "Sample whether a steel nozzle is coupled to the INDX coil"
 
     def cmd_COIL_PRESENCE(self, gcmd):
         reactor = self.toolboard.printer.get_reactor()
@@ -1604,13 +1523,8 @@ class IndxToolboardHeater:
             )
             return
         if self.coil_timings is None:
-            raise gcmd.error(
-                "INDX coil timings are not set. Run INDX_CALIBRATE first."
-            )
-        if (
-            self.coil_presence_cmd is None
-            or self.query_coil_presence_cmd is None
-        ):
+            raise gcmd.error("INDX coil timings are not set. Run INDX_CALIBRATE first.")
+        if self.coil_presence_cmd is None or self.query_coil_presence_cmd is None:
             raise gcmd.error(
                 "INDX toolboard firmware does not support coil presence. "
                 "Flash the toolboard."
@@ -1631,16 +1545,16 @@ class IndxToolboardHeater:
                 "(coil busy, tune active, or timings not set)"
             )
         if result["tripped"]:
-            self._set_inductive_presence("absent")
+            self._set_inductive_presence(InductivePresence.ABSENT)
         else:
-            self._set_inductive_presence("present")
+            self._set_inductive_presence(InductivePresence.PRESENT)
         presence, age = self.get_inductive_presence(reactor.monotonic())
         gcmd.respond_info(
             self._format_coil_presence(presence, age, heater_active=False)
         )
 
     def _format_coil_presence(self, presence, age, heater_active):
-        if presence == "unknown" or age is None:
+        if presence == InductivePresence.UNKNOWN or age is None:
             msg = "INDX coil presence: unknown"
         else:
             msg = "INDX coil presence: %s (age %.3fs)" % (presence, age)
@@ -1664,9 +1578,7 @@ class IndxToolboardHeater:
         )
         res = cmd.send([])
         print(res)
-        gcmd.respond_info(
-            "".join(hex(c)[2:].ljust(2, "0") for c in res["data"])
-        )
+        gcmd.respond_info("".join(hex(c)[2:].ljust(2, "0") for c in res["data"]))
 
     def cmd_DEBUG_STREAM_RAW_IR_SENSOR(self, gcmd):
         if self.raw_ir_log_file is not None:
@@ -1689,9 +1601,11 @@ class IndxToolboardHeater:
         path = "/tmp/indx_raw_ir_%s.csv" % strftime("%Y%m%d_%H%M%S")
         self.raw_ir_log_file = open(path, "w")
         names = [
-            n[len("temperature_sensor ") :]
-            if n.startswith("temperature_sensor ")
-            else n
+            (
+                n[len("temperature_sensor ") :]
+                if n.startswith("temperature_sensor ")
+                else n
+            )
             for n in self.raw_ir_log_sensors
         ]
         header = ["time", "raw_object", "raw_ambient"] + names
@@ -1713,9 +1627,7 @@ class IndxToolboardHeater:
             try:
                 cols.append(
                     "%.2f"
-                    % printer.lookup_object(name).get_status(eventtime)[
-                        "temperature"
-                    ]
+                    % printer.lookup_object(name).get_status(eventtime)["temperature"]
                 )
             except Exception as e:
                 cols.append("")
@@ -1839,18 +1751,14 @@ class ThermalModel:
                     0.0, (self.temperature - ambient_temp) / pcf_ambient_r
                 )
 
-        loss_ambient = (
-            self.temperature - ambient_temp
-        ) / self.params.to_ambient_r
+        loss_ambient = (self.temperature - ambient_temp) / self.params.to_ambient_r
         loss_filament = (
             filament_distance
             * filament_heat_capacity_mm
             * (self.temperature - filament_temp)
             / dt
         )
-        total_power = (
-            avg_input_power - loss_ambient - loss_filament - loss_part_cooling
-        )
+        total_power = avg_input_power - loss_ambient - loss_filament - loss_part_cooling
         delta_temp_rate = total_power / self.params.thermal_capacity
         new_temp = self.temperature + delta_temp_rate * dt
 
