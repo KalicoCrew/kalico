@@ -66,6 +66,7 @@ defs_stepcompress = """
         , uint32_t invert_sdir);
     void stepcompress_free(struct stepcompress *sc);
     int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);
+    void stepcompress_clear(struct stepcompress *sc);
     int stepcompress_set_last_position(struct stepcompress *sc
         , uint64_t clock, int64_t last_position);
     int64_t stepcompress_find_past_position(struct stepcompress *sc

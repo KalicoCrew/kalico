@@ -500,6 +500,11 @@ class MCU_digital_out:
         self._max_duration = 2.0
         self._last_clock = 0
         self._set_cmd = None
+        self._last_set_value = None
+        self._printer.register_event_handler(
+            mcu.get_non_critical_reconnect_event_name(),
+            self._handle_reconnect,
+        )
 
     def get_mcu(self):
         return self._mcu
@@ -543,11 +548,23 @@ class MCU_digital_out:
             "queue_digital_out oid=%c clock=%u on_ticks=%u", cq=cmd_queue
         )
 
+    def _handle_reconnect(self):
+        self._last_clock = 0
+        if self._last_set_value is None or self._set_cmd is None:
+            return
+        if self._mcu.non_critical_disconnected:
+            return
+        toolhead = self._printer.lookup_object("toolhead", None)
+        if toolhead is None:
+            return
+        self.set_digital(toolhead.get_last_move_time(), self._last_set_value)
+
     def set_digital(self, print_time, value):
         if self._mcu.non_critical_disconnected:
             raise self._printer.command_error(
                 f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
             )
+        self._last_set_value = value
         clock = self._mcu.print_time_to_clock(print_time)
         self._set_cmd.send(
             [self._oid, clock, (not not value) ^ self._invert],
@@ -571,9 +588,16 @@ class MCU_pwm:
         self._last_clock = 0
         self._pwm_max = 0.0
         self._set_cmd = None
+        self._mcu.get_printer().register_event_handler(
+            mcu.get_non_critical_reconnect_event_name(),
+            self._handle_pwm_reconnect,
+        )
 
     def get_mcu(self):
         return self._mcu
+
+    def _handle_pwm_reconnect(self):
+        self._last_clock = 0
 
     def setup_max_duration(self, max_duration):
         self._max_duration = max_duration
@@ -851,6 +875,7 @@ class MCU:
         self.reconnect_interval = (
             config.getfloat("reconnect_interval", 2.0) + 0.12
         )  # add small change to not collide with other events
+        self._non_critical_reconnecting = False
         self._cached_init_state = False
         self._oid_count_post_inits = 0
         self._config_cmds_post_inits = []
@@ -900,6 +925,23 @@ class MCU:
         prefix = "MCU '%s' shutdown: " % (self._name,)
         if params["#name"] == "is_shutdown":
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
+
+        if self.is_non_critical:
+            logging.info(
+                "Non-critical MCU '%s' shutdown: %s - handling as disconnect",
+                self._name,
+                msg,
+            )
+            # Leave _is_shutdown True so reconnect can reset the firmware
+            # instead of talking to a halted MCU (Invalid oid type).
+            if self._non_critical_reconnecting or self.non_critical_disconnected:
+                return
+            # _handle_shutdown runs in the serial thread; disconnect must
+            # be scheduled on the reactor to avoid joining that thread.
+            self._reactor.register_async_callback(
+                lambda e: self.handle_non_critical_disconnect()
+            )
+            return
 
         append_msgs = []
         if (
@@ -986,14 +1028,31 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
+        if self.non_critical_disconnected:
+            return
         self.non_critical_disconnected = True
+        self._get_status_info["non_critical_disconnected"] = True
         self._clocksync.disconnect()
         self._disconnect()
+        self._clear_stepqueues()
         self._reactor.update_timer(
             self.non_critical_recon_timer, self._reactor.NOW
         )
         self._printer.send_event(self._non_critical_disconnect_event_name)
         self.gcode.respond_info(f"mcu: '{self._name}' disconnected!", log=True)
+
+    def _clear_stepqueues(self):
+        for sq in self._stepqueues:
+            self._ffi_lib.stepcompress_clear(sq)
+
+    def clear_stepqueues(self):
+        self._clear_stepqueues()
+
+    def can_generate_steps(self):
+        # Serial may be back during recon_mcu() while steppersync is
+        # still None. Generating steps in that window is what produces
+        # "Invalid sequence" on G1.
+        return self._steppersync is not None and not self.non_critical_disconnected
 
     def non_critical_recon_event(self, eventtime):
         success = self.recon_mcu()
@@ -1100,6 +1159,7 @@ class MCU:
         return "\n".join(log_info)
 
     def recon_mcu(self):
+        self._non_critical_reconnecting = True
         try:
             if not self._mcu_identify():
                 return False
@@ -1108,6 +1168,7 @@ class MCU:
             self._is_shutdown = False
             self.reset_to_initial_state()
             self.non_critical_disconnected = False
+            self._get_status_info["non_critical_disconnected"] = False
             self._connect()
         except Exception:
             logging.exception(
@@ -1115,6 +1176,8 @@ class MCU:
             )
             self._abort_recon_attempt()
             return False
+        finally:
+            self._non_critical_reconnecting = False
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
 
@@ -1126,21 +1189,30 @@ class MCU:
             "get_config",
             "config is_config=%c crc=%u is_shutdown=%c move_count=%hu",
         )
-        if not get_config_cmd.send()["is_shutdown"]:
+        try:
+            is_shutdown = get_config_cmd.send()["is_shutdown"]
+        except Exception:
+            is_shutdown = self._is_shutdown
+        if not is_shutdown:
             return False
         logging.info(
             "MCU '%s' is in a shutdown state - attempting reset", self._name
         )
-        if self._reset_cmd is not None:
-            self._reset_cmd.send()
-        elif self._config_reset_cmd is not None:
-            self._config_reset_cmd.send()
-        else:
-            # No reset mechanism - clear the shutdown state and let the
-            # next reconnect attempt reuse the retained config
-            clear_shutdown_cmd = self.try_lookup_command("clear_shutdown")
-            if clear_shutdown_cmd is not None:
-                clear_shutdown_cmd.send()
+        try:
+            if self._reset_cmd is not None:
+                self._reset_cmd.send()
+            elif self._config_reset_cmd is not None:
+                self._config_reset_cmd.send()
+            else:
+                # No reset mechanism - clear the shutdown state and let the
+                # next reconnect attempt reuse the retained config
+                clear_shutdown_cmd = self.try_lookup_command("clear_shutdown")
+                if clear_shutdown_cmd is not None:
+                    clear_shutdown_cmd.send()
+        except Exception:
+            logging.exception(
+                "MCU '%s' reset after shutdown failed", self._name
+            )
         self._reactor.pause(self._reactor.monotonic() + 0.015)
         self._abort_recon_attempt()
         return True
@@ -1151,6 +1223,7 @@ class MCU:
         self._disconnect()
         self.non_critical_disconnected = True
         self._get_status_info["non_critical_disconnected"] = True
+        self._clear_stepqueues()
 
     def reset_to_initial_state(self):
         if self._cached_init_state:
@@ -1206,6 +1279,24 @@ class MCU:
             ffi_lib.steppersync_free,
         )
         ffi_lib.steppersync_set_time(self._steppersync, 0.0, self._mcu_freq)
+        if self.is_non_critical:
+            # Reconnect happens at a large print_time against a freshly
+            # booted MCU clock. Apply the secondary clock mapping and
+            # drop leftover stepcompress state so new steps are not
+            # compressed as interval=0 ("Invalid sequence").
+            eventtime = self._reactor.monotonic()
+            print_time = self.estimated_print_time(eventtime)
+            try:
+                offset, freq = self._clocksync.calibrate_clock(
+                    print_time, eventtime
+                )
+                ffi_lib.steppersync_set_time(self._steppersync, offset, freq)
+            except Exception:
+                logging.exception(
+                    "MCU '%s' failed to sync step clocks after reconnect",
+                    self._name,
+                )
+            self._clear_stepqueues()
         # Log config information
         move_msg = "Configured MCU '%s' (%d moves)" % (self._name, move_count)
         logging.info(move_msg)
@@ -1251,7 +1342,10 @@ class MCU:
                     # Cheetah boards require RTS to be deasserted
                     # else a reset will trigger the built-in bootloader.
                     rts = resmeth != "cheetah"
-                    self._serial.connect_uart(self._serialport, self._baud, rts)
+                    connect_timeout = 8.0 if self._non_critical_reconnecting else 90.0
+                    self._serial.connect_uart(
+                        self._serialport, self._baud, rts, timeout=connect_timeout
+                    )
                 else:
                     self._serial.connect_pipe(self._serialport)
                 self._clocksync.connect(self._serial)
@@ -1444,6 +1538,8 @@ class MCU:
             or (self._is_shutdown and not force)
         ):
             return
+        if self.non_critical_disconnected and not force:
+            return
         self._emergency_stop_cmd.send()
 
     def _restart_arduino(self):
@@ -1527,6 +1623,14 @@ class MCU:
             self._steppersync, clock, clear_history_clock
         )
         if ret:
+            if self.is_non_critical:
+                logging.error(
+                    "Dropping pending steps on non-critical MCU '%s' "
+                    "(stepcompress error after disconnect/reconnect)",
+                    self._name,
+                )
+                self._clear_stepqueues()
+                return
             raise error(
                 "Internal error in MCU '%s' stepcompress" % (self._name,)
             )
