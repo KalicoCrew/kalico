@@ -934,7 +934,10 @@ class MCU:
             )
             # Leave _is_shutdown True so reconnect can reset the firmware
             # instead of talking to a halted MCU (Invalid oid type).
-            if self._non_critical_reconnecting or self.non_critical_disconnected:
+            if (
+                self._non_critical_reconnecting
+                or self.non_critical_disconnected
+            ):
                 return
             # _handle_shutdown runs in the serial thread; disconnect must
             # be scheduled on the reactor to avoid joining that thread.
@@ -1042,8 +1045,12 @@ class MCU:
         self.gcode.respond_info(f"mcu: '{self._name}' disconnected!", log=True)
 
     def _clear_stepqueues(self):
-        for sq in self._stepqueues:
-            self._ffi_lib.stepcompress_clear(sq)
+        stepqueues = getattr(self, "_stepqueues", None)
+        ffi_lib = getattr(self, "_ffi_lib", None)
+        if not stepqueues or ffi_lib is None:
+            return
+        for sq in stepqueues:
+            ffi_lib.stepcompress_clear(sq)
 
     def clear_stepqueues(self):
         self._clear_stepqueues()
@@ -1052,7 +1059,9 @@ class MCU:
         # Serial may be back during recon_mcu() while steppersync is
         # still None. Generating steps in that window is what produces
         # "Invalid sequence" on G1.
-        return self._steppersync is not None and not self.non_critical_disconnected
+        return (
+            self._steppersync is not None and not self.non_critical_disconnected
+        )
 
     def non_critical_recon_event(self, eventtime):
         success = self.recon_mcu()
@@ -1342,9 +1351,14 @@ class MCU:
                     # Cheetah boards require RTS to be deasserted
                     # else a reset will trigger the built-in bootloader.
                     rts = resmeth != "cheetah"
-                    connect_timeout = 8.0 if self._non_critical_reconnecting else 90.0
+                    connect_timeout = (
+                        8.0 if self._non_critical_reconnecting else 90.0
+                    )
                     self._serial.connect_uart(
-                        self._serialport, self._baud, rts, timeout=connect_timeout
+                        self._serialport,
+                        self._baud,
+                        rts,
+                        timeout=connect_timeout,
                     )
                 else:
                     self._serial.connect_pipe(self._serialport)

@@ -228,9 +228,13 @@ class TMCErrorCheck:
                 self._query_temperature()
         except self.printer.command_error as e:
             err = str(e)
-            if mcu is not None and getattr(mcu, "is_non_critical", False) and (
-                "Serial connection closed" in err
-                or "non-critical MCU is disconnected" in err
+            if (
+                mcu is not None
+                and getattr(mcu, "is_non_critical", False)
+                and (
+                    "Serial connection closed" in err
+                    or "non-critical MCU is disconnected" in err
+                )
             ):
                 logging.info(
                     "TMC '%s' comms lost on non-critical MCU '%s': %s",
