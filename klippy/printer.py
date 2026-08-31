@@ -112,24 +112,48 @@ class SubsystemComponentCollection:
         subsystem[component_name] = component
 
 
+COMPONENT_HOOK = "register_components"
+
+
 class PrinterModule:
     name: str
     module_info: pkgutil.ModuleInfo
     module: Optional[ModuleType] = None
     exception: Optional[Exception] = None
+    loaded: bool = False
+    _may_register: Optional[bool] = None
 
     def __init__(self, name: str, module_info: pkgutil.ModuleInfo):
         self.name = name
         self.module_info = module_info
 
     def load(self):
+        if self.loaded:
+            return
+        self.loaded = True
         try:
             self.module = importlib.import_module(self.module_info.name)
         except Exception as ex:
             logging.exception(f"Failed to load module '{self.name}'.")
             self.exception = ex
 
+    def may_register_components(self) -> bool:
+        # Checked by reading the source, so that a module nothing references
+        # is never imported. Anything we cannot read the source of, such as an
+        # extension module or a sourceless .pyc, is assumed to register.
+        if self._may_register is None:
+            try:
+                spec = self.module_info.module_finder.find_spec(
+                    self.module_info.name
+                )
+                source = spec.loader.get_source(self.module_info.name)
+            except Exception:
+                source = None
+            self._may_register = source is None or COMPONENT_HOOK in source
+        return self._may_register
+
     def get_init_function(self, section: str):
+        self.load()
         # if loading failed, raise that exception now
         if self.exception is not None:
             raise self.exception
@@ -139,16 +163,20 @@ class PrinterModule:
         return self.get_method(init_func_name)
 
     def register_components(self, collector: SubsystemComponentCollection):
+        if not self.may_register_components():
+            return
+        self.load()
         # skip failed modules: this is a tradeoff vs failing all loading for
         # unused modules
         if self.exception is not None:
             return
-        register_func = self.get_method("register_components")
+        register_func = self.get_method(COMPONENT_HOOK)
         if register_func is None:
             return
         register_func(collector)
 
     def get_method(self, function_name):
+        self.load()
         if self.module is None:
             return None
         return getattr(self.module, function_name, None)
@@ -197,9 +225,6 @@ class Printer:
                     f"Module '{pm.name}' found in both extras and plugins!"
                 )
             self.printer_modules[pm.name] = pm
-
-        for pm in self.printer_modules.values():
-            pm.load()
 
     def _register_subsystem_components(self):
         for printer_module in self.printer_modules.values():
