@@ -309,7 +309,7 @@ max_accel:
 #   (constant axis ratios carry a scalar null to every axis); one that turns
 #   anywhere reports spectral_null_span_turned instead. Raise it only to span coarser geometry, and expect ringing in
 #   return. The default is 2.0.
-#unified_spectral_null: False
+#unified_spectral_null: True
 #   Solve the emitted slice accelerations for the notch null instead of
 #   sampling the ideal ramp. The notch zero is exact only in continuous time;
 #   emitted as constant-acceleration slices it smears to about 1.3% of dv at
@@ -324,11 +324,12 @@ max_accel:
 #   max_accel pins its plateau and
 #   takes a partial null (1.28% to 0.47%) rather than refusing or exceeding the
 #   limit; a correction that still will not fit leaves the ramp untouched.
-#   Costs roughly 23% more planner CPU. It changes what unified_jerk_dt buys:
+#   Costs roughly 23% more planner CPU; set it False to reclaim that on a
+#   constrained host. It changes what unified_jerk_dt buys:
 #   depth at the configured modes stops depending on slice count, but the
 #   BROADBAND floor everywhere else still does, and no null touches that. At 11
 #   slices the response above 100 Hz is 4.6x what it is at 34, so coarsening is
-#   not free. The default is False.
+#   not free. The default is True.
 #unified_jerk_dt: 0.001
 #   Integration time step in seconds for emitted jerk-limited slices. Smaller
 #   values create more motion-queue entries. The minimum is 0.0001. When the

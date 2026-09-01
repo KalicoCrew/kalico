@@ -119,7 +119,7 @@ unified_notch_freq: 55
   benefit is in by 34 slices, and 143 buys only another 1.4x for four times the
   motion-queue traffic.
 
-- `unified_spectral_null` (default: False)
+- `unified_spectral_null` (default: True)
   Solve the emitted slice accelerations for the null instead of sampling the
   ideal ramp.
 

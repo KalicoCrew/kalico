@@ -501,8 +501,12 @@ class ToolHead:
         )
         # Solve the emitted slice accelerations for an exact spectral null
         # instead of sampling the ideal ramp. See pathplan.solve_ramp_null.
+        # On by default: it costs nothing to anyone who has not already opted
+        # into unified_planner, and sampling rather than solving leaves the
+        # notch about 1.4% short of the null the notch law exists to hit. Set
+        # it False to reclaim the ~23% planner CPU on a constrained host.
         self.unified_spectral_null = config.getboolean(
-            "unified_spectral_null", False
+            "unified_spectral_null", True
         )
         # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
         # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
