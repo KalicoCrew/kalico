@@ -1711,7 +1711,10 @@ class ToolHead:
                 " or lower the notch frequency. Slices per ramp scale as"
                 " 1/unified_jerk_dt, so halving it doubles trapq volume: the"
                 " limit is MCU link bandwidth, which saturates as"
-                " 'Timer too close', not host CPU."
+                " 'Timer too close', not host CPU. SET_UNIFIED revalidates"
+                " this, so a TUNING_TOWER sweeping the notch upward can trip"
+                " it partway up a print: set unified_jerk_dt for the TOP of"
+                " the intended sweep (0.1 / f_max) before starting it."
                 % (0.1 / max_freq, max_freq, 0.1 / max_freq)
             )
         self._check_unified_slice_budget(error_factory)
@@ -1745,18 +1748,37 @@ class ToolHead:
         )
         if pathplan.ramp_fits_slice_budget(0.0, self.max_velocity, cons):
             return
+        # max_accel is named FIRST because it is always the knob that can
+        # move this number. A ramp splits into an irreducible notch period
+        # (1/f_lo + 1/f_hi, spent whatever the accel ceiling is) plus a
+        # plateau, and only the plateau answers to max_accel -- but the notch
+        # period cannot overflow the budget on its own. The 5 Hz notch floor
+        # and the 0.0001 jerk_dt minimum cap it at 0.4s / 0.0001 = 4000
+        # slices, under MAX_RAMP_SLICES. So whatever pushed a config over the
+        # limit is plateau, and plateau is exactly what max_accel removes.
+        f_lo, f_hi = min(freqs), max(freqs)
+        edge_slices = cons.notch_period / self.unified_jerk_dt
         raise error_factory(
             "unified planner settings need more than %d slices to ramp"
             " 0 -> %.0f mm/s (unified_jerk_dt=%.6f notch=%.2f/%.2f Hz at"
-            " max_accel=%.0f). Raise unified_jerk_dt, or raise max_accel so"
-            " the ramp needs less plateau."
+            " max_accel=%.0f). The notch period accounts for %.0f of them;"
+            " the rest is a plateau held down by max_accel. Raise max_accel"
+            " to %.0f (max_velocity * %.2f Hz) and the plateau disappears --"
+            " free under the notch law, where an unsaturated ramp peaks at"
+            " dv*f_lo on its own and never reaches the ceiling, and it"
+            " restores an exact spectral null in place of a partial one."
+            " Raising unified_jerk_dt also fits, but pays for it with the"
+            " broadband floor on every move."
             % (
                 pathplan.MAX_RAMP_SLICES,
                 self.max_velocity,
                 self.unified_jerk_dt,
-                min(freqs),
-                max(freqs),
+                f_lo,
+                f_hi,
                 self.max_accel,
+                edge_slices,
+                self.max_velocity * f_lo,
+                f_lo,
             )
         )
 
