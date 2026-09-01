@@ -1706,8 +1706,13 @@ class ToolHead:
         if self.unified_jerk_dt * max_freq > 0.1 + 1e-12:
             raise error_factory(
                 "unified_jerk_dt must be at most %.9f for a %.3f Hz notch"
-                " (at least 10 slices per fastest ramp edge)"
-                % (0.1 / max_freq, max_freq)
+                " (at least 10 slices per fastest ramp edge). Set"
+                " unified_jerk_dt to %.9f or less in [printer] and restart,"
+                " or lower the notch frequency. Slices per ramp scale as"
+                " 1/unified_jerk_dt, so halving it doubles trapq volume: the"
+                " limit is MCU link bandwidth, which saturates as"
+                " 'Timer too close', not host CPU."
+                % (0.1 / max_freq, max_freq, 0.1 / max_freq)
             )
         self._check_unified_slice_budget(error_factory)
 
