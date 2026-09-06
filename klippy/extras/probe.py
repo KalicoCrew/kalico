@@ -313,6 +313,26 @@ class PrinterProbe:
         self.was_last_result_good = False
         self.gcode_move = self.printer.load_object(config, "gcode_move")
         self.retry_session = RetrySession(config)
+        # TODO: Name is open for suggestions
+        #
+        # For most probes they need to be a certain distance away from the edge of the bed.
+        # For example with a coil based probe, the entire coil should be on the bed.
+        #
+        # The distance is from the center of the probe (= nozzle coordinate + probe offset) to the
+        # edge of the bed.
+        #
+        # If the distance is negative, it will allow probing outside the bed by that distance.
+        # In case this parameter is not specified, it will not restrict the probing area at all.
+        #
+        # TODO: In the future this could be extended to a list of floats similar to how margins are
+        #       specified in css:
+        # - top, left, bottom, right
+        # - top and bottom, left and right
+        # - or all sides the same (the current implementation)
+        # TODO: This could be enforced while probing
+        self.min_edge_distance = config.getfloat(
+            "min_edge_distance", default=None
+        )
         # Infer Z position to move to during a probe
         if config.has_section("stepper_z"):
             zconfig = config.getsection("stepper_z")
@@ -431,6 +451,9 @@ class PrinterProbe:
 
     def get_offsets(self):
         return self.x_offset, self.y_offset, self.z_offset
+
+    def get_min_edge_distance(self) -> float | None:
+        return self.min_edge_distance
 
     def probing_move(
         self, speed, gcmd: GCodeCommand
