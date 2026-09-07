@@ -940,6 +940,16 @@ class MCU:
                         }
                     )
 
+        if self.is_non_critical:
+            logging.info(
+                "Non-critical MCU '%s' shutdown: %s - handling as disconnect",
+                self._name,
+                msg,
+            )
+            self._reactor.register_async_callback(
+                lambda e: self.handle_non_critical_disconnect()
+            )
+            return
         self._printer.invoke_async_shutdown(
             prefix + msg + error_help(msg=msg, append_msgs=append_msgs)
         )
