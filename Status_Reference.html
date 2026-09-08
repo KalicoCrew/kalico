@@ -4378,6 +4378,11 @@ understands it).</li>
 <li><code>mcu_constants.&lt;constant_name&gt;</code>: Compile time constants reported by
   the micro-controller. The available constants may differ between
   micro-controller architectures and with each code revision.</li>
+<li><code>mcu_kconfig</code>: The minimal build configuration (<code>savedefconfig</code>
+  output) the micro-controller firmware was compiled from, as reported by
+  the micro-controller. <code>None</code> if the firmware predates this feature, is a
+  nonconforming build, or is a fork that doesn't implement it — absence
+  does not identify which of those applies.</li>
 <li><code>last_stats.&lt;statistics_name&gt;</code>: Statistics information on the
   micro-controller connection.</li>
 <li><code>non_critical_disconnected</code>: True/False if the mcu is disconnected.</li>
