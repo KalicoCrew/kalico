@@ -9,38 +9,31 @@ extern "C" {
 float
 pid_controller::step(float current_temperature, float dt) {
 
-    if (!this->set_point) {
-        this->integrator = this->params.kp * current_temperature;
+    if (!this->set_point_) {
         this->output = 0.0f;
+        this->integrator = 0.0f;
         return this->output;
     }
 
-    auto sp = *this->set_point;
+    auto sp = *this->set_point_;
 
     auto params = &this->params;
 
     auto p = params->kp * (params->b * sp - current_temperature);
 
-    float i = 0.0;
-    if (params->ti >= 0.000001) {
-        float t = 0.0;
-        if (params->tt >= 0.000001) {
-            auto error_sat =
-                std::max(0.0f, std::min(1.0f, this->output)) - this->output;
-            t = error_sat / params->tt;
-        }
-        this->integrator +=
-            (params->kp * (sp - current_temperature) / params->ti + t) * dt;
-        if (this->integrator > 1.0f)
-            this->integrator = 1.0f;
-        else if (this->integrator < 0.0)
-            this->integrator = 0.0;
-        i = this->integrator;
+    auto error = sp - current_temperature;
+    if (params->ti < 0.000001 || fabsf(error) > params->i_window) {
+        this->integrator = 0.0f;
+    } else {
+        this->integrator = std::max(
+            0.0f,
+            std::min(params->i_limit,
+                     this->integrator + params->kp * error / params->ti * dt));
     }
 
     float d = 0.0;
 
-    this->output = p + i + d;
+    this->output = p + this->integrator + d;
 
     auto clamped_output = std::max(0.0f, std::min(1.0f, this->output));
     return clamped_output;

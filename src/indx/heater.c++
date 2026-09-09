@@ -44,7 +44,7 @@ indx_heater::run() {
                            this->update_interval);
         break;
     case ir_sensor_error::no_radiance:
-        if (this->pid.set_point.has_value()) {
+        if (this->pid.set_point().has_value()) {
             shutdown("IR sensor calculated no radiance");
             return;
         }
@@ -73,8 +73,8 @@ indx_heater::run() {
 
     auto new_pattern = &pattern_off;
 
-    if (this->pid.set_point.has_value()) {
-        auto error = this->pid.set_point.value() -
+    if (auto set_point = this->pid.set_point()) {
+        auto error = set_point.value() -
                      this->state.nozzle_temperature.object_temperature;
         if (error > 1.0f) {
             new_pattern = &pattern_heating;
@@ -238,10 +238,10 @@ command_indx_set_target(uint32_t *args) {
 
     auto set_point = *reinterpret_cast<float *>(&args[0]);
     if (std::isnan(set_point)) {
-        indx_heater_instance->pid.set_point = std::nullopt;
+        indx_heater_instance->pid.update_set_point(std::nullopt);
         sched_del_timer(&indx_heater_instance->timeout_timer);
     } else {
-        indx_heater_instance->pid.set_point = set_point;
+        indx_heater_instance->pid.update_set_point(set_point);
         indx_heater_instance->timeout_timer.waketime =
             timer_read_time() + timer_from_us(HEATER_TIMEOUT_US);
         sched_del_timer(&indx_heater_instance->timeout_timer);
@@ -292,6 +292,8 @@ command_indx_set_control_params(uint32_t *args) {
     auto ti = *reinterpret_cast<float *>(&args[1]);
     auto td = *reinterpret_cast<float *>(&args[2]);
     auto b = *reinterpret_cast<float *>(&args[3]);
+    auto i_window = *reinterpret_cast<float *>(&args[4]);
+    auto i_limit = *reinterpret_cast<float *>(&args[5]);
     auto tt = td < 0.000001 ? ti / 8.0f : sqrtf(ti * td);
     auto params = pid_params{
         .kp = kp,
@@ -299,12 +301,15 @@ command_indx_set_control_params(uint32_t *args) {
         .td = td,
         .b = b,
         .tt = tt,
+        .i_window = i_window,
+        .i_limit = i_limit,
     };
 
-    indx_heater_instance->pid.params = params;
+    indx_heater_instance->pid.update_params(params);
 }
-DECL_COMMAND(command_indx_set_control_params,
-             "indx_set_control_params kp=%u ti=%u td=%u b=%u");
+DECL_COMMAND(
+    command_indx_set_control_params,
+    "indx_set_control_params kp=%u ti=%u td=%u b=%u i_window=%u i_limit=%u");
 
 extern "C" void
 command_indx_set_coil_driver_params(uint32_t *args) {
@@ -413,7 +418,7 @@ extern "C" void
 indx_shutdown(void) {
     if (indx_heater_instance) {
         indx_heater_instance->shutdown_();
-        indx_heater_instance->pid.set_point = std::nullopt;
+        indx_heater_instance->pid.update_set_point(std::nullopt);
 
         indx_heater_instance->update_timer.waketime =
             timer_read_time() + indx_heater_instance->update_interval_ticks;
