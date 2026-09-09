@@ -213,6 +213,13 @@ class TMCErrorCheck:
             return
 
     def _do_periodic_check(self, eventtime):
+        # A non-critical MCU (e.g. Mellow LLL buffer) may drop USB mid-print.
+        # is_non_critical already treats that as a disconnect+reconnect, but
+        # this TMC poller still treats "Serial connection closed" as fatal and
+        # shuts the whole printer down. Skip the poll until the MCU is back.
+        mcu = getattr(self.mcu_tmc, "mcu", None)
+        if mcu is not None and getattr(mcu, "non_critical_disconnected", False):
+            return eventtime + 1.0
         try:
             self._query_register(self.drv_status_reg_info)
             if self.gstat_reg_info is not None:
@@ -220,7 +227,23 @@ class TMCErrorCheck:
             if self.adc_temp_reg is not None:
                 self._query_temperature()
         except self.printer.command_error as e:
-            self.printer.invoke_shutdown(str(e))
+            err = str(e)
+            if (
+                mcu is not None
+                and getattr(mcu, "is_non_critical", False)
+                and (
+                    "Serial connection closed" in err
+                    or "non-critical MCU is disconnected" in err
+                )
+            ):
+                logging.info(
+                    "TMC '%s' comms lost on non-critical MCU '%s': %s",
+                    self.stepper_name,
+                    mcu.get_name(),
+                    err,
+                )
+                return eventtime + 1.0
+            self.printer.invoke_shutdown(err)
             return self.printer.get_reactor().NEVER
         return eventtime + 1.0
 
@@ -401,6 +424,12 @@ class TMCCommandHelper:
         self.printer.register_event_handler(
             "klippy:connect", self._handle_connect
         )
+        mcu = getattr(mcu_tmc, "mcu", None)
+        if mcu is not None:
+            self.printer.register_event_handler(
+                mcu.get_non_critical_reconnect_event_name(),
+                self._handle_non_critical_reconnect,
+            )
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_mux_command(
@@ -590,6 +619,25 @@ class TMCCommandHelper:
             self.mcu_tmc.set_register(reg_name, val, print_time)
         self.echeck_helper.stop_checks()
 
+    def _ignore_noncritical_tmc_comms(self, exc):
+        mcu = getattr(self.mcu_tmc, "mcu", None)
+        if mcu is None or not getattr(mcu, "is_non_critical", False):
+            return False
+        err = str(exc)
+        if (
+            getattr(mcu, "non_critical_disconnected", False)
+            or "Serial connection closed" in err
+            or "non-critical MCU is disconnected" in err
+        ):
+            logging.info(
+                "Ignoring TMC '%s' comms error on non-critical MCU '%s': %s",
+                self.stepper_name,
+                mcu.get_name(),
+                err,
+            )
+            return True
+        return False
+
     def _handle_stepper_enable(self, print_time, is_enable):
         def enable_disable_cb(eventtime):
             try:
@@ -599,6 +647,8 @@ class TMCCommandHelper:
                     else:
                         self._do_disable(print_time)
             except self.printer.command_error as e:
+                if self._ignore_noncritical_tmc_comms(e):
+                    return
                 self.printer.invoke_shutdown(str(e))
 
         self.printer.get_reactor().register_callback(enable_disable_cb)
@@ -638,6 +688,32 @@ class TMCCommandHelper:
                 self._init_registers()
         except self.printer.command_error as e:
             logging.info("TMC %s failed to init: %s", self.name, str(e))
+
+    def _handle_non_critical_reconnect(self):
+        # MCU reset clears TMC UART state. Re-init registers if the
+        # stepper is supposed to be enabled so FORCE_MOVE / buffer feed
+        # work after reconnect without a FIRMWARE_RESTART.
+        mcu = getattr(self.mcu_tmc, "mcu", None)
+        if mcu is None or mcu.non_critical_disconnected:
+            return
+        try:
+            enable_line = self.stepper_enable.lookup_enable(self.stepper_name)
+            if not enable_line.is_motor_enabled():
+                return
+            logging.info(
+                "Re-init TMC '%s' after non-critical MCU '%s' reconnect",
+                self.stepper_name,
+                mcu.get_name(),
+            )
+            print_time = self.printer.lookup_object(
+                "toolhead"
+            ).get_last_move_time()
+            self._do_enable(print_time)
+        except Exception:
+            logging.exception(
+                "TMC '%s' re-init after non-critical reconnect failed",
+                self.stepper_name,
+            )
 
     # get_status information export
     def get_status(self, eventtime=None):

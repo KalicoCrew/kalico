@@ -550,6 +550,26 @@ stepcompress_flush(struct stepcompress *sc, uint64_t move_clock)
     return queue_flush(sc, move_clock);
 }
 
+// Discard pending steps without flushing them to the MCU. Used when a
+// non-critical MCU disconnects mid-print: leftover queue_step messages
+// belong to the old clock domain and will fail with "Invalid sequence"
+// if flushed after reconnect.
+void __visible
+stepcompress_clear(struct stepcompress *sc)
+{
+    message_queue_free(&sc->msg_queue);
+    list_init(&sc->msg_queue);
+    free_history(sc, UINT64_MAX);
+    if (sc->queue)
+        sc->queue_pos = sc->queue_next = sc->queue;
+    sc->next_step_clock = 0;
+    sc->last_step_clock = 0;
+    sc->sdir = -1;
+    sc->last_position = 0;
+    if (sc->mcu_freq)
+        calc_last_step_print_time(sc);
+}
+
 // Reset the internal state of the stepcompress object
 int __visible
 stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock)

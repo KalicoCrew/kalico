@@ -273,7 +273,7 @@ class SerialReader:
             if ret:
                 break
 
-    def connect_uart(self, serialport, baud, rts=True):
+    def connect_uart(self, serialport, baud, rts=True, timeout=90.0):
         # Initial connection
         logging.info("%sStarting serial connect", self.warn_prefix)
         start_time = self.reactor.monotonic()
@@ -282,7 +282,7 @@ class SerialReader:
                 self.serialqueue is not None
             ):  # if we're already connected, don't recon
                 break
-            if self.reactor.monotonic() > start_time + 90.0:
+            if self.reactor.monotonic() > start_time + timeout:
                 self._error("Unable to connect")
             try:
                 serial_dev = serial.Serial(
@@ -301,6 +301,10 @@ class SerialReader:
             ret = self._start_session(serial_dev)
             if ret:
                 break
+            try:
+                serial_dev.close()
+            except Exception:
+                pass
 
     def check_connect(self, serialport, baud, rts=True):
         serial_dev = serial.Serial(baudrate=baud, timeout=0, exclusive=False)
@@ -368,7 +372,11 @@ class SerialReader:
                 self.handlers[name, oid] = callback
 
     def _check_noncritical_disconnected(self):
-        if self.mcu is not None and self.mcu.non_critical_disconnected:
+        if self.mcu is None:
+            return
+        if getattr(self.mcu, "_non_critical_reconnecting", False):
+            return
+        if self.mcu.non_critical_disconnected:
             self._error("non-critical MCU is disconnected")
 
     # Command sending

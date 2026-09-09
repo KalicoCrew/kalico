@@ -23,6 +23,10 @@ class MCU_buttons:
         self.invert = self.last_button = 0
         self.ack_cmd = None
         self.ack_count = 0
+        printer.register_event_handler(
+            mcu.get_non_critical_reconnect_event_name(),
+            self._handle_reconnect,
+        )
 
     def setup_buttons(self, pins, callback):
         mask = 0
@@ -63,6 +67,13 @@ class MCU_buttons:
         self.mcu.register_response(
             self.handle_buttons_state, "buttons_state", self.oid
         )
+
+    def _handle_reconnect(self):
+        # Firmware button ack counter restarts at 0 after MCU reset.
+        # A stale host ack_count drops every buttons_state as new_count<=0,
+        # which is why feed/retract/HALL buttons go dead after reconnect.
+        self.ack_count = 0
+        self.last_button = 0
 
     def handle_buttons_state(self, params):
         # Expand the message ack_count from 8-bit
