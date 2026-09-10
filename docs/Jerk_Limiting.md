@@ -207,6 +207,38 @@ Per-axis *input shaping* still differs: it filters each axis independently and s
 is not bound to a shared pulse at all, at the cost of operating post-hoc on the
 committed path.
 
+### Arc output
+
+Turn arcs on at both ends of the pipeline: arc fitting in the slicer, and
+`[gcode_arcs]` in `printer.cfg`.
+
+```
+[gcode_arcs]
+resolution: 1.0
+```
+
+`[gcode_arcs]` is **not** enabled by default. Without it a `G2`/`G3` from the
+slicer is an unknown command and the print aborts on the first curve, so if you
+switch arc fitting on, switch this on with it.
+
+It matters here for more than accepting the commands. Curved geometry sliced as
+sub-millimetre chords is the worst case for the notch law: anything turning more
+than `unified_span_max_angle` at *every* segment cannot be spanned and falls
+back to the per-move ceiling `v ~= f_n * segment_length` — at `f_n = 55`, about
+11 mm/s on 0.2 mm chords. Arc fitting collapses those chords into a single
+`G2`/`G3`, and `[gcode_arcs]` re-expands it at `resolution`, which makes the
+segment length that sets that ceiling a number chosen in `printer.cfg` rather
+than whatever chord tolerance the slicer happened to use. At `resolution: 1.0`
+the same curve ceilings at 55 mm/s instead; coarser values raise it
+proportionally.
+
+This is a different lever from spanning, and it does not help spanning — longer
+segments turn *more* per segment, not less. On a tight r=4 mm arc, 0.2 mm chords
+turn 2.87° per segment and 1 mm segments turn 14.4°, so neither spans at the 2°
+default; the gain is entirely in the per-move ceiling. On gentle curves 1 mm
+segments both span and carry a high ceiling, which is the case worth optimising
+for.
+
 ## Live tuning
 
 `SET_UNIFIED` changes the settings without a restart (moves already queued are
@@ -417,7 +449,9 @@ oversized smoothing window measures the window as much as the melt.
   Geometry that turns more than `unified_span_max_angle` at *every* segment
   cannot be spanned, and falls back to the per-move ceiling. Small arcs are the
   case that bites: an r=4 mm circle at 0.2 mm chords turns 2.87° per segment,
-  just past the default. Widening `unified_span_max_angle` to 3° recovers the
+  just past the default (emitting the arc as `G2`/`G3` and re-expanding it via
+  `[gcode_arcs]` raises the per-move ceiling instead — see
+  [Arc output](#arc-output)). Widening `unified_span_max_angle` to 3° recovers the
   full speed there for a residual of 0.0083 — 1.3x the emitter's own floor
   *when `unified_spectral_null` is off* — which is a far better trade than
   shaping those moves on the wrong frequency would be. With the null on there
