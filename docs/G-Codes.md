@@ -561,6 +561,14 @@ MOTION_QUEUE (as defined in an [extruder](Config_Reference.md#extruder)
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
 
+#### SET_NOZZLE_DIAMETER
+`SET_NOZZLE_DIAMETER [EXTRUDER=<config_name>] DIAMETER=<diameter>`:
+Set a new value for the nozzle diameter of the specified extruder
+(as defined in an [extruder](Config_Reference.md#extruder) config section).
+If EXTRUDER is not specified, it defaults to the active hotend.
+Changed settings are not retained on Klipper reset.
+
+
 ### [mixing_extruder]
 
 The following commands are available when a
