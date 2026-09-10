@@ -293,10 +293,11 @@ class RetrySession:
 
 
 class PrinterProbe:
-    def __init__(self, config, mcu_probe):
+    def __init__(self, config, mcu_probe, always_retract=False):
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.mcu_probe = mcu_probe
+        self.always_retract = always_retract
         self.speed = config.getfloat("speed", 5.0, above=0.0)
         self.retry_speed: float = config.getfloat(
             "retry_speed", self.speed, above=0.0
@@ -539,7 +540,10 @@ class PrinterProbe:
         )
 
     def run_probe(
-        self, gcmd: GCodeCommand, retry_session: Optional[RetrySession] = None
+        self,
+        gcmd: GCodeCommand,
+        retry_session: Optional[RetrySession] = None,
+        always_retract: Optional[bool] = None,
     ) -> list[float]:
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         sample_count = gcmd.get_int("SAMPLES", self.sample_count, minval=1)
@@ -551,6 +555,8 @@ class PrinterProbe:
         )
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
         must_notify_multi_probe = not self.multi_probe_pending
+        if always_retract is None:
+            always_retract = self.always_retract
         if must_notify_multi_probe:
             self.multi_probe_begin(always_restore_toolhead=True)
         # Initialize probe retry state
@@ -580,7 +586,7 @@ class PrinterProbe:
                 retries += 1
                 positions = []
             # Retract
-            if len(positions) < sample_count:
+            if len(positions) < sample_count or always_retract:
                 self._retract(gcmd)
         if must_notify_multi_probe:
             self.multi_probe_end()
@@ -707,7 +713,7 @@ class PrinterProbe:
         manual_probe.verify_no_manual_probe(self.printer)
         # Perform initial probe
         lift_speed = self.get_lift_speed(gcmd)
-        curpos = self.run_probe(gcmd)
+        curpos = self.run_probe(gcmd, always_retract=False)
         # Move away from the bed
         self.probe_calibrate_z = curpos[2]
         curpos[2] += 5.0
@@ -1021,7 +1027,9 @@ class ProbePointsHelper:
             done = self._move_next()
             if done:
                 break
-            pos = probe.run_probe(gcmd, self.retry_session)
+            pos = probe.run_probe(
+                gcmd, self.retry_session, always_retract=False
+            )
             logging.info(f"Probe pos:{pos}")
             self._store_probe_result(pos)
         probe.multi_probe_end()
