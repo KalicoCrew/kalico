@@ -503,8 +503,17 @@ def _rebuild_ramp(slices, accels):
     return out
 
 
-def _null_rows(slices, freqs):
-    """Equality rows and targets for solve_ramp_null. See it for the model."""
+def _null_rows(slices, freqs, dirs=None):
+    """Equality rows and targets for solve_ramp_null. See it for the model.
+
+    `dirs` turns the spectral rows PER-AXIS. Without it the rows describe the
+    scalar a(t), whose null transfers to every axis only while the axis ratios
+    are constant -- true on a straight run, false the moment one turns, which
+    is the whole reason spanning is angle limited. Given one unit vector per
+    slice, each mode instead contributes Re/Im rows per axis, scaled by that
+    slice's direction component. The unknowns do not change: there is still one
+    scalar acceleration per slice, and r_i[j] is a known coefficient.
+    """
     n = len(slices)
     dt = [s[0] for s in slices]
     a0 = [s[5] for s in slices]
@@ -536,14 +545,21 @@ def _null_rows(slices, freqs):
             c1, s1 = math.cos(w * edges[j + 1]), math.sin(w * edges[j + 1])
             re_row.append((s1 - s0) / w)
             im_row.append((c1 - c0) / w)
-        rows.append(re_row)
-        rows.append(im_row)
-        targets.append(0.0)
-        targets.append(0.0)
+        if dirs is None:
+            rows.append(re_row)
+            rows.append(im_row)
+            targets.append(0.0)
+            targets.append(0.0)
+            continue
+        for i in range(len(dirs[0])):
+            rows.append([dirs[j][i] * re_row[j] for j in range(n)])
+            rows.append([dirs[j][i] * im_row[j] for j in range(n)])
+            targets.append(0.0)
+            targets.append(0.0)
     return rows, targets, a0, dv
 
 
-def solve_ramp_null(slices, freqs, max_accel=None):
+def solve_ramp_null(slices, freqs, max_accel=None, dirs=None):
     """Re-solve slice accelerations so the emitted spectrum nulls at `freqs`.
 
     The ideal ramp is rect(1/f_hi) * rect(1/f_lo) in a(t), whose zeros sit on
@@ -578,7 +594,12 @@ def solve_ramp_null(slices, freqs, max_accel=None):
     Returns corrected slices, or None if rank deficient or too few slices.
     """
     n = len(slices)
-    m = 2 + 2 * len(freqs)
+    # Per-axis rows cost Re/Im for each axis instead of one Re/Im pair. On a
+    # straight run the axis rows are proportional and _factor_min_norm rejects
+    # the system as rank deficient -- correctly, since the scalar solve is
+    # already exact there and cheaper.
+    per_mode = 2 * (len(dirs[0]) if dirs else 1)
+    m = 2 + per_mode * len(freqs)
     if n <= m:
         return None
     # A zero or negative frequency has no spectral row to build -- the rows
@@ -586,7 +607,7 @@ def solve_ramp_null(slices, freqs, max_accel=None):
     # contract is that it returns None rather than raising.
     if any(f <= 0.0 for f in freqs):
         return None
-    rows, targets, a0, dv = _null_rows(slices, freqs)
+    rows, targets, a0, dv = _null_rows(slices, freqs, dirs)
     if abs(dv) <= 1e-12:
         return None
     # Slices already sitting on max_accel cannot move up. A saturated ramp
