@@ -315,6 +315,26 @@ struct tuner_state {
 
 static tuner_state tuner;
 
+enum class presence_status : uint8_t {
+    idle = 0,
+    running = 1,
+    done = 2,
+    failed = 3,
+};
+
+struct presence_oneshot {
+    presence_status status{presence_status::idle};
+    uint32_t ov_snapshot{0};
+    uint8_t tripped{0};
+};
+
+static presence_oneshot presence;
+
+static bool
+drive_timer_idle() {
+    return DRIVE_TCC->STATUS.bit.STOP || DRIVE_TCC->STATUS.bit.FAULT0;
+}
+
 // IRQ declarations and assert correct indices.
 
 static_assert(FEEDBACK_ADC_1_IRQn == 121);
@@ -1158,4 +1178,34 @@ coil_driver::report_params() {
     uint32_t off = state.period_minus_1 + 1 - on;
     sendf("indx_coil_driver_params time_on=%u time_off=%u time_on_first=%u",
           ticks_to_ns(on), ticks_to_ns(off), ticks_to_ns(state.on_ticks_first));
+}
+
+void
+coil_driver::start_coil_presence() {
+    if (presence.status == presence_status::running) {
+        return;
+    }
+    presence.tripped = 0;
+    if (tuner.active() || !state.timings_valid ||
+        state.pending_on_cycles != 0 || !drive_timer_idle()) {
+        presence.status = presence_status::failed;
+        return;
+    }
+    presence.ov_snapshot = state.overvoltage_count();
+    state.pending_on_cycles = 1;
+    state.arm_timer();
+    // Clear so the 512-cycle frame does not repeat after it STOPs.
+    state.pending_on_cycles = 0;
+    presence.status = presence_status::running;
+}
+
+void
+coil_driver::report_coil_presence() {
+    if (presence.status == presence_status::running && drive_timer_idle()) {
+        presence.tripped =
+            state.overvoltage_count() != presence.ov_snapshot ? 1 : 0;
+        presence.status = presence_status::done;
+    }
+    sendf("indx_coil_presence_result status=%c tripped=%c",
+          (uint32_t)presence.status, (uint32_t)presence.tripped);
 }

@@ -50,6 +50,14 @@ struct coil_driver {
     // Send the drive timings currently in effect to the host.
     void
     report_params();
+
+    // Fire one tuned first-cycle burst and latch whether COMP0 tripped.
+    void
+    start_coil_presence();
+
+    // Send the latched coil-presence outcome to the host.
+    void
+    report_coil_presence();
 };
 
 coil_driver

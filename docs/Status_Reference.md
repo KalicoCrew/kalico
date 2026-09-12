@@ -348,6 +348,11 @@ The following information is available in the
 - `last_dock_measurement`: The result of the last INDX_DOCK_MEASURE
   command (None if no measurement has been taken). It is a dictionary
   containing the keys `x`, `y`, `position` and `axis_order`.
+- `inductive_presence`: Whether a steel nozzle is coupled to the coil
+  (`present`, `absent`, or `unknown`). Updated from overvoltage trip
+  counts while the coil is driven, and by INDX_COIL_PRESENCE when idle.
+- `inductive_presence_age`: Seconds since the last presence update, or
+  None if presence is unknown.
 
 ## led
 
