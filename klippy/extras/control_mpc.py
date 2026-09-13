@@ -404,6 +404,14 @@ class MpcCalibrate:
             )
             logging.info("First pass: %s", first_res)
 
+            for key in (
+                "block_heat_capacity",
+                "sensor_responsiveness",
+                "ambient_transfer",
+            ):
+                if not math.isfinite(first_res[key]) or first_res[key] <= 0.0:
+                    raise gcmd.error("Invalid MPC calibration fit: %s" % key)
+
             profile = dict(self.orig_control.profile)
             for key in [
                 "block_heat_capacity",
@@ -666,13 +674,13 @@ class MpcCalibrate:
         return total_energy / total_time
 
     def fastest_rate(self, samples):
-        best = [-1, 0, 0]
+        best = [0, 0, -1]
         base_t = samples[0][0]
         for idx in range(2, len(samples)):
             dT = samples[idx][1] - samples[idx - 2][1]
             dt = samples[idx][0] - samples[idx - 2][0]
             rate = dT / dt
-            if rate > best[0]:
+            if rate > best[2]:
                 sample = samples[idx - 1]
                 best = [sample[0] - base_t, sample[1], rate]
         return best
@@ -727,13 +735,24 @@ class MpcCalibrate:
             or block_heat_capacity < 0
             or sensor_responsiveness < 0
         ):
-            fastest_rate = self.fastest_rate(samples)
+            # Differential tuning uses the full heat-up, with time measured
+            # from its start (not from the asymptotic fitting threshold).
+            fastest_rate = self.fastest_rate(all_samples)
+            if fastest_rate[2] <= 0.0:
+                raise self.printer.command_error(
+                    "Invalid differential MPC fit: no positive heating rate"
+                )
             block_heat_capacity = heater_power / fastest_rate[2]
-            sensor_responsiveness = fastest_rate[2] / (
+            sensor_lag_delta = (
                 fastest_rate[2] * fastest_rate[0]
-                + ambient_temp
-                - fastest_rate[0]
+                + start_temp
+                - fastest_rate[1]
             )
+            if sensor_lag_delta <= 0.0:
+                raise self.printer.command_error(
+                    "Invalid differential MPC fit: no positive sensor lag"
+                )
+            sensor_responsiveness = fastest_rate[2] / sensor_lag_delta
 
         heat_time = all_samples[-1][0] - all_samples[0][0]
         post_block_temp = asymp_T + (start_temp - asymp_T) * math.exp(
