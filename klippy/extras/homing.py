@@ -354,6 +354,8 @@ class Homing:
                         for rp, ad in zip(retractpos, axes_d)
                     ]
                     self.toolhead.set_position(startpos)
+                    self._set_homing_accel(hi.accel, pre_homing=True)
+                    self._set_homing_current(homing_axes, pre_homing=True)
                     self._reset_endstop_states(endstops)
 
                     hmove = HomingMove(self.printer, endstops)
