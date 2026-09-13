@@ -1,7 +1,7 @@
 import pathlib
 import typing
 
-from klippy_testing import PrinterShim
+from klippy_testing import InterruptTokenShim, PrinterShim
 
 import klippy.extras.heaters as heaters
 import klippy.gcode
@@ -35,7 +35,12 @@ def _make_pmgr(heater):
 
 def _gcmd(heater, params):
     return klippy.gcode.GCodeCommand(
-        heater.gcode, "PID_PROFILE", "PID_PROFILE", params, False
+        heater.gcode,
+        "PID_PROFILE",
+        "PID_PROFILE",
+        params,
+        False,
+        InterruptTokenShim(),
     )
 
 
@@ -103,6 +108,17 @@ class _FakeReactor:
         return 0.0
 
 
+class _FakePrinter:
+    def __init__(self, reactor):
+        self.reactor = reactor
+
+    def get_reactor(self):
+        return self.reactor
+
+    def is_shutdown(self):
+        return False
+
+
 class _FakeConfig:
     def getfloat(self, key, default=None, **kw):
         return {"inner_target_temp": 135.0}.get(key, default)
@@ -114,7 +130,8 @@ class _FakeConfig:
 class _FakeGCode:
     error = Exception
 
-    def __init__(self):
+    def __init__(self, printer):
+        self.printer = printer
         self.messages = []
 
     def respond_info(self, msg):
@@ -140,7 +157,7 @@ class _FakeDualLoopHeater:
     def __init__(self):
         self.reactor = _FakeReactor()
         self.config = _FakeConfig()
-        self.gcode = _FakeGCode()
+        self.gcode = _FakeGCode(_FakePrinter(self.reactor))
         self.configfile = _FakeConfigFile()
         self.smooth_time = 1.0
         self.target_temp = 0.0

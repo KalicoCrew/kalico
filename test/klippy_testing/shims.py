@@ -8,11 +8,26 @@ import klippy.gcode
 class Restart(Exception): ...
 
 
+class InterruptTokenShim:
+    def test(self):
+        return False
+
+    def check_interrupted(self):
+        return False
+
+    def wait(self, waketime=None):
+        return False
+
+    def wait_until(self, waketime=None, error_on_interrupt=True):
+        return False
+
+
 class PrinterShim:
     class GCode:
         error = Exception
 
-        def __init__(self):
+        def __init__(self, printer):
+            self.printer = printer
             self.ready_gcode_handlers = {}
 
         def register_command(self, cmd, func, *_, **__):
@@ -32,7 +47,12 @@ class PrinterShim:
             func = self.ready_gcode_handlers[command.upper()]
             params = dict(param.split("=", 1) for param in paramlist)
             gcmd = klippy.gcode.GCodeCommand(
-                self, command, cmdline, params, False
+                self,
+                command,
+                cmdline,
+                params,
+                False,
+                InterruptTokenShim(),
             )
             print("Calling", func, "with", params)
             func(gcmd)
@@ -40,7 +60,7 @@ class PrinterShim:
     def __init__(self, start_args):
         self.start_args = start_args
         self.objects = {}
-        self.add_object("gcode", self.GCode())
+        self.add_object("gcode", self.GCode(self))
         self.add_object("configfile", klippy.configfile.PrinterConfig(self))
 
         self.call = self.lookup_object("gcode").call
