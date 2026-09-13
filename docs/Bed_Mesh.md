@@ -57,6 +57,24 @@ probe_count: 5, 3
   as a single integer value that is used for both axes, ie `probe_count: 3`.
   Note that a mesh requires a minimum probe_count of 3 along each axis.
 
+### Automatic mesh bounds
+
+If `bed_size` and `bed_corner_position` are defined in the `[printer]`
+section, then `mesh_min` and `mesh_max` can be automatically calculated.
+The calculated mesh will be the largest reachable rectangular area on the
+bed, respecting the probe's offsets and any configured edge distance.
+The `bed_corner_position` (as a nozzle coordinate) can be set to the true
+physical location of the bed, even if that point is unreachable by the
+nozzle or probe (i.e. outside the axis limits). Kalico will automatically
+adjust the mesh to stay within the printer's reachable area.
+
+Note that if `mesh_min` or `mesh_max` are explicitly defined in the
+`[bed_mesh]` section, those values will take precedence over the
+automatically calculated ones.
+
+Automatic calculation is currently only supported for rectangular
+kinematics systems.
+
 The illustration below demonstrates how the `mesh_min`, `mesh_max`, and
 `probe_count` options are used to generate probe points.  The arrows indicate
 the direction of the probing procedure, beginning at `mesh_min`.  For reference,

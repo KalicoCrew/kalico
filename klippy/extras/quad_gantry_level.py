@@ -3,8 +3,11 @@
 # Copyright (C) 2018  Maks Zolin <mzolin@vorondesign.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import logging
 
+from ..printer_info import PrinterInfo
 from . import probe, z_tilt
 
 # Leveling code for XY rails that are controlled by Z steppers as in:
@@ -25,6 +28,8 @@ from . import probe, z_tilt
 
 
 class QuadGantryLevel:
+    points: list[tuple[float, float] | None]
+
     def __init__(self, config):
         self.printer = config.get_printer()
         self.retry_helper = z_tilt.RetryHelper(
@@ -32,7 +37,17 @@ class QuadGantryLevel:
         )
         self.max_adjust = config.getfloat("max_adjust", 4, above=0)
         self.horizontal_move_z = config.getfloat("horizontal_move_z", 5.0)
-        self.probe_helper = probe.ProbePointsHelper(config, self.probe_finalize)
+
+        default_points = None
+        if config.get("points", None) is None:
+            default_points = [None] * 4
+            self.printer.register_event_handler(
+                "klippy:connect", self._update_gantry_level_points
+            )
+
+        self.probe_helper = probe.ProbePointsHelper(
+            config, self.probe_finalize, default_points=default_points
+        )
         if len(self.probe_helper.probe_points) != 4:
             raise config.error(
                 "Need exactly 4 probe points for quad_gantry_level"
@@ -53,6 +68,48 @@ class QuadGantryLevel:
             self.cmd_QUAD_GANTRY_LEVEL,
             desc=self.cmd_QUAD_GANTRY_LEVEL_help,
         )
+
+    def _update_gantry_level_points(self) -> list[tuple[float, float]]:
+        if None not in self.probe_helper.probe_points:
+            return self.probe_helper.probe_points
+
+        # This is only called if the user did not specify probe points in the config,
+        # these are then inferred from the mesh:
+        printer_info: PrinterInfo = self.printer.lookup_object("printer_info")
+
+        # TODO: Should the aspect ratio calculation be optional?
+        # Calculate the target aspect ratio based on the gantry corners:
+        x_width = abs(self.gantry_corners[0][0] - self.gantry_corners[1][0])
+        y_width = abs(self.gantry_corners[0][1] - self.gantry_corners[1][1])
+
+        # The get_mesh_bounds handles a missing probe by using 0, 0 as the offset.
+        # This would be a problem with quad_gantry_level with the points so close to the edge.
+        #
+        # To prevent a silent failure, an explicit error is raised here:
+        if self.printer.lookup_object("probe", None) is None:
+            raise self.printer.config_error(
+                "quad_gantry_level requires a probe to be defined"
+            )
+
+        mesh_min, mesh_max = printer_info.get_mesh_bounds(
+            mesh_min=None,
+            mesh_max=None,
+            use_offsets=self.probe_helper.use_offsets,
+            error=self.printer.config_error,
+            target_aspect_ratio=x_width / y_width if y_width != 0 else None,
+        )
+
+        self.probe_helper.update_probe_points(
+            [
+                (mesh_min[0], mesh_min[1]),  # Front-left
+                (mesh_min[0], mesh_max[1]),  # Back-left
+                (mesh_max[0], mesh_max[1]),  # Back-right
+                (mesh_max[0], mesh_min[1]),  # Front-right
+            ],
+            4,
+        )
+
+        return self.probe_helper.probe_points
 
     cmd_QUAD_GANTRY_LEVEL_help = (
         "Conform a moving, twistable gantry to the shape of a stationary bed"

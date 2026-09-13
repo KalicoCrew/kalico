@@ -40,6 +40,10 @@ This command will calibrate the X-axis by default.
 SAMPLE_COUNT=<value>
 ``
 
+If `bed_size` and `bed_corner_position` are defined in the `[printer]`
+section, the calibration points will be automatically calculated to cover
+the largest reachable area of the bed.
+
 2. **Adjust Your Z Offset:**
 After completing the calibration, be sure to
 [adjust your Z offset](Probe_Calibrate.md#calibrating-probe-z-offset).

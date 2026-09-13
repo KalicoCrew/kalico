@@ -1,0 +1,17 @@
+# Test case for automatic offset based on printer properties
+CONFIG auto_mesh_offset.cfg
+DICTIONARY stm32h723.dict
+
+G28
+
+BED_MESH_CALIBRATE
+
+QUAD_GANTRY_LEVEL
+
+AXIS_TWIST_COMPENSATION_CALIBRATE AXIS=X
+
+ACCEPT
+
+AXIS_TWIST_COMPENSATION_CALIBRATE AXIS=Y
+
+ACCEPT
