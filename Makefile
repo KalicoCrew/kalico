@@ -139,7 +139,7 @@ $(KCONFIG_CONFIG) olddefconfig: src/Kconfig
 	$(Q)$(PYTHON) lib/kconfiglib/olddefconfig.py src/Kconfig
 
 menuconfig:
-	$(Q)$(PYTHON) lib/kconfiglib/menuconfig.py src/Kconfig
+	$(Q)$(PYTHON) scripts/kconfig.py menuconfig src/Kconfig
 
 ################ Generic rules
 
