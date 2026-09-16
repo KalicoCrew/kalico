@@ -8,7 +8,7 @@ import math
 
 from klippy import mcu
 
-from . import ldc1612, manual_probe, probe
+from . import manual_probe, probe
 
 
 # Tool for calibrating the sensor Z detection and applying that calibration
@@ -376,7 +376,7 @@ class PrinterEddyProbe:
         self.printer = config.get_printer()
         self.calibration = EddyCalibration(config)
         # Sensor type
-        sensors = {"ldc1612": ldc1612.LDC1612}
+        sensors = self.printer.lookup_components("eddy_current_sensors")
         sensor_type = config.getchoice("sensor_type", {s: s for s in sensors})
         self.sensor_helper = sensors[sensor_type](config, self.calibration)
         # Probe interface
