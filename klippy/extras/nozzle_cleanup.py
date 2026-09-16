@@ -6,7 +6,12 @@
 
 from klippy import Printer
 from klippy.configfile import ConfigWrapper
-from klippy.extras.probe import GcodeNozzleScrubber, PrinterProbe, RetryPolicy
+from klippy.extras.probe import (
+    GcodeNozzleScrubber,
+    PrinterProbe,
+    ProbeList,
+    RetryPolicy,
+)
 from klippy.gcode import GCodeCommand, GCodeDispatch
 from klippy.toolhead import ToolHead
 
@@ -21,9 +26,7 @@ class NozzleCleanupOptions:
     pattern_x: int
     pattern_y: int
 
-    def __init__(self, config: ConfigWrapper):
-        printer: Printer = config.get_printer()
-        probe: PrinterProbe = printer.lookup_object("probe")
+    def __init__(self, probe: PrinterProbe, config: ConfigWrapper):
         self._cfg_probe_speed = config.getfloat("speed", probe.speed, above=0.0)
         self._cfg_lift_speed = config.getfloat(
             "lift_speed", probe.lift_speed, above=0.0
@@ -105,7 +108,10 @@ class NozzleCleanup:
             self.cmd_NOZZLE_CLEANUP,
             desc=self.cmd_NOZZLE_CLEANUP_help,
         )
-        self.options = NozzleCleanupOptions(config)
+        self.probe: PrinterProbe = ProbeList.get_list(
+            self.printer
+        ).get_config_probe(config)
+        self.options = NozzleCleanupOptions(self.probe, config)
         self.retry_policy: RetryPolicy = RetryPolicy(config)
         self.nozzle_scrubber: GcodeNozzleScrubber = GcodeNozzleScrubber(config)
 
@@ -113,7 +119,7 @@ class NozzleCleanup:
         return self.printer.lookup_object("toolhead")
 
     def _get_probe(self) -> PrinterProbe:
-        return self.printer.lookup_object("probe")
+        return self.probe
 
     def horizontal_move(self, pos: tuple[float, float]):
         self._get_toolhead().manual_move(
