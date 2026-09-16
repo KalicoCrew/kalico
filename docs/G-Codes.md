@@ -1561,7 +1561,7 @@ The following commands are available when a
 see the [probe calibrate guide](Probe_Calibrate.md)).
 
 #### PROBE
-`PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE [PROBE=<name>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
 [SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]
 [BAD_PROBE_STRATEGY=<FAIL|IGNORE|RETRY|CIRCLE>] [BAD_PROBE_RETRIES=<count>]
@@ -1570,6 +1570,8 @@ Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
 - `HOME`: Set the value `z` to home the z axis from the probe result
+- `PROBE`: Name of probe to use for this operation. Leave out to use the 
+  default probe.
 The following optional parameters control probe quality handling (for probes
 that support quality detection): ⚠️
 - `BAD_PROBE_STRATEGY`: Strategy to use when a bad probe is detected.
@@ -1580,19 +1582,22 @@ that support quality detection): ⚠️
 - `PATTERN_SPACING`: Spacing (in mm) for the circular retry pattern when
   using CIRCLE strategy.
 
+#### LIST_PROBES
+`LIST_PROBES`: List the registered probes.
+
 #### QUERY_PROBE
-`QUERY_PROBE`: Report the current status of the probe ("triggered" or
+`QUERY_PROBE [PROBE=<name>]`: Report the current status of the probe ("triggered" or
 "open").
 
 #### PROBE_ACCURACY
-`PROBE_ACCURACY [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE_ACCURACY [PROBE=<name>] [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum, average,
 median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.
 
 #### PROBE_CALIBRATE
-`PROBE_CALIBRATE [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
+`PROBE_CALIBRATE [PROBE=<name>] [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
 helper script useful for calibrating the probe's z_offset. See the
 PROBE command for details on the optional probe parameters. See the
 MANUAL_PROBE command for details on the SPEED parameter and the
@@ -1601,7 +1606,7 @@ the PROBE_CALIBRATE command uses the speed variable to move in XY
 direction as well as Z.
 
 #### Z_OFFSET_APPLY_PROBE
-`Z_OFFSET_APPLY_PROBE`: Take the current Z Gcode offset (aka,
+`Z_OFFSET_APPLY_PROBE [PROBE=<name>]`: Take the current Z Gcode offset (aka,
 babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.

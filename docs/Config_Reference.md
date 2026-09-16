@@ -2483,12 +2483,13 @@ pins:
 Z height probe. One may define this section to enable Z height probing
 hardware. When this section is enabled, PROBE and QUERY_PROBE extended
 [g-code commands](G-Codes.md#probe) become available. Also, see the
-[probe calibrate guide](Probe_Calibrate.md). The probe section also
-creates a virtual "probe:z_virtual_endstop" pin. One may set the
-stepper_z endstop_pin to this virtual pin on cartesian style printers
-that use the probe in place of a z endstop. If using
-"probe:z_virtual_endstop" then do not define a position_endstop in the
-stepper_z config section.
+[probe calibrate guide](Probe_Calibrate.md). The probe section, and all
+other probe types, also create virtual endstops by the name of
+`<probe name>:z_virtual_endstop`. The default probe additionally registers
+itself as `probe:z_virtual_endstop`. One may set the stepper_z endstop_pin
+to such a virtual pin on cartesian style printers that use the probe in
+place of a z endstop. If using "probe:z_virtual_endstop" then do not define
+a position_endstop in the stepper_z config section.
 
 ```
 [probe]
@@ -2536,6 +2537,11 @@ z_offset:
 #   not obtained in the given number of retries then an error is
 #   reported. The default is zero which causes an error to be reported
 #   on the first sample that exceeds samples_tolerance.
+#register_as_probe: True
+#   If this probe should be automatically registered as the default one.
+#   Defaults to true. When using multiple probes, only a single probe is
+#   allowed to register as the default, and all other probe configuration
+#   blocks must set this to false.
 #activate_gcode:
 #   A list of G-Code commands to execute prior to each probe attempt.
 #   See docs/Command_Templates.md for G-Code format. This may be
@@ -2582,6 +2588,14 @@ z_offset:
 #   after every Nth bad probe. 1 will run the scrubber after every bad probe.
 #   0 will disable scrubbing. The default is 0.
 ```
+
+It is also possible to create named probes.
+```
+[probe named_probe]
+# All options from [probe] are accepted.
+```
+At most one probe may set `register_as_probe: True`. If an unnamed `[probe]`
+is present, no other probe may set `register_as_probe: True`.
 
 ### [nozzle_cleanup]
 
@@ -2665,6 +2679,7 @@ control_pin:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -2775,6 +2790,7 @@ detach_position: 0,0,0
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "probe" section for information on these parameters.
@@ -2828,6 +2844,7 @@ z_offset:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #deactivate_on_each_sample:
@@ -2871,6 +2888,7 @@ sensor_type: ldc1612
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -6203,6 +6221,7 @@ sensor_type:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "[probe]" section for a description of the above parameters.

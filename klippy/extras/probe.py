@@ -10,7 +10,7 @@ import math
 from enum import IntEnum
 from typing import Optional, Union
 
-from klippy import Printer, pins
+from klippy import Printer, configfile, pins
 from klippy.configfile import ConfigWrapper
 from klippy.extras.gcode_macro import Template
 from klippy.gcode import GCodeCommand
@@ -292,10 +292,106 @@ class RetrySession:
         self.retry_policy.bad_probe_strategy = retry_strategy
 
 
+class sentinel:
+    pass
+
+
+class ProbeList:
+    @staticmethod
+    def get_list(printer: Printer) -> ProbeList:
+        probes = printer.lookup_object("probe_list", None)
+        if probes is None:
+            probes = ProbeList(printer)
+            printer.add_object("probe_list", probes)
+        return probes
+
+    def __init__(self, printer):
+        self.probes: dict[str, PrinterProbe] = {}
+        self.default_probe = None
+        gcode = printer.lookup_object("gcode")
+        gcode.register_command(
+            "LIST_PROBES", self.cmd_LIST_PROBES, desc=self.cmd_LIST_PROBES_help
+        )
+
+    def get_status(self, eventtime):
+        return {
+            "probes": list(self.probes.keys()),
+            "default_probe": self.default_probe and self.default_probe[0],
+        }
+
+    def get_all(self):
+        return self.probes
+
+    def get_probe(self, name) -> PrinterProbe | None:
+        return self.probes.get(name, None)
+
+    def get_default_probe(self) -> PrinterProbe | None:
+        return self.default_probe and self.default_probe[1]
+
+    def get_command_probe(
+        self,
+        gcmd,
+        default=sentinel,
+        no_default_error="No default probe registered, explicitly select probe by passing `PROBE=`",
+    ) -> PrinterProbe:
+        requested_probe = gcmd.get("PROBE", None)
+        if requested_probe is not None:
+            if requested_probe in self.probes:
+                return self.probes[requested_probe]
+            else:
+                raise gcmd.error(f"Unknown requested probe {requested_probe}")
+        else:
+            if self.default_probe is None and default is sentinel:
+                raise gcmd.error(no_default_error)
+            return (self.default_probe and self.default_probe[1]) or default
+
+    def get_config_probe(self, config, default=sentinel) -> PrinterProbe:
+        probe_name = config.get("probe", None)
+        probe = None
+        if probe_name is None:
+            probe = self.get_default_probe()
+        else:
+            probe = self.get_probe(probe_name)
+        if probe is None and default is sentinel:
+            if probe_name is None:
+                raise configfile.error("No default probe available")
+            else:
+                raise configfile.error(
+                    f"Requested probe {probe_name} couldn't be found"
+                )
+        return probe or default
+
+    def add_probe_object(self, obj, config):
+        if obj.probe_name in self.probes:
+            raise config.error(f"Duplicate probe name {obj.probe_name}")
+        if obj.is_default_probe:
+            # If we allow a [probe] config section together with a different default probe, the
+            # loader might ignore the true [probe] section entirely.
+            if config.get_name() != "probe" and config.has_section("probe"):
+                raise config.error(
+                    "Having a [probe] section together with another probe marked `register_as_probe: True` is not supported"
+                )
+            # The default probe gets registered as "probe" for compatibility with external plugins.
+            obj.printer.add_object("probe", obj)
+            self.default_probe = (obj.probe_name, obj)
+        self.probes[obj.probe_name] = obj
+        return obj
+
+    cmd_LIST_PROBES_help = "List all registered probes"
+
+    def cmd_LIST_PROBES(self, gcmd: GCodeCommand):
+        gcmd.respond_info("Registered probes:")
+        for key, probe in self.probes.items():
+            gcmd.respond_info(
+                f"- {key}{' [default]' if probe.is_default_probe else ''}"
+            )
+
+
 class PrinterProbe:
     def __init__(self, config, mcu_probe):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.probe_name = self.name.split(" ")[-1]
         self.mcu_probe = mcu_probe
         self.speed = config.getfloat("speed", 5.0, above=0.0)
         self.retry_speed: float = config.getfloat(
@@ -340,7 +436,12 @@ class PrinterProbe:
             "samples_tolerance_retries", 0, minval=0
         )
         # Register z_virtual_endstop pin
-        self.printer.lookup_object("pins").register_chip("probe", self)
+        self.is_default_probe = config.getboolean("register_as_probe", True)
+        ppins = self.printer.lookup_object("pins")
+        ppins.register_chip(self.probe_name, self)
+        if self.is_default_probe and self.probe_name != "probe":
+            ppins.register_chip("probe", self)
+        ProbeList.get_list(self.printer).add_probe_object(self, config)
         # Register homing event handlers
         self.printer.register_event_handler(
             "homing:homing_move_begin", self._handle_homing_move_begin
@@ -359,24 +460,39 @@ class PrinterProbe:
         )
         # Register PROBE/QUERY_PROBE commands
         self.gcode = self.printer.lookup_object("gcode")
-        self.gcode.register_command(
-            "PROBE", self.cmd_PROBE, desc=self.cmd_PROBE_help
+        self.register_commands(self.probe_name)
+        if self.is_default_probe:
+            self.register_commands(None)
+
+    def register_commands(self, key):
+        self.gcode.register_mux_command(
+            "PROBE", "PROBE", key, self.cmd_PROBE, desc=self.cmd_PROBE_help
         )
-        self.gcode.register_command(
-            "QUERY_PROBE", self.cmd_QUERY_PROBE, desc=self.cmd_QUERY_PROBE_help
+        self.gcode.register_mux_command(
+            "QUERY_PROBE",
+            "PROBE",
+            key,
+            self.cmd_QUERY_PROBE,
+            desc=self.cmd_QUERY_PROBE_help,
         )
-        self.gcode.register_command(
+        self.gcode.register_mux_command(
             "PROBE_CALIBRATE",
+            "PROBE",
+            key,
             self.cmd_PROBE_CALIBRATE,
             desc=self.cmd_PROBE_CALIBRATE_help,
         )
-        self.gcode.register_command(
+        self.gcode.register_mux_command(
             "PROBE_ACCURACY",
+            "PROBE",
+            key,
             self.cmd_PROBE_ACCURACY,
             desc=self.cmd_PROBE_ACCURACY_help,
         )
-        self.gcode.register_command(
+        self.gcode.register_mux_command(
             "Z_OFFSET_APPLY_PROBE",
+            "PROBE",
+            key,
             self.cmd_Z_OFFSET_APPLY_PROBE,
             desc=self.cmd_Z_OFFSET_APPLY_PROBE_help,
         )
@@ -974,13 +1090,20 @@ class ProbePointsHelper:
         toolhead.manual_move(self._next_pos(), self.speed)
         return False
 
-    def start_probe(self, gcmd):
+    def start_probe(self, gcmd: GCodeCommand):
         self.retry_session.start(gcmd)
         self.retry_session.reset_all()
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
-        probe = self.printer.lookup_object("probe", None)
+        plist = ProbeList.get_list(self.printer)
+        probe = plist.get_command_probe(gcmd, None)
         method = gcmd.get("METHOD", "automatic").lower()
+        if method != "manual" and (probe is None and plist.get_all()):
+            raise gcmd.error(
+                "No default probe, but named probes are available. "
+                "Either select a probe with PROBE= or use METHOD=manual "
+                "to enter manual probing mode."
+            )
         if method == "rapid_scan":
             gcmd.respond_info(
                 "METHOD=rapid_scan not supported, using automatic"
@@ -1044,3 +1167,7 @@ class ProbePointsHelper:
 
 def load_config(config):
     return PrinterProbe(config, ProbeEndstopWrapper(config))
+
+
+def load_config_prefix(config):
+    return load_config(config)
