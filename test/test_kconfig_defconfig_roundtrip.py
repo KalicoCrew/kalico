@@ -85,3 +85,30 @@ def test_handlekconfig_accepts_a_real_all_defaults_board_config(tmp_path):
     data = {}
     handler.update_data_dictionary(data)
     assert data == {"kconfig": defconfig_path.read_text()}
+
+
+@pytest.mark.parametrize(
+    "low_level, custom, expected",
+    [(0, None, "rp2040"), (2, None, "rp2040"), (2, "INDX", "INDX")],
+)
+def test_usb_product_follows_mcu_across_arch_switch(
+    low_level, custom, expected, tmp_path
+):
+    # A .config saved for one USB MCU and reused for another must not
+    # keep the old MCU name as the USB product, while an explicit custom
+    # product must survive the switch (issue #970).
+    config_path = str(tmp_path / ".config")
+    kconf = kconfiglib.Kconfig(KCONFIG, suppress_traceback=True)
+    kconf.syms["LOW_LEVEL_OPTIONS"].set_value(low_level)
+    kconf.syms["MACH_STM32"].set_value(2)
+    kconf.syms["MACH_STM32F446"].set_value(2)
+    if custom is not None:
+        kconf.syms["USB_PRODUCT_FROM_MCU"].set_value(0)
+        kconf.syms["USB_PRODUCT"].set_value(custom)
+    kconf.write_config(config_path, save_old=False)
+
+    kconf = kconfiglib.Kconfig(KCONFIG, suppress_traceback=True)
+    kconf.load_config(config_path)
+    kconf.syms["MACH_RPXXXX"].set_value(2)
+    kconf.syms["MACH_RP2040"].set_value(2)
+    assert kconf.syms["USB_PRODUCT"].str_value == expected
