@@ -22,6 +22,9 @@ class SerialReader:
         self.reactor = reactor
         self.warn_prefix = warn_prefix
         self.mcu = mcu
+        mcu_name = mcu.get_name() if mcu is not None else ""
+        sq_name = ("serialq %s" % (mcu_name,))[:15]
+        self.sq_name = sq_name.encode("utf-8")
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
@@ -95,7 +98,7 @@ class SerialReader:
         self.serial_dev = serial_dev
         self.serialqueue = self.ffi_main.gc(
             self.ffi_lib.serialqueue_alloc(
-                serial_dev.fileno(), serial_fd_type, client_id
+                serial_dev.fileno(), serial_fd_type, client_id, self.sq_name
             ),
             self.ffi_lib.serialqueue_free,
         )
@@ -317,7 +320,9 @@ class SerialReader:
         self.serial_dev = debugoutput
         self.msgparser.process_identify(dictionary, decompress=False)
         self.serialqueue = self.ffi_main.gc(
-            self.ffi_lib.serialqueue_alloc(self.serial_dev.fileno(), b"f", 0),
+            self.ffi_lib.serialqueue_alloc(
+                self.serial_dev.fileno(), b"f", 0, self.sq_name
+            ),
             self.ffi_lib.serialqueue_free,
         )
 
