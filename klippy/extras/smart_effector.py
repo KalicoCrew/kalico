@@ -177,7 +177,5 @@ class SmartEffectorEndstopWrapper:
 
 def load_config(config):
     smart_effector = SmartEffectorEndstopWrapper(config)
-    config.get_printer().add_object(
-        "probe", probe.PrinterProbe(config, smart_effector)
-    )
+    probe.PrinterProbe(config, smart_effector)
     return smart_effector
