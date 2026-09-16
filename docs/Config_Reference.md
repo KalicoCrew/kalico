@@ -2613,7 +2613,8 @@ quality detection, such as the [load_cell_probe](#load_cell_probe).
 #   Number of probe locations along the X axis. Can be negative. Default is 10.
 #pattern_y: 4
 #   Number of probe locations along the Y axis. Can be negative. Default is 4.
-#
+#probe:
+#   Probe to use, if not the default probe.
 #These config values are inherited from [probe] if not specified:
 #speed:
 #lift_speed:
