@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260914: The firmware "USB product" string now follows the selected
+MCU unless "USB product from MCU name" is disabled in the low-level
+"USB ids" menu of `make menuconfig`. A custom USB product set in an
+existing `.config` may need to be re-entered after disabling that option.
+
 20260201: The manual_stepper `STOP_ON_ENDSTOP` feature may now take
 less time to complete. Previously, the command would wait the entire
 time the move could possibly take even if the endstop triggered

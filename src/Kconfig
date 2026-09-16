@@ -78,6 +78,9 @@ config USB_SERIAL_NUMBER
     default "12345"
 config USB_MANUFACTURER
     default "Klipper"
+config USB_PRODUCT_FROM_MCU
+    depends on USB
+    default y
 config USB_PRODUCT
     depends on USB
     default MCU
@@ -106,8 +109,10 @@ config USB_SERIAL_NUMBER
     string "USB serial number" if !USB_SERIAL_NUMBER_CHIPID
 config USB_MANUFACTURER
     string "USB manufacturer"
+config USB_PRODUCT_FROM_MCU
+    bool "USB product from MCU name"
 config USB_PRODUCT
-    string "USB product"
+    string "USB product" if !USB_PRODUCT_FROM_MCU
 endmenu
 
 menu "CAN bus UUID"
