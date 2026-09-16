@@ -5,6 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
+from klippy.printer import SubsystemComponentCollection
+
 from . import bulk_sensor, bus
 
 MIN_MSG_TIME = 0.100
@@ -258,3 +260,7 @@ class LDC1612:
             "errors": self.last_error_count,
             "overflows": self.ffreader.get_last_overflows(),
         }
+
+
+def register_components(subsystem: SubsystemComponentCollection):
+    subsystem.register_component("eddy_current_sensors", "ldc1612", LDC1612)
