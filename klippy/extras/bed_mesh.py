@@ -622,9 +622,9 @@ class BedMeshCalibrate:
 
     def print_generated_points(self, print_func, truncate=False):
         x_offset = y_offset = 0.0
-        probe = self.printer.lookup_object("probe", None)
-        if probe is not None:
-            x_offset, y_offset = probe.get_offsets()[:2]
+        pprobe = probe.ProbeList.get_list(self.printer).get_default_probe()
+        if pprobe is not None:
+            x_offset, y_offset = pprobe.get_offsets()[:2]
         print_func(
             "bed_mesh: generated points\nIndex |  Tool Adjusted  |   Probe"
         )
