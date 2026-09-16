@@ -6,6 +6,8 @@
 
 import math
 
+from klippy.extras.probe import ProbeList
+
 from . import bed_mesh, manual_probe
 
 DEFAULT_SAMPLE_COUNT = 3
@@ -140,9 +142,6 @@ class Calibrater:
             None,
             None,
         )
-        self.printer.register_event_handler(
-            "klippy:connect", self._handle_connect
-        )
         self.speed = compensation.speed
         self.horizontal_move_z = compensation.horizontal_move_z
         self.x_start_point = (
@@ -169,15 +168,6 @@ class Calibrater:
         # register gcode handlers
         self._register_gcode_handlers()
 
-    def _handle_connect(self):
-        self.probe = self.printer.lookup_object("probe", None)
-        if self.probe is None:
-            raise self.printer.config_error(
-                "AXIS_TWIST_COMPENSATION requires [probe] to be defined"
-            )
-        self.lift_speed = self.probe.get_lift_speed()
-        self.probe_x_offset, self.probe_y_offset, _ = self.probe.get_offsets()
-
     def _register_gcode_handlers(self):
         # register gcode handlers
         self.gcode = self.printer.lookup_object("gcode")
@@ -194,6 +184,10 @@ class Calibrater:
     """
 
     def cmd_AXIS_TWIST_COMPENSATION_CALIBRATE(self, gcmd):
+        self.probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
+        self.lift_speed = self.probe.get_lift_speed()
+        self.probe_x_offset, self.probe_y_offset, _ = self.probe.get_offsets()
+
         self.gcmd = gcmd
         sample_count = gcmd.get_int("SAMPLE_COUNT", DEFAULT_SAMPLE_COUNT)
         axis = gcmd.get("AXIS", "X")
