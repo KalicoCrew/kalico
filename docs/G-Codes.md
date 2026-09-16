@@ -2324,9 +2324,9 @@ automatically upon homing.
 The following commands are available when a
 [z_calibration config section](Config_Reference.md#z_calibration) is enabled
 (also see the [Z-Calibration guide](Z_Calibration.md)):
-- `CALIBRATE_Z`: This calibrates the current offset between the nozzle and
+- `CALIBRATE_Z [PROBE=<probe>]`: This calibrates the current offset between the nozzle and
   the print surface.
-- `PROBE_Z_ACCURACY [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
+- `PROBE_Z_ACCURACY [PROBE=<probe>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
   [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum,
   average, median, and standard deviation of multiple probe
   samples. By default, 10 SAMPLES are taken. Otherwise the optional
