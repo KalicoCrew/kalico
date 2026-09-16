@@ -2722,6 +2722,10 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20260914: The firmware "USB product" string now follows the selected
+MCU unless "USB product from MCU name" is disabled in the low-level
+"USB ids" menu of <code>make menuconfig</code>. A custom USB product set in an
+existing <code>.config</code> may need to be re-entered after disabling that option.</p>
 <p>20260201: The manual_stepper <code>STOP_ON_ENDSTOP</code> feature may now take
 less time to complete. Previously, the command would wait the entire
 time the move could possibly take even if the endstop triggered
