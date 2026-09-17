@@ -237,6 +237,93 @@ Load cell probes support homing the Z axis. Homing is less accurate than probing
 PROBE HOME=Z
 ```
 
+### Calibration
+
+Load cell probes support automated calibrations with the `LOAD_CELL_PROBE_CALIBRATE` command (([docs](G-Codes.md#load_cell_probe_calibrate))). These calibration tools probe a bed mesh or move the Z axis and analyze the results to determine optimal settings. All calibrations use the same mesh points as `BED_MESH_CALIBRATE` and save parameters for the current session (use `SAVE_CONFIG` to persist).
+
+#### Drift Filter Calibration
+
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`
+
+Calibrates the drift filter cutoff frequency. The drift filter removes slow force changes caused by bowden tube movement during probing, keeping the signal centered on zero.
+
+**Prerequisites:** This feature requires the SciPy library. See [Installing SciPy](#installing-scipy).
+
+The calibration moves from maximum Z to `horizontal_move_z` at each mesh point, recording force data. It tests increasing filter frequencies until drift is eliminated, then returns the lowest frequency that works at all positions.
+
+**Hints**
+* If the probe triggers early, before touching the bed, this is probably the reason why.
+* If the machine cannot complete Z homing, you can manually home it and run this calibration.
+* This calibration can be slow. Using fewer mesh points can speed things up and still give usable results, e.g. `PROBE_COUNT=3,3`. All [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
+
+**Example output:**
+```
+// Minimum drift filter cutoff: 5.2Hz
+// drift_filter_cutoff_frequency=5.2
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+```
+
+**Normal range:** 1-20Hz. Lower values indicate minimal drift, higher values suggest more bowden movement.
+
+**Partial failures:** If some positions exceed the 20Hz limit, the calibration uses the highest successful frequency but warns. This may still be usable if only a few positions failed.
+
+**Troubleshooting:**
+If the calibration fails, look at the bowden tube motion during the calibration. Bowden tube routing should minimize snagging and sudden shaking.
+
+**Re-calibrate when:**
+- Bowden tube routing changes
+- Experiencing probe failures when probing from max Z
+
+#### Pullback Distance Calibration
+
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=PULLBACK_DISTANCE`
+
+Optimizes the `pullback_distance` parameter for faster probing. The default is conservative; calibration may reduce it based on the probes measured decompression behavior. The calibration probes a bed mesh and measures the decompression distance at each point (Z travel from decompression start to contact break). It calculates a safe minimum: `(mean + 3σ) × 2.0`. It accepts all [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
+
+**Example output:**
+```
+// Decompression Distance: mean=0.0607mm, min=0.0498mm, max=0.0758mm, std=0.0080mm
+// pullback_distance=0.1693
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+```
+
+The most likely cause of a high standard deviation is contamination on the nozzle. Make sure the nozzle is clean prior to running the calibration. Another likely cause is a "springy" bed. If the bed flexes significantly during probing it may not be suitable for a load cell probe.
+
+Re-calibrate when changes are made to `probe_speed` or `trigger_force`, these affect overshoot which determines the required pullback distance.
+
+#### Decompression Angle Calibration
+
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DECOMPRESSION_ANGLE` ([docs](G-Codes.md#load_cell_probe_calibrate))
+
+Enables and calibrates tap quality checking. This detects nozzle ooze during probing by comparing tap geometry to a clean baseline. See [Tap Quality Components](#tap-quality-components) for details on how the score is calculated.
+
+**Prerequisites:** Run DRIFT_FILTER and PULLBACK_DISTANCE calibrations first. Ensure nozzle is completely clean.
+
+The calibration probes the bed mesh and measures the decompression line slope at each point. It calculates the mean angle.
+
+Accepts all [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
+
+**Example output:**
+```
+// DECOMPRESSION_ANGLE_CALIBRATION Complete:
+// Tap Quality average: 87.7%, min: 70.8%, max: 95.2%, std dev: 4.4%
+// 
+// Mean Decompression Angle: 78.6 degrees
+// decompression_angle=78.6
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file and restart the printer.
+```
+
+**Choosing a threshold:** The calibration does not automatically set `min_tap_quality`. The default is 40%. In testing the observed tap quality score drops quite significantly before any actual Z error can be detected. Taps with a small amount of ooze have a very different `tap_quality` mean and standard deviation than clean taps. Choose based on experience:
+- Higher thresholds (70-80%): Stricter, may cause retries on acceptable taps
+- Lower thresholds (5-20%): Too permissive, only catches severe ooze
+
+**Re-calibrate when:**
+- `pullback_speed` or load cell sample rate changes
+- Tap quality warnings become too frequent or too rare
+
 ### Probing Temperature
 
 Keep nozzle temperature below the filament oozing point during homing and probing. 140°C is a good starting point for all filament types.
@@ -315,9 +402,9 @@ The circle strategy is a feature of `[probe]`. When the load cell probe detects 
 
 ## Advanced Configuration
 
-### Continuous Tare Filtering
+### Drift Filter (Continuous Taring)
 
-Load cell probes support a filter on the MCU that compensates for drift from external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called *continuous taring* and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.
+Load cell probes support a drift filter on the MCU that compensates for external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called *continuous taring* and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.
 
 #### Installing SciPy
 
@@ -331,20 +418,13 @@ Pre-compiled builds are available for Python 3 on 32-bit Raspberry Pi systems.
 
 #### Filter Tuning
 
-The `drift_filter_cutoff_frequency` parameter should be selected based on observed drift during normal operation.
+The `drift_filter_cutoff_frequency` parameter can be automatically calibrated using `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. See [Drift Filter Calibration](#drift-filter-calibration) for details.
 
-Basic tuning guidelines:
-- Start with `drift_filter_cutoff_frequency: 0.5` Hz
-- Prusa uses 0.8 Hz (MK4) and 11.2 Hz (XL); this range is reasonable for experimentation
-- Increase only until bowden tube drift is eliminated
-- Setting too high causes slow triggering and excessive force
-- Keep `trigger_force` low (default 75 g); the drift filter maintains internal readings near zero
-- Keep `force_safety_limit` conservative (default 2 kg) during tuning
-- Keep `drift_safety_limit` conservative (default 1 kg) during tuning
-- **Note:** Over-aggressive `drift_filter_cutoff_frequency` can distort tap shape and timing, triggering validation failures (e.g., `TAP_BREAK_CONTACT_TOO_LATE`). Reduce cutoff frequency or probing speed if such errors appear.
+**Manual tuning:** If you prefer manual tuning, start with `drift_filter_cutoff_frequency: 0.5` Hz and increase only until bowden tube drift is eliminated. Setting too high causes slow triggering and excessive force. Keep `trigger_force` low (default 75 g); the drift filter maintains internal readings near zero.
 
-Tuning of the other filter parameters is beyond the scope of this documentation. 
-A Jupyter notebook is provided in [scripts/filter_workbench.ipynb](../scripts/filter_workbench.ipynb) with an example of a detailed analysis.
+**Note:** Over-aggressive `drift_filter_cutoff_frequency` can distort tap shape and timing, triggering validation failures (e.g., `TAP_BREAK_CONTACT_TOO_LATE`). Reduce cutoff frequency or probing speed if such errors appear.
+
+Manual tuning of other filter parameters is beyond the scope of this documentation. A Jupyter notebook is provided in [scripts/filter_workbench.ipynb](../scripts/filter_workbench.ipynb) with an example of detailed analysis.
 
 ### Tap Validation
 
@@ -401,7 +481,7 @@ The classifier uses ratio metrics to make it more transferable between different
 | Dwell Force Drop               | The drop in force during the dwell over the compression force.                                                                                                                    | While some drop is not unusual, large drops are associated with plastic oozing out from between the nozzle and the bed. |
 | Normalized Decompression Angle | How closely the slope of the decompression line matches the ideal decompression slope.  Normalized as `(actual - expected) / expected`                                            | Ooze can pull on the nozzle, changing the slope. This ruins the accuracy of the measurement.                            |
 
-These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the **Normalized Decompression Angle**.
+These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the **Normalized Decompression Angle**. This can be automatically set with [Decompression Angle Calibration](#decompression-angle-calibration). Until this is angle is set the tap quality classifier is off.
 
 Each component has a maximum cutoff value. If the component is above the cutoff, the tap quality score drops to 0%. Each value is a percentage of the compression force:
 
