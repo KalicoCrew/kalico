@@ -373,9 +373,9 @@ A request may look like:
 `{"id": 123, "method":"load_cell/dump_force",
 "params": {"sensor": "load_cell", "response_template": {}}}`
 and might return:
-`{"id": 123,"result":{"header":["time", "force (g)", "counts", "tare_counts"]}}`
+`{"id": 123,"result":{"header":["time", "force (g)", "counts", "tare_counts", "channel-0 force (g)", "channel-0 counts"]}}`
 and might later produce asynchronous messages such as:
-`{"params":{"data":[[3292.432935, 40.65, 562534, -234467]]}}`
+`{"params":{"data":[[3292.432935, 40.65, 562534, -234467, 40.65, 562534]]}}`
 
 The "header" field in the initial query response is used to describe
 the fields found in later "data" responses.
