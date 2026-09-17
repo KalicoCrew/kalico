@@ -1990,11 +1990,35 @@ description of each parameter.
 X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
 available if the kinematic supports it.
 
+#### SET_UNIFIED
+`SET_UNIFIED [ENABLE=<0|1>]
+[NOTCH_FREQ=<value>] [NOTCH_FREQ_X=<value>] [NOTCH_FREQ_Y=<value>]
+[SPAN_RAMPS=<0|1>] [SPAN_MAX_ANGLE=<value>]`:
+This command changes the experimental jerk-limited planner settings at
+runtime. Pending moves are flushed before changes are applied. `ENABLE`
+toggles jerk-limited emission for normal queued moves. `NOTCH_FREQ` sets one scalar notch frequency in Hz. `NOTCH_FREQ_X` and
+`NOTCH_FREQ_Y` set per-axis frequencies; they must end up either both non-zero
+or both zero, matching the config-time rule. Setting them to two *different*
+values makes each ramp a trapezoid that nulls both modes at once, on both axes
+and in every direction; setting them equal is identical to `NOTCH_FREQ`, which
+makes flipping between the two a direct A/B. Non-zero notch frequencies must be
+at least 5 Hz.
+`SPAN_RAMPS` lets one ramp span a run of near-collinear moves so short segments
+get a runway without moving the zero; toggling it is the cheapest A/B for
+whether the short-segment speed ceiling is what is limiting a print.
+`SPAN_MAX_ANGLE` caps the heading change in degrees that one ramp may span;
+raising it spans coarser geometry at the cost of ringing on the turning axis.
+If any parameter is rejected, none of the settings change. With
+no parameters, the command reports the current settings. See
+[Jerk_Limiting.md](Jerk_Limiting.md) and the
+[printer config section](Config_Reference.md#printer) for details.
+
 ### RESET_VELOCITY_LIMIT
 `RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
 specified in the printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
-description of each parameter.
+description of each parameter. This also restores the unified planner settings
+to their configured values.
 
 #### ⚠️ SET_KINEMATICS_LIMIT
 
