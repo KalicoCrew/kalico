@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import logging
 import math
 
 from . import chelper
@@ -67,6 +68,11 @@ class MCU_stepper:
         self._mcu.get_printer().register_event_handler(
             "klippy:connect", self._query_mcu_position
         )
+        if self._mcu.is_non_critical:
+            self._mcu.get_printer().register_event_handler(
+                self._mcu.get_non_critical_reconnect_event_name(),
+                self._handle_non_critical_reconnect,
+            )
         self._tmc_current_helper = None
 
     def get_tmc_current_helper(self):
@@ -270,6 +276,29 @@ class MCU_stepper:
             raise error("Internal error in stepcompress")
         self._query_mcu_position()
 
+    def _handle_non_critical_reconnect(self):
+        # MCU reset_step_clock is 0 after config. Host stepcompress must
+        # match or generate_steps compresses to interval=0 and the buffer
+        # motor never moves.
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.stepcompress_clear(self._stepqueue)
+        if self._reset_cmd_tag is None:
+            return
+        ret = ffi_lib.stepcompress_reset(self._stepqueue, 0)
+        if ret:
+            logging.warning(
+                "stepcompress_reset failed for '%s' after non-critical reconnect",
+                self._name,
+            )
+            return
+        data = (self._reset_cmd_tag, self._oid, 0)
+        ret = ffi_lib.stepcompress_queue_msg(self._stepqueue, data, len(data))
+        if ret:
+            logging.warning(
+                "reset_step_clock failed for '%s' after non-critical reconnect",
+                self._name,
+            )
+
     def _query_mcu_position(self):
         if self._mcu.is_fileoutput() or self._mcu.non_critical_disconnected:
             return
@@ -304,6 +333,20 @@ class MCU_stepper:
         self._active_callbacks.append(cb)
 
     def generate_steps(self, flush_time):
+        # A non-critical MCU may be gone, or mid-reconnect (serial is
+        # back but steppersync is not allocated yet). Do not queue
+        # steps, but DO advance last_flush_time so reconnect does not
+        # try to backfill the outage.
+        if self._mcu.is_non_critical and not self._mcu.can_generate_steps():
+            old_tq = self.set_trapq(None)
+            try:
+                if self._stepper_kinematics is not None:
+                    self._itersolve_generate_steps(
+                        self._stepper_kinematics, flush_time
+                    )
+            finally:
+                self.set_trapq(old_tq)
+            return
         # Check for activity if necessary
         if self._active_callbacks:
             sk = self._stepper_kinematics
@@ -317,6 +360,14 @@ class MCU_stepper:
         sk = self._stepper_kinematics
         ret = self._itersolve_generate_steps(sk, flush_time)
         if ret:
+            if self._mcu.is_non_critical:
+                logging.warning(
+                    "Dropping generated steps for '%s' on non-critical MCU '%s'",
+                    self._name,
+                    self._mcu.get_name(),
+                )
+                self._mcu.clear_stepqueues()
+                return
             raise error("Internal error in stepcompress")
 
     def is_active_axis(self, axis):

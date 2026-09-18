@@ -60,6 +60,7 @@ def _make_mcu(is_shutdown_response=0):
     mcu.non_critical_disconnected = True
     mcu._get_status_info = {}
     mcu._steppersync = None
+    mcu._stepqueues = []
     mcu._cached_init_state = False
     mcu._reserved_move_slots = 0
     mcu._reset_cmd = None
