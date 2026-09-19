@@ -297,6 +297,13 @@ object:
 - `Diameter`: The last reading from the sensor in mm.
 - `Raw`: The last raw ADC reading from the sensor.
 
+## nozzle_diameter
+
+The following information is available for extruder objects such as
+[extruder](Config_Reference.md#extruder):
+- `nozzle_diameter`: The currently set nozzle_diameter
+
+
 ## heater
 
 The following information is available for heater objects such as

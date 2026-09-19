@@ -212,10 +212,17 @@ class PrinterExtruder:
         self.filament_area = math.pi * (filament_diameter * 0.5) ** 2
         def_max_cross_section = 4.0 * self.nozzle_diameter**2
         def_max_extrude_ratio = def_max_cross_section / self.filament_area
-        max_cross_section = config.getfloat(
+        self.max_extrude_cross_section = config.getfloat(
             "max_extrude_cross_section", def_max_cross_section, above=0.0
         )
-        self.max_extrude_ratio = max_cross_section / self.filament_area
+        self.has_explicit_max_extrude_cross_section = (
+            config.fileconfig.has_option(
+                config.section, "max_extrude_cross_section"
+            )
+        )
+        self.max_extrude_ratio = (
+            self.max_extrude_cross_section / self.filament_area
+        )
         logging.info("Extruder max_extrude_ratio=%.6f", self.max_extrude_ratio)
         toolhead = self.printer.lookup_object("toolhead")
         max_velocity, max_accel = toolhead.get_max_velocity()
@@ -257,6 +264,13 @@ class PrinterExtruder:
             gcode.register_command("M104", self.cmd_M104)
             gcode.register_command("M109", self.cmd_M109)
             gcode.register_command("M302", self.cmd_M302)
+            gcode.register_mux_command(
+                "SET_NOZZLE_DIAMETER",
+                "EXTRUDER",
+                None,
+                self.cmd_default_SET_NOZZLE_DIAMETER,
+                desc=self.cmd_SET_NOZZLE_DIAMETER_help,
+            )
         gcode.register_mux_command(
             "ACTIVATE_EXTRUDER",
             "EXTRUDER",
@@ -264,10 +278,18 @@ class PrinterExtruder:
             self.cmd_ACTIVATE_EXTRUDER,
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
+        gcode.register_mux_command(
+            "SET_NOZZLE_DIAMETER",
+            "EXTRUDER",
+            self.name,
+            self.cmd_SET_NOZZLE_DIAMETER,
+            desc=self.cmd_SET_NOZZLE_DIAMETER_help,
+        )
 
     def get_status(self, eventtime):
-        sts = self.heater.get_status(eventtime)
+        sts = dict(self.heater.get_status(eventtime))
         sts["can_extrude"] = self.heater.can_extrude
+        sts["nozzle_diameter"] = self.nozzle_diameter
         if self.extruder_stepper is not None:
             sts.update(self.extruder_stepper.get_status(eventtime))
         return sts
@@ -419,6 +441,48 @@ class PrinterExtruder:
         toolhead.flush_step_generation()
         toolhead.set_extruder(self, self.last_position)
         self.printer.send_event("extruder:activate_extruder")
+
+    cmd_SET_NOZZLE_DIAMETER_help = "Set nozzle diameter"
+
+    def cmd_default_SET_NOZZLE_DIAMETER(self, gcmd):
+        extruder = self.printer.lookup_object("toolhead").get_extruder()
+        extruder.cmd_SET_NOZZLE_DIAMETER(gcmd)
+
+    def cmd_SET_NOZZLE_DIAMETER(self, gcmd):
+        diameter = gcmd.get_float("DIAMETER", above=0.0)
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.flush_step_generation()
+        self.nozzle_diameter = diameter
+        if not self.has_explicit_max_extrude_cross_section:
+            def_max_cross_section = 4.0 * self.nozzle_diameter**2
+            self.max_extrude_cross_section = def_max_cross_section
+            self.max_extrude_ratio = def_max_cross_section / self.filament_area
+            log_msg = (
+                "Nozzle diameter for Extruder '%s' changed to %.2f, "
+                "max_extrude_ratio=%.6f"
+            )
+            respond_msg = (
+                "Nozzle diameter for Extruder '%s' set to %.2fmm\n"
+                "Max extrude ratio: %.6f"
+            )
+            respond_args = (self.name, diameter, self.max_extrude_ratio)
+        else:
+            log_msg = (
+                "Nozzle diameter for Extruder '%s' changed to %.2f, "
+                "max_extrude_ratio preserved from explicit max_extrude_cross_section=%.6f"
+            )
+            respond_msg = (
+                "Nozzle diameter for Extruder '%s' set to %.2fmm\n"
+                "Max extrude ratio preserved from explicit max_extrude_cross_section=%.6f"
+            )
+            respond_args = (
+                self.name,
+                diameter,
+                self.max_extrude_ratio,
+            )
+
+        logging.info(log_msg, *respond_args)
+        gcmd.respond_info(respond_msg % respond_args)
 
 
 # Dummy extruder class used when a printer has no extruder at all

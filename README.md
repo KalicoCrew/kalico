@@ -144,6 +144,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [extruder: cold_extrude](https://github.com/KalicoCrew/kalico/pull/750)
 
+- [extruder: Add SET_NOZZLE_DIAMETER command](https://github.com/KalicoCrew/kalico/pull/888)
+
 - [indx: support for the Bondtech INDX toolboard](https://github.com/KalicoCrew/kalico/pull/904)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
