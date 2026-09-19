@@ -226,10 +226,16 @@ class IndxToolboardHeater:
         self.max_model_error = config.getfloat("max_model_error", default=50.0)
 
         self.pid_kp = config.getfloat("pid_kp", default=4.0)
-        self.pid_ti = config.getfloat("pid_ti", minval=0.0, default=0.0)
+        self.pid_ti = config.getfloat("pid_ti", minval=0.0, default=0.2)
         self.pid_td = config.getfloat("pid_td", minval=0.0, default=0.0)
         self.pid_b = config.getfloat(
             "pid_b", minval=0.0, maxval=1.0, default=1.0
+        )
+        self.pid_i_window = config.getfloat(
+            "pid_i_window", above=0.0, default=0.2
+        )
+        self.pid_i_limit = config.getfloat(
+            "pid_i_limit", above=0.0, maxval=1.0, default=0.5
         )
         self.max_temp_nozzle = config.getfloat("max_temp_nozzle", default=305.0)
         self.max_temp_sensor = config.getfloat("max_temp_sensor", default=130.0)
@@ -378,10 +384,10 @@ class IndxToolboardHeater:
         self.power_scale = amp_per_count / current_sense_rate
 
         mcu.add_config_cmd(
-            f"indx_set_control_params kp={float_to_u32(self.pid_kp)} ti={float_to_u32(self.pid_ti)} td={float_to_u32(self.pid_td)} b={float_to_u32(self.pid_b)}"
+            f"indx_set_control_params kp={float_to_u32(self.pid_kp)} ti={float_to_u32(self.pid_ti)} td={float_to_u32(self.pid_td)} b={float_to_u32(self.pid_b)} i_window={float_to_u32(self.pid_i_window)} i_limit={float_to_u32(self.pid_i_limit)}"
         )
         self.cmd_set_control_params = mcu.lookup_command(
-            "indx_set_control_params kp=%u ti=%u td=%u b=%u",
+            "indx_set_control_params kp=%u ti=%u td=%u b=%u i_window=%u i_limit=%u",
             cq=self.cmd_queue,
         )
         self.cmd_set_target = mcu.lookup_command(
@@ -445,6 +451,8 @@ class IndxToolboardHeater:
                 float_to_u32(self.pid_ti),
                 float_to_u32(self.pid_td),
                 float_to_u32(self.pid_b),
+                float_to_u32(self.pid_i_window),
+                float_to_u32(self.pid_i_limit),
             ]
         )
 
@@ -633,6 +641,12 @@ class IndxToolboardHeater:
         self.pid_ti = gcmd.get_float("TI", self.pid_ti, minval=0.0)
         self.pid_td = gcmd.get_float("TD", self.pid_td, minval=0.0)
         self.pid_b = gcmd.get_float("B", self.pid_b, minval=0.0)
+        self.pid_i_window = gcmd.get_float(
+            "I_WINDOW", self.pid_i_window, above=0.0
+        )
+        self.pid_i_limit = gcmd.get_float(
+            "I_LIMIT", self.pid_i_limit, above=0.0, maxval=1.0
+        )
         self.apply_pid_params()
 
     def cmd_SET_CYCLE_LIMIT(self, gcmd):
