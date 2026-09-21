@@ -176,14 +176,18 @@ class BME280:
         self.gas_heat_temp = config.getint("bme280_gas_target_temp", 320)
         self.gas_heat_duration = config.getint("bme280_gas_heat_duration", 150)
         logging.info(
-            "BMxx80: Oversampling: Temp %dx Humid %dx Pressure %dx"
+            "BMxx80 %s: Oversampling: Temp %dx Humid %dx Pressure %dx"
             % (
+                self.name,
                 pow(2, self.os_temp - 1),
                 pow(2, self.os_hum - 1),
                 pow(2, self.os_pres - 1),
             )
         )
-        logging.info("BMxx80: IIR: %dx" % (pow(2, self.iir_filter) - 1))
+        logging.info(
+            "BMxx80 %s: IIR: %dx"
+            % (self.name, pow(2, self.iir_filter) - 1)
+        )
         self.iir_filter = self.iir_filter & 0x07
 
         self.temp = self.pressure = self.humidity = self.gas = self.t_fine = 0.0
@@ -326,12 +330,15 @@ class BME280:
 
         chip_id = self.read_id() or self.read_bmp3_id()
         if chip_id not in BME_CHIPS.keys():
-            logging.info("bme280: Unknown Chip ID received %#x" % chip_id)
+            logging.info(
+                "bme280 %s: Unknown Chip ID received %#x"
+                % (self.name, chip_id)
+            )
         else:
             self.chip_type = BME_CHIPS[chip_id]
             logging.info(
-                "bme280: Found Chip %s at %#x"
-                % (self.chip_type, self.i2c.i2c_address)
+                "bme280 %s: Found Chip %s at %#x"
+                % (self.name, self.chip_type, self.i2c.i2c_address)
             )
 
         # Reset chip
@@ -475,7 +482,7 @@ class BME280:
             else:
                 return self.reactor.NEVER
         except Exception:
-            logging.exception("BME280: Error reading data")
+            logging.exception("BME280 %s: Error reading data" % (self.name,))
             self.temp = self.pressure = self.humidity = 0.0
             return self.reactor.NEVER
 
@@ -607,7 +614,7 @@ class BME280:
             if run_gas:
                 gas_data = self.read_register("GAS_R_MSB", 2)
         except Exception:
-            logging.exception("BME680: Error reading data")
+            logging.exception("BME680 %s: Error reading data" % (self.name,))
             self.temp = self.pressure = self.humidity = self.gas = 0.0
             return self.reactor.NEVER
 
@@ -626,7 +633,10 @@ class BME280:
         if gas_valid:
             gas_heater_stable = (gas_data[1] & 0x10) == 0x10
             if not gas_heater_stable:
-                logging.warning("BME680: Gas heater didn't reach target")
+                logging.warning(
+                    "BME680 %s: Gas heater didn't reach target"
+                    % (self.name,)
+                )
             gas_raw = (gas_data[0] << 2) | ((gas_data[1] & 0xC0) >> 6)
             gas_range = gas_data[1] & 0x0F
             self.gas = self._compensate_gas(gas_raw, gas_range)
@@ -653,7 +663,9 @@ class BME280:
             data = self.read_register("REG_MSB", 2)
             temp_raw = (data[0] << 8) | data[1]
         except Exception:
-            logging.exception("BMP180: Error reading temperature")
+            logging.exception(
+                "BMP180 %s: Error reading temperature" % (self.name,)
+            )
             self.temp = self.pressure = 0.0
             return self.reactor.NEVER
 
@@ -667,7 +679,9 @@ class BME280:
                 8 - self.os_pres
             )
         except Exception:
-            logging.exception("BMP180: Error reading pressure")
+            logging.exception(
+                "BMP180 %s: Error reading pressure" % (self.name,)
+            )
             self.temp = self.pressure = 0.0
             return self.reactor.NEVER
 
