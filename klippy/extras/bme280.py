@@ -185,8 +185,7 @@ class BME280:
             )
         )
         logging.info(
-            "BMxx80 %s: IIR: %dx"
-            % (self.name, pow(2, self.iir_filter) - 1)
+            "BMxx80 %s: IIR: %dx" % (self.name, pow(2, self.iir_filter) - 1)
         )
         self.iir_filter = self.iir_filter & 0x07
 
@@ -331,8 +330,7 @@ class BME280:
         chip_id = self.read_id() or self.read_bmp3_id()
         if chip_id not in BME_CHIPS.keys():
             logging.info(
-                "bme280 %s: Unknown Chip ID received %#x"
-                % (self.name, chip_id)
+                "bme280 %s: Unknown Chip ID received %#x" % (self.name, chip_id)
             )
         else:
             self.chip_type = BME_CHIPS[chip_id]
@@ -634,8 +632,7 @@ class BME280:
             gas_heater_stable = (gas_data[1] & 0x10) == 0x10
             if not gas_heater_stable:
                 logging.warning(
-                    "BME680 %s: Gas heater didn't reach target"
-                    % (self.name,)
+                    "BME680 %s: Gas heater didn't reach target" % (self.name,)
                 )
             gas_raw = (gas_data[0] << 2) | ((gas_data[1] & 0xC0) >> 6)
             gas_range = gas_data[1] & 0x0F
