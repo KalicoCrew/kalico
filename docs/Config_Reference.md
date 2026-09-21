@@ -2139,6 +2139,12 @@ Support for gcode arc (G2/G3) commands.
 #   finer arc, but also more work for your machine. Arcs smaller than
 #   the configured value will become straight lines. The default is
 #   1mm.
+#max_deviation: 0.05
+#   The maximum distance (in mm) a segment may lie from the true arc.
+#   Segments are added beyond what 'resolution' asks for until every
+#   chord is within this distance, so a small arc that turns a long way
+#   (a tight loop) is never flattened into a single short chord. Set to
+#   0 to segment by length only. The default is 0.05mm.
 ```
 
 ### [respond]

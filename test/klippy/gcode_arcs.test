@@ -48,3 +48,13 @@ G2 X20 Y20 J0 K10
 G2 X20 Y20 K10
 G2 X20 Y20 J10 K0
 G2 X20 Y20 J10
+
+# Small arc looping 340 degrees (r=0.3, 1.78mm long). Segmented by length
+# alone it is a single 0.1mm chord carrying all of E0.15 and fails
+# max_extrude_cross_section; max_deviation must split it into real segments.
+G28
+G90
+G17
+M83
+G1 X50 Y50 Z10
+G3 X49.8974 Y50.0181 I0 J0.3 E0.15
