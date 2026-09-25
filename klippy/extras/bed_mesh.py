@@ -1421,7 +1421,7 @@ class ZMesh:
         return constrain(t, 0.0, 1.0), idx
 
     def _sample_direct(self, z_matrix):
-        self.mesh_matrix = z_matrix
+        self.mesh_matrix = [y[:] for y in z_matrix]
 
     def _sample_lagrange(self, z_matrix):
         x_mult = self.x_mult
