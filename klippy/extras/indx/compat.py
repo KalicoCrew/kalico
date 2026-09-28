@@ -1,5 +1,6 @@
 from klippy.configfile import ConfigWrapper as RealConfigWrapper
 from klippy.configfile import error as ConfigError
+from klippy.mcu import MIN_SCHEDULE_TIME_INIT  # noqa: F401
 
 
 class ConfigWrapper(RealConfigWrapper):
