@@ -1173,6 +1173,7 @@ class MCUConnectHelper:
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
+        self._serial.abort_wait_acks()
 
     def force_local_shutdown(self):
         self._is_shutdown = True

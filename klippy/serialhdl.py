@@ -49,6 +49,7 @@ class SerialReader:
         # Sent message notification tracking
         self.last_notify_id = 0
         self.pending_notifications = {}
+        self.can_wait_acks = True
 
     def _bg_thread(self):
         response = self.ffi_main.new("struct pull_queue_message *")
@@ -349,6 +350,13 @@ class SerialReader:
             self.serialqueue, freq, conv_time, conv_clock, last_clock
         )
 
+    def abort_wait_acks(self):
+        self.can_wait_acks = False
+        # Background thread may be running, so work on copy
+        pending_notifications = self.pending_notifications.copy()
+        for pn in pending_notifications.values():
+            pn.complete(None)
+
     def disconnect(self):
         if self.serialqueue is not None:
             self.ffi_lib.serialqueue_exit(self.serialqueue)
@@ -358,9 +366,10 @@ class SerialReader:
         if self.serial_dev is not None:
             self.serial_dev.close()
             self.serial_dev = None
-        for pn in self.pending_notifications.values():
-            pn.complete(None)
+        # Abort any waiting commands and then restore ability to wait
+        self.abort_wait_acks()
         self.pending_notifications.clear()
+        self.can_wait_acks = True
 
     def stats(self, eventtime):
         if self.serialqueue is None:
@@ -407,6 +416,8 @@ class SerialReader:
         self._check_noncritical_disconnected()
         if self.serialqueue is None:
             return
+        if not self.can_wait_acks:
+            self._error("No communication with MCU")
         self.last_notify_id += 1
         nid = self.last_notify_id
         completion = self.reactor.completion()
@@ -416,7 +427,7 @@ class SerialReader:
         )
         params = completion.wait()
         if params is None:
-            self._error("Serial connection closed")
+            self._error("No communication with MCU")
         return params
 
     def send(self, msg, minclock=0, reqclock=0):
