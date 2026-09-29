@@ -147,6 +147,7 @@ class CommandQueryWrapper:
 class CommandWrapper:
     def __init__(self, conn_helper, msgformat, cmd_queue=None):
         self._serial = serial = conn_helper.get_serial()
+        self._error = conn_helper.get_mcu().get_printer().command_error
         msgparser = serial.get_msgparser()
         self._cmd = msgparser.lookup_command(msgformat)
         if cmd_queue is None:
@@ -163,7 +164,12 @@ class CommandWrapper:
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send_wait_ack(
+                cmd, minclock, reqclock, self._cmd_queue
+            )
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def get_command_tag(self):
         return self._msgtag
