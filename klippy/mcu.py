@@ -668,7 +668,7 @@ class MCU_pwm:
 
     def set_pwm(self, print_time, value):
         clock = self._mcu.print_time_to_clock(print_time)
-        if clock < self._last_clock:
+        if clock < self._last_clock and not self._mcu.is_fileoutput():
             raise error("Tried to set PWM target before last update")
         if self._invert:
             value = 1.0 - value
