@@ -314,7 +314,6 @@ class VirtualSD:
                 self.reactor.pause(self.reactor.monotonic() + 0.100)
                 continue
             # Dispatch command
-            self.cmd_from_sd = True
             line = lines.pop()
             if sys.version_info.major >= 3:
                 next_file_position = self.file_position + len(line.encode()) + 1
@@ -322,10 +321,12 @@ class VirtualSD:
                 next_file_position = self.file_position + len(line) + 1
             self.next_file_position = next_file_position
             try:
+                self.cmd_from_sd = True
                 self.gcode.run_script(line)
             except self.gcode.error as e:
                 error_message = str(e)
                 try:
+                    self.cmd_from_sd = False
                     self.gcode.run_script(self.on_error_gcode.render())
                 except:
                     logging.exception("virtual_sdcard on_error")
@@ -333,7 +334,8 @@ class VirtualSD:
             except:
                 logging.exception("virtual_sdcard dispatch")
                 break
-            self.cmd_from_sd = False
+            finally:
+                self.cmd_from_sd = False
             self.file_position = self.next_file_position
             # Do we need to skip around?
             if self.next_file_position != next_file_position:
@@ -343,6 +345,8 @@ class VirtualSD:
                     logging.exception("virtual_sdcard seek")
                     self.work_timer = None
                     return self.reactor.NEVER
+                finally:
+                    self.cmd_from_sd = False
                 lines = []
                 partial_input = ""
         logging.info("Exiting SD card print (position %d)", self.file_position)
