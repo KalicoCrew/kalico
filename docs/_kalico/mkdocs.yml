@@ -92,6 +92,7 @@ nav:
   - Home: index.md
   - Overview.md
   - Features.md
+  - Jerk_Limiting.md
   - FAQ.md
   - Releases: https://github.com/KalicoCrew/kalico/releases
   - Config_Changes.md

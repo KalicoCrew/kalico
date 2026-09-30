@@ -1,0 +1,6 @@
+# unified_planner must reject extra axes that cannot emit segmented moves.
+DICTIONARY atmega2560.dict
+CONFIG unified_planner_manual_stepper.cfg
+SHOULD_FAIL
+
+MANUAL_STEPPER STEPPER=basic_stepper GCODE_AXIS=A
