@@ -2853,6 +2853,12 @@ gcode:
 <span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$1</span><span class="s2">&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span><span class="s2">&quot;</span><span class="si">${</span><span class="nv">HOME</span><span class="si">}</span><span class="s2">/test.txt&quot;</span>
 </code></pre></div>
 
+<p>Environment variables (<code>$HOME</code>, <code>${TMPDIR}</code>) and a leading <code>~</code> in each
+parameter are expanded before the command runs, the same way they are in
+<code>command</code>:</p>
+<div class="highlight"><pre><span></span><code>RUN_SHELL_COMMAND CMD=calibrate_shaper PARAMS=&quot;$TMPDIR/resonances_y.csv -o ~/printer_data/config/resonances_y.png&quot;
+</code></pre></div>
+
 <h2 id="warning">Warning<a class="headerlink" href="#warning" title="Permanent link">&para;</a></h2>
 <p>This extension may have a high potential for abuse if not used carefully! Also, depending on the command you execute, high system loads may occur and can cause system instabilities.
 Use this extension at your own risk and only if you know what you are doing!</p>
