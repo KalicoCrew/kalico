@@ -106,7 +106,9 @@ Kalico supports many standard 3d printer features:
   multiple Z steppers then Kalico can also level by independently
   manipulating the Z steppers. Most Z height probes are supported,
   including BL-Touch probes and servo activated probes. Probes may be
-  calibrated for axis twist compensation.
+  calibrated for axis twist compensation. Kalico can also
+  automatically calculate the mesh boundaries and safe Z home
+  position based on the physical bed size and corner position.
 
 * Automatic delta calibration support. The calibration tool can
   perform basic height calibration as well as an enhanced X and Y

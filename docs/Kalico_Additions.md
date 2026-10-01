@@ -22,6 +22,7 @@
 - Input shaper calibration now warns about active fans that may affect measurement accuracy.
 - [`BED_MESH_CHECK`](./G-Codes.md#bed_mesh_check) validates the current bed mesh against specified criteria, allowing you to check maximum deviation and slope between adjacent points before printing.
 - [`[resonance_tester]`](./Config_Reference.md#resonance_tester) now supports multiple accelerometer chips via the new `accel_chips` parameter, allowing data from multiple accelerometers to be combined for more accurate input shaper calibration.
+- [`[printer] bed_size` and `bed_corner_position`](./Config_Reference.md#printer) can be used to automatically calculate mesh bounds for `[bed_mesh]`, `[quad_gantry_level]`, `[axis_twist_compensation]`, and the home position for `[safe_z_home]`.
 
 ## New Kalico Modules
 
