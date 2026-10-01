@@ -443,9 +443,17 @@ class MCU_endstop:
             cq=cmd_queue,
         )
 
+    def _check_connected(self):
+        if self._mcu.non_critical_disconnected:
+            raise self._mcu.get_printer().command_error(
+                f"Cannot use endstop on disconnected MCU "
+                f"'{self._mcu.get_name()}'"
+            )
+
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        self._check_connected()
         clock = self._mcu.print_time_to_clock(print_time)
         rest_ticks = (
             self._mcu.print_time_to_clock(print_time + rest_time) - clock
@@ -483,6 +491,7 @@ class MCU_endstop:
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
 
     def query_endstop(self, print_time):
+        self._check_connected()
         clock = self._mcu.print_time_to_clock(print_time)
         if self._mcu.is_fileoutput():
             return 0
