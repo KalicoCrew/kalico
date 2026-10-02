@@ -345,3 +345,92 @@ def test_post_homing_path_runs_even_if_pre_did_nothing():
     assert dwell_pre == 0.0
     assert dwell_post == ch.current_change_dwell_time
     assert ch.actual_current == pytest.approx(0.8)
+
+
+class _FakeSpiMCU:
+    def __init__(self):
+        self.config_cmds = []
+
+    def create_oid(self):
+        return 7
+
+    def add_config_cmd(self, cmd, on_restart=False):
+        self.config_cmds.append(cmd)
+
+    def register_config_callback(self, cb):
+        pass
+
+
+class _FakeSpiPrinter:
+    command_error = RuntimeError
+
+
+class _FakeDispatch:
+    def __init__(self, mcu):
+        self.res = 0
+        self.fail_wait = False
+
+    def wait_end(self, end_time):
+        if self.fail_wait:
+            raise RuntimeError("wait failed")
+
+    def stop(self):
+        return self.res
+
+
+class _FakeCmd:
+    def send(self, data, **kw):
+        pass
+
+
+def _make_spi_endstop(monkeypatch, chain_len, chain_pos):
+    from klippy import reactor
+    from klippy.extras import tmc
+
+    monkeypatch.setattr(tmc.mcu, "TriggerDispatch", _FakeDispatch)
+    fake_mcu = _FakeSpiMCU()
+    spi = type("Spi", (), {"get_oid": lambda self: 3})()
+    tmc_spi = type(
+        "Chain",
+        (),
+        {"chain_len": chain_len, "spi": spi, "get_mcu": lambda s: fake_mcu},
+    )()
+    mcu_tmc = type("MCUTMC", (), {})()
+    mcu_tmc.tmc_spi = tmc_spi
+    mcu_tmc.chain_pos = chain_pos
+    mcu_tmc.mutex = reactor.SelectReactor().mutex()
+    endstop = tmc.TMCSpiEndstop(_FakeSpiPrinter(), mcu_tmc)
+    endstop._home_cmd = endstop._query_cmd = _FakeCmd()
+    return endstop, fake_mcu, mcu_tmc.mutex
+
+
+def test_spi_endstop_status_pos_in_chain(monkeypatch):
+    _, fake_mcu, _ = _make_spi_endstop(monkeypatch, 3, 1)
+    assert (
+        "config_tmc_spi_endstop oid=7 spi_oid=3 data_len=15 status_pos=10"
+        in fake_mcu.config_cmds
+    )
+
+
+def test_spi_endstop_releases_mutex_on_error(monkeypatch):
+    endstop, _, mutex = _make_spi_endstop(monkeypatch, 1, 1)
+    mutex.lock()
+    endstop._dispatch.fail_wait = True
+    with pytest.raises(RuntimeError):
+        endstop.home_wait(1.0)
+    assert not mutex.test()
+
+
+def test_spi_endstop_unlocks_before_trsync_stop(monkeypatch):
+    # trsync stop syncs stepper positions, which reads tmc registers
+    endstop, _, mutex = _make_spi_endstop(monkeypatch, 1, 1)
+    mutex.lock()
+    locked_at_stop = []
+
+    def stop():
+        locked_at_stop.append(mutex.test())
+        return 0
+
+    endstop._dispatch.stop = stop
+    assert endstop.home_wait(1.0) == 0.0
+    assert locked_at_stop == [False]
