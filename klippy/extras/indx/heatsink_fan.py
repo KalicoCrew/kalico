@@ -21,6 +21,10 @@ class IndxHeatsinkFan:
             },
         )
         self.fan = fan.Fan(config)
+        # Expose speed/rpm to frontends, which list "heater_fan" objects
+        self.toolboard.printer.add_object(
+            f"heater_fan {self.toolboard.name}_heatsink", self
+        )
 
         self.toolboard.printer.register_event_handler(
             "klippy:ready", self.handle_ready
@@ -33,6 +37,9 @@ class IndxHeatsinkFan:
         self.is_active = 0.0
         self.steppers = []
         self.heaters = []
+
+    def get_status(self, eventtime):
+        return self.fan.get_status(eventtime)
 
     def handle_ready(self):
         reactor = self.toolboard.printer.get_reactor()
