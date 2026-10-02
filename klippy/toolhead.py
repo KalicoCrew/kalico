@@ -700,10 +700,6 @@ class ToolHead:
         self.max_accel = accel
         self._calc_junction_deviation()
 
-    def reset_accel(self):
-        self.max_accel = self.orig_cfg["max_accel"]
-        self._calc_junction_deviation()
-
 
 # Support common G-Code commands relative to the toolhead
 class ToolHeadCommandHelper:
