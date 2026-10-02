@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261002: Homing with a physical endstop no longer backs off by
+`homing_retract_dist` after the final touch; the axis stays on the
+endstop, as in Klipper. The final back-off now only applies to
+sensorless homing.
+
 20260914: The firmware "USB product" string now follows the selected
 MCU unless "USB product from MCU name" is disabled in the low-level
 "USB ids" menu of `make menuconfig`. A custom USB product set in an
