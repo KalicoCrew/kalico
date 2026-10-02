@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
+from klippy.extras.probe import ProbeList
 from klippy.mcu import MCU_endstop
 
 
@@ -124,12 +125,8 @@ class ZCalibrationHelper:
                 self.nozzle_site[1] + self.switch_xy_offsets[1],
                 None,
             ]
-        # get probing settings
-        probe = self.printer.lookup_object("probe", default=None)
-        if probe is None:
-            raise self.printer.config_error(
-                "A probe is needed for %s" % (self.config.get_name())
-            )
+
+    def load_probe(self, probe):
         if self.samples is None:
             self.samples = probe.sample_count
         if self.tolerance is None:
@@ -172,6 +169,8 @@ class ZCalibrationHelper:
     )
 
     def cmd_CALIBRATE_Z(self, gcmd):
+        probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
+        self.load_probe(probe)
         if self.z_homing is None:
             raise gcmd.error("Must home axes first")
         site_attr = gcmd.get("BED_POSITION", None)
@@ -206,7 +205,7 @@ class ZCalibrationHelper:
                     " for %s" % (self.config.get_name())
                 )
         self._log_config()
-        state = CalibrationState(self, gcmd)
+        state = CalibrationState(probe, self, gcmd)
         state.calibrate_z()
 
     cmd_PROBE_Z_ACCURACY_help = (
@@ -214,6 +213,8 @@ class ZCalibrationHelper:
     )
 
     def cmd_PROBE_Z_ACCURACY(self, gcmd):
+        probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
+        self.load_probe(probe)
         if self.z_homing is None:
             raise gcmd.error("Must home axes first")
         speed = gcmd.get_float("PROBE_SPEED", self.second_speed, above=0.0)
@@ -428,12 +429,12 @@ class EndstopWrapper:
 
 
 class CalibrationState:
-    def __init__(self, helper, gcmd):
+    def __init__(self, probe, helper, gcmd):
         self.helper = helper
         self.gcmd = gcmd
         self.gcode = helper.gcode
         self.z_endstop = helper.z_endstop
-        self.probe = helper.printer.lookup_object("probe")
+        self.probe = probe
         self.toolhead = helper.printer.lookup_object("toolhead")
         self.gcode_move = helper.printer.lookup_object("gcode_move")
         self.max_deviation = helper.max_deviation
