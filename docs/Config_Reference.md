@@ -4539,6 +4539,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   Set this to "spi" instead of a pin to have the micro-controller
+#   poll the stallguard flag over SPI, for boards without the DIAG line
+#   wired. See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc2208]
@@ -4921,6 +4924,9 @@ run_current:
 #   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
 #   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   Set this to "spi" instead of a pin to have the micro-controller
+#   poll the stallguard flag over SPI, for boards without the DIAG line
+#   wired. See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5160]
@@ -5075,6 +5081,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   Set this to "spi" instead of a pin to have the micro-controller
+#   poll the stallguard flag over SPI, for boards without the DIAG line
+#   wired. See the TMC_Drivers.md document for details.
 ```
 
 ## Run-time stepper motor current configuration
