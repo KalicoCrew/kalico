@@ -244,6 +244,7 @@ class Homing:
         self.changed_axes = []
         self.trigger_mcu_pos = {}
         self.adjust_pos = {}
+        self.saved_accel = None
 
     def set_axes(self, axes):
         self.changed_axes = axes
@@ -272,9 +273,12 @@ class Homing:
         if accel is None:
             return
         if pre_homing:
+            if self.saved_accel is None:
+                self.saved_accel = self.toolhead.get_max_velocity()[1]
             self.toolhead.set_accel(accel)
-        else:
-            self.toolhead.reset_accel()
+        elif self.saved_accel is not None:
+            self.toolhead.set_accel(self.saved_accel)
+            self.saved_accel = None
 
     def _set_homing_current(self, homing_axes, pre_homing):
         print_time = self.toolhead.get_last_move_time()
