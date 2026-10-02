@@ -164,7 +164,8 @@ A few prerequisites are needed to use sensorless homing:
 2. SPI / UART interface of the TMC driver wired to micro-controller
    (stand-alone mode does not work).
 3. The appropriate "DIAG" or "SG_TST" pin of TMC driver connected to
-   the micro-controller.
+   the micro-controller. (Not needed on SPI drivers, see
+   [Sensorless homing via SPI](#sensorless-homing-via-spi).)
 4. The steps in the [config checks](Config_checks.md) document must be
    run to confirm the stepper motors are configured and working
    properly.
@@ -257,6 +258,27 @@ The examples above only show settings specific to sensorless
 homing. See the
 [config reference](Config_Reference.md#tmc-stepper-driver-configuration)
 for all the available options.
+
+##### Sensorless homing via SPI
+
+On tmc2130, tmc2240, tmc5160 and tmc2160 drivers wired over SPI, the
+DIAG pin is not required. If no `diag0_pin` or `diag1_pin` is set, the
+micro-controller polls the driver's stallguard flag over the SPI bus
+during homing instead of watching a pin:
+```
+[tmc5160 stepper_x]
+driver_SGT: 1
+...
+
+[stepper_x]
+endstop_pin: tmc5160_stepper_x:virtual_endstop
+...
+```
+The flag is polled every 1ms and is ignored until the axis has reached
+the homing speed (plus 50ms), so the homing move must start far enough
+from the end of the rail to finish accelerating. Setting `min_home_dist`
+in the stepper section (e.g. 15mm) makes Kalico back off and home again
+when it starts too close. This is not available on UART drivers.
 
 #### Find highest sensitivity that successfully homes
 

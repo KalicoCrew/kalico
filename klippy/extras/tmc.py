@@ -6,7 +6,7 @@
 import collections
 import logging
 
-from klippy import stepper
+from klippy import mcu, stepper
 
 from . import bulk_sensor
 
@@ -735,7 +735,7 @@ class TMCVirtualPinHelper:
             raise ppins.error("tmc virtual endstop only useful as endstop")
         if pin_params["invert"] or pin_params["pullup"]:
             raise ppins.error("Can not pullup/invert tmc virtual pin")
-        if self.diag_pin is None:
+        if self.diag_pin is None and not hasattr(self.mcu_tmc, "tmc_spi"):
             raise ppins.error("tmc virtual endstop requires diag pin config")
         # Setup for sensorless homing
         self.printer.register_event_handler(
@@ -744,7 +744,10 @@ class TMCVirtualPinHelper:
         self.printer.register_event_handler(
             "homing:homing_move_end", self.handle_homing_move_end
         )
-        self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
+        if self.diag_pin is None:
+            self.mcu_endstop = TMCSpiEndstop(self.printer, self.mcu_tmc)
+        else:
+            self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
         return self.mcu_endstop
 
     def _set_field(self, field_name, value):
@@ -795,6 +798,110 @@ class TMCVirtualPinHelper:
             self._set_field(field, val)
         self._send_fields()
         self._prev_state.clear()
+
+
+# Sensorless homing by polling the stallguard flag over spi
+class TMCSpiEndstop:
+    POLL_TIME = 0.001
+    # Stallguard needs some time at speed before its flag is valid
+    SETTLE_TIME = 0.150
+
+    def __init__(self, printer, mcu_tmc):
+        tmc_spi = mcu_tmc.tmc_spi
+        self._printer = printer
+        self._mutex = mcu_tmc.mutex
+        self._mcu_tmc = mcu_tmc
+        self._mcu = tmc_spi.get_mcu()
+        self._oid = self._mcu.create_oid()
+        self._dispatch = mcu.TriggerDispatch(self._mcu)
+        self._home_cmd = self._query_cmd = None
+        self._mcu.add_config_cmd(
+            "config_tmc_spi_endstop oid=%d spi_oid=%d data_len=%d"
+            " status_pos=%d"
+            % (
+                self._oid,
+                tmc_spi.spi.get_oid(),
+                tmc_spi.chain_len * 5,
+                (tmc_spi.chain_len - mcu_tmc.chain_pos) * 5,
+            )
+        )
+        self._mcu.add_config_cmd(
+            "tmc_spi_endstop_home oid=%d clock=0 rest_ticks=0"
+            " trsync_oid=0 trigger_reason=0" % (self._oid,),
+            on_restart=True,
+        )
+        self._mcu.register_config_callback(self._build_config)
+
+    def _build_config(self):
+        cmd_queue = self._dispatch.get_command_queue()
+        self._home_cmd = self._mcu.lookup_command(
+            "tmc_spi_endstop_home oid=%c clock=%u rest_ticks=%u"
+            " trsync_oid=%c trigger_reason=%c",
+            cq=cmd_queue,
+        )
+        self._query_cmd = self._mcu.lookup_query_command(
+            "tmc_spi_endstop_query_state oid=%c",
+            "tmc_spi_endstop_state oid=%c trigger_clock=%u",
+            oid=self._oid,
+            cq=cmd_queue,
+        )
+
+    def get_mcu(self):
+        return self._mcu
+
+    def add_stepper(self, stepper):
+        self._dispatch.add_stepper(stepper)
+
+    def get_steppers(self):
+        return self._dispatch.get_steppers()
+
+    def home_start(
+        self, print_time, sample_time, sample_count, rest_time, triggered=True
+    ):
+        toolhead = self._printer.lookup_object("toolhead")
+        accel = toolhead.get_max_velocity()[1]
+        speed = self.get_steppers()[0].get_step_dist() / rest_time
+        guard_time = speed / accel + self.SETTLE_TIME
+        # Host register reads must not interleave with the mcu polling
+        self._mutex.lock()
+        clock = self._mcu.print_time_to_clock(print_time + guard_time)
+        trigger_completion = self._dispatch.start(print_time)
+        self._home_cmd.send(
+            [
+                self._oid,
+                clock,
+                self._mcu.seconds_to_clock(self.POLL_TIME),
+                self._dispatch.get_oid(),
+                mcu.MCU_trsync.REASON_ENDSTOP_HIT,
+            ],
+            reqclock=clock,
+        )
+        return trigger_completion
+
+    def home_wait(self, home_end_time):
+        try:
+            self._dispatch.wait_end(home_end_time)
+            self._home_cmd.send([self._oid, 0, 0, 0, 0])
+        finally:
+            self._mutex.unlock()
+        res = self._dispatch.stop()
+        if res >= mcu.MCU_trsync.REASON_COMMS_TIMEOUT:
+            cmderr = self._printer.command_error
+            raise cmderr("Communication timeout during homing")
+        if res != mcu.MCU_trsync.REASON_ENDSTOP_HIT:
+            return 0.0
+        if self._mcu.is_fileoutput():
+            return home_end_time
+        params = self._query_cmd.send([self._oid])
+        clock = self._mcu.clock32_to_clock64(params["trigger_clock"])
+        return self._mcu.clock_to_print_time(clock)
+
+    def query_endstop(self, print_time):
+        if self._mcu.is_fileoutput():
+            return 0
+        status = self._mcu_tmc.get_register_raw("DRV_STATUS")["spi_status"]
+        # Ignore the stale stall flag at standstill
+        return status & 0x0C == 0x04
 
 
 ######################################################################
