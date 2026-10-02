@@ -380,7 +380,7 @@ class Homing:
                     self._set_homing_accel(hi.accel, pre_homing=False)
                     self._set_homing_current(homing_axes, pre_homing=False)
 
-                if hi.retract_dist:
+                if hi.use_sensorless_homing and hi.retract_dist:
                     # Retract (again)
                     startpos = self._fill_coord(forcepos)
                     homepos = self._fill_coord(movepos)
