@@ -234,12 +234,14 @@ class ADS1220(LoadCellSensor):
         logging.info("ADS1220 finished '%s' measurements", self.name)
 
     def _process_batch(self, eventtime) -> BulkAdcData:
+        prev_overflows = self.ffreader.get_last_overflows()
+        prev_error_count = self.last_error_count
         samples = self.ffreader.pull_samples()
         self._convert_samples(samples)
         return {
             "data": samples,
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": self.last_error_count - prev_error_count,
+            "overflows": self.ffreader.get_last_overflows() - prev_overflows,
         }
 
     def reset_chip(self):

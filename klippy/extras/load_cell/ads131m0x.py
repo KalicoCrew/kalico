@@ -256,11 +256,14 @@ class ADS131MxBase(LoadCellSensor):
         logging.info(f"{self.sensor_type} finished '{self.name}' measurements")
 
     def _process_batch(self, eventtime):
+        prev_overflows = self.ffreader.get_last_overflows()
+        prev_error_count = self.last_error_count
         samples = self.ffreader.pull_samples()
+        data = self._convert_samples(samples)
         return {
-            "data": self._convert_samples(samples),
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "data": data,
+            "errors": self.last_error_count - prev_error_count,
+            "overflows": self.ffreader.get_last_overflows() - prev_overflows,
         }
 
     # --- SPI Communication Helpers ---

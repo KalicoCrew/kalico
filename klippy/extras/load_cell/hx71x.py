@@ -176,8 +176,8 @@ class HX71xBase(LoadCellSensor):
             self.consecutive_fails = 0
         return {
             "data": samples,
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": errors,
+            "overflows": overflows,
         }
 
 

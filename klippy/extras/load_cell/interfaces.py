@@ -12,7 +12,11 @@ from klippy.mcu import MCU
 
 
 class BulkAdcData(TypedDict):
-    """Dictionary returned by sensors containing raw sensor data"""
+    """Dictionary returned by sensors containing raw sensor data.
+
+    `errors` and `overflows` are counts new to this batch only (deltas since
+    the previous batch), not lifetime totals since measurements started.
+    """
 
     data: list[tuple[float, ...]]
     errors: int
