@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import logging
 import math
 import struct
 from collections import namedtuple
+from enum import Enum
 from time import strftime
 
 from ..thermistor import CustomThermistor
@@ -27,6 +30,10 @@ COIL_TUNE_STATUS_RUNNING = 1
 COIL_TUNE_TIMEOUT = 15.0  # seconds. The MCU self-aborts a stuck tune at 10 s
 COIL_TUNE_POLL_INTERVAL = 0.2  # seconds between latched-status polls
 COIL_TUNE_WAVE_PATH = "/tmp/indx_coil_waveform.csv"
+COIL_PRESENCE_STATUS_RUNNING = 1
+COIL_PRESENCE_STATUS_DONE = 2
+COIL_PRESENCE_TIMEOUT = 1.0
+COIL_PRESENCE_POLL_INTERVAL = 0.02
 FILAMENT_LOAD_THRESHOLD = 10.0
 FILAMENT_LOAD_PRIME_TIME = 5.0
 FILAMENT_LOAD_MAX_LENGTH = 120.0
@@ -46,6 +53,12 @@ NozzleTemperature = namedtuple(
         "delta_pwm_energy",
     ],
 )
+
+
+class InductivePresence(str, Enum):
+    UNKNOWN = "unknown"
+    PRESENT = "present"
+    ABSENT = "absent"
 
 
 def float_to_u32(val):
@@ -310,6 +323,11 @@ class IndxToolboardHeater:
         self.last_report = None
         self.power_scale = 0
         self.heaters = []
+        self.inductive_presence = InductivePresence.UNKNOWN
+        self.inductive_presence_time = None
+        self._ov_count = None
+        self.coil_presence_cmd = None
+        self.query_coil_presence_cmd = None
 
         gcode = self.toolboard.printer.lookup_object("gcode")
         gcode.register_command("INDX_SET_PID", self.cmd_SET_PID)
@@ -328,6 +346,11 @@ class IndxToolboardHeater:
         )
         gcode.register_command(
             "INDX_DUMP_MODEL_UPDATE", self.cmd_DUMP_MODEL_UPDATE
+        )
+        gcode.register_command(
+            "INDX_COIL_PRESENCE",
+            self.cmd_COIL_PRESENCE,
+            desc=self.cmd_COIL_PRESENCE_help,
         )
 
         gcode.register_command("INDX_LOG", self.cmd_LOG)
@@ -371,6 +394,17 @@ class IndxToolboardHeater:
             "indx_coil_tune_result status=%c error=%c on_first=%u off=%u on=%u",
             cq=self.cmd_queue,
         )
+        self.coil_presence_cmd = None
+        self.query_coil_presence_cmd = None
+        if mcu.try_lookup_command("indx_coil_presence") is not None:
+            self.coil_presence_cmd = mcu.lookup_command(
+                "indx_coil_presence", cq=self.cmd_queue
+            )
+            self.query_coil_presence_cmd = mcu.lookup_query_command(
+                "indx_query_coil_presence",
+                "indx_coil_presence_result status=%c tripped=%c",
+                cq=self.cmd_queue,
+            )
         amp_per_count = mcu.get_constant_float(
             "INDX_CURRENT_SENSE_AMP_PER_COUNT"
         )
@@ -532,6 +566,9 @@ class IndxToolboardHeater:
             self.thermal_model.force_temp(nozzle_temp)
 
         charge = params["charge"]
+        self._update_inductive_presence_from_report(
+            params["overvoltage"], power
+        )
         if self.last_report is not None:
             delta_time = time - self.last_report[0]
             delta_charge = charge - self.last_report[1]
@@ -618,6 +655,34 @@ class IndxToolboardHeater:
                     * (delta_time or 0.0),
                 )
             )
+
+    def get_inductive_presence(self, eventtime) -> tuple[str, float | None]:
+        time_since_entry = (
+            eventtime - self.inductive_presence_time
+            if self.inductive_presence_time is not None
+            else None
+        )
+        return self.inductive_presence.value, time_since_entry
+
+    def _set_inductive_presence(self, value):
+        self.inductive_presence = InductivePresence(value)
+        self.inductive_presence_time = (
+            self.toolboard.printer.get_reactor().monotonic()
+        )
+
+    def _update_inductive_presence_from_report(self, ov_count, power):
+        # First report, or MCU count reset: store the count and leave
+        # presence unchanged (unknown until the coil has been driven).
+        if self._ov_count is None or ov_count < self._ov_count:
+            self._ov_count = ov_count
+            return
+        tripped = ov_count != self._ov_count
+        self._ov_count = ov_count
+        if tripped:
+            self._set_inductive_presence(InductivePresence.ABSENT)
+            return
+        if power > 0.0:
+            self._set_inductive_presence(InductivePresence.PRESENT)
 
     def handle_vin_mon(self, _read_time, read_value):
         vin = read_value * 3.3 * (4700 + 60400) / 4700
@@ -1391,9 +1456,11 @@ class IndxToolboardHeater:
                 loaded_at_pos - start_pos,
                 last_pos - loaded_at_pos,
                 heat_capacity,
-                "Run SAVE_CONFIG to save the new filament parameters."
-                if apply_result
-                else "Use APPLY=1 to apply the measured filament parameters.",
+                (
+                    "Run SAVE_CONFIG to save the new filament parameters."
+                    if apply_result
+                    else "Use APPLY=1 to apply the measured filament parameters."
+                ),
             )
         )
 
@@ -1535,6 +1602,63 @@ class IndxToolboardHeater:
         else:
             gcmd.respond_info("Thermal model has not yet run")
 
+    cmd_COIL_PRESENCE_help = (
+        "Sample whether a steel nozzle is coupled to the INDX coil"
+    )
+
+    def cmd_COIL_PRESENCE(self, gcmd):
+        reactor = self.toolboard.printer.get_reactor()
+        if self.cur_target_temp() is not None:
+            presence, age = self.get_inductive_presence(reactor.monotonic())
+            gcmd.respond_info(
+                self._format_coil_presence(presence, age, heater_active=True)
+            )
+            return
+        if self.coil_timings is None:
+            raise gcmd.error(
+                "INDX coil timings are not set. Run INDX_CALIBRATE first."
+            )
+        if (
+            self.coil_presence_cmd is None
+            or self.query_coil_presence_cmd is None
+        ):
+            raise gcmd.error(
+                "INDX toolboard firmware does not support coil presence. "
+                "Flash the toolboard."
+            )
+        self.coil_presence_cmd.send([])
+        deadline = reactor.monotonic() + COIL_PRESENCE_TIMEOUT
+        while True:
+            result = self.query_coil_presence_cmd.send([])
+            status = result["status"]
+            if status != COIL_PRESENCE_STATUS_RUNNING:
+                break
+            if reactor.monotonic() > deadline:
+                raise gcmd.error("INDX coil presence check timed out")
+            reactor.pause(reactor.monotonic() + COIL_PRESENCE_POLL_INTERVAL)
+        if status != COIL_PRESENCE_STATUS_DONE:
+            raise gcmd.error(
+                "INDX coil presence check failed "
+                "(coil busy, tune active, or timings not set)"
+            )
+        if result["tripped"]:
+            self._set_inductive_presence(InductivePresence.ABSENT)
+        else:
+            self._set_inductive_presence(InductivePresence.PRESENT)
+        presence, age = self.get_inductive_presence(reactor.monotonic())
+        gcmd.respond_info(
+            self._format_coil_presence(presence, age, heater_active=False)
+        )
+
+    def _format_coil_presence(self, presence, age, heater_active):
+        if presence == InductivePresence.UNKNOWN or age is None:
+            msg = "INDX coil presence: unknown"
+        else:
+            msg = "INDX coil presence: %s (age %.3fs)" % (presence, age)
+        if heater_active:
+            msg += " (heater active, no pulse)"
+        return msg
+
     def cmd_LOG(self, gcmd):
         if self.log_file is not None:
             self.log_file.close()
@@ -1576,9 +1700,11 @@ class IndxToolboardHeater:
         path = "/tmp/indx_raw_ir_%s.csv" % strftime("%Y%m%d_%H%M%S")
         self.raw_ir_log_file = open(path, "w")
         names = [
-            n[len("temperature_sensor ") :]
-            if n.startswith("temperature_sensor ")
-            else n
+            (
+                n[len("temperature_sensor ") :]
+                if n.startswith("temperature_sensor ")
+                else n
+            )
             for n in self.raw_ir_log_sensors
         ]
         header = ["time", "raw_object", "raw_ambient"] + names

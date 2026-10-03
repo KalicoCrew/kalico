@@ -118,5 +118,16 @@ INDX_LOAD_FILAMENT
 Use `INDX_CLEAR_FILAMENT` to reset the filament parameters, and
 `SAVE_CONFIG` to persist any of these values.
 
+## Coil presence
+
+Steel in the coil damps the resonant tank. Tuned drive stays below the
+100 V overvoltage trip; an empty coil overshoots and trips. While the
+heater is running, `printer.indx.inductive_presence` updates from those
+trips on each temperature report.
+
+At idle there is no tank voltage, so run `INDX_COIL_PRESENCE` to fire a
+single burst. The coil must already be tuned. Use
+`inductive_presence_age` to ignore a stale idle reading.
+
 See the [G-Code reference](G-Codes.md#indx) for the full list of INDX
 commands and their parameters.

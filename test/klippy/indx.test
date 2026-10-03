@@ -7,6 +7,9 @@ INDX_LED_FORCE_COLOR RED=10 GREEN=20 BLUE=30
 INDX_LED_FORCE_COLOR CLEAR=1
 INDX_LED_SET_CURRENT RED=10 GREEN=10 BLUE=10
 INDX_FORCE_BRACKET_TEMP TEMP=25
+ASSERT TEST='{"INDX_COIL_PRESENCE" in printer.gcode.commands}'
 
 # Verify the toolboard status is exported
 ASSERT TEST='{printer.indx.last_dock_measurement is none}'
+ASSERT TEST='{printer.indx.inductive_presence == "unknown"}'
+ASSERT TEST='{printer.indx.inductive_presence_age is none}'
