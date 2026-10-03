@@ -1008,7 +1008,7 @@ class LoadCellPrinterProbe:
         wrapper = LoadCellEndstopWrapper(
             config, homing_move, self._tapping_move
         )
-        printer_probe = PrinterProbe(config, wrapper)
+        printer_probe = PrinterProbe(config, wrapper, always_retract=True)
         self._printer.add_object("probe", printer_probe)
 
     def get_status(self, eventtime):
