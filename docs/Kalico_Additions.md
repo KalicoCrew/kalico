@@ -38,6 +38,7 @@
 ## Probes and Probing
 
 - [`[probe] drop_first_result: True`](./Config_Reference.md#probe) will drop the first result when probing. This can improve probe accuracy for printers that have an outlier for the first sample.
+- [`[probe <name>]`](./Config_Reference.md#probe) adds named probes, so a printer can have more than one. Pick one with `PROBE=<name>` on probing commands and list them with [`LIST_PROBES`](./G-Codes.md#list_probes).
 - [`[dockable_probe]`](./Config_Reference.md#dockable_probe) brings helpful native support for docked probes, such as the Annex Quickdraw, Klicky/Unklicky, and countless others.
 - [`[z_calibration]`](./Config_Reference.md#z_calibration) enables automatic probe Z offset calibration using a reference endstop like the Voron 2.4 nozzle endstop.
 - [`[z_tilt_ng]`](./Config_Reference.md#z_tilt_ng) adds enforced 3-point z tilt calibration
