@@ -7357,7 +7357,8 @@ position_max:
 #   Distance to backoff (in mm) before homing a second time during
 #   homing. If `use_sensorless_homing` is false, this setting can be set
 #   to zero to disable the second home. If `use_sensorless_homing` is
-#   true, this setting can be &gt; 0 to backoff after homing. The default
+#   true, this setting can be &gt; 0 to backoff after homing (physical
+#   endstops stay on the endstop after the final touch). The default
 #   is 5mm.
 #homing_retract_speed:
 #   Speed to use on the retract move after homing in case this should
