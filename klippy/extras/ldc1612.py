@@ -180,6 +180,9 @@ class LDC1612:
     def add_client(self, cb):
         self.batch_bulk.add_client(cb)
 
+    def get_sample_rate(self):
+        return self.data_rate
+
     # Homing
     def setup_home(
         self, print_time, trigger_freq, trsync_oid, hit_reason, err_reason
@@ -206,8 +209,10 @@ class LDC1612:
             mv = val & 0x0FFFFFFF
             if mv != val:
                 self.last_error_count += 1
+                continue
             samples[count] = (round(ptime, 6), round(freq_conv * mv, 3), 999.9)
             count += 1
+        del samples[count:]
 
     # Start, stop, and process message batches
     def _start_measurements(self):

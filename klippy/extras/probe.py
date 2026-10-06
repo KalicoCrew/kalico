@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import math
 from enum import IntEnum
-from typing import Optional, Union
+from typing import NamedTuple, Optional, Protocol, Union, cast
 
 from klippy import Printer, configfile, pins
 from klippy.configfile import ConfigWrapper
@@ -35,6 +35,8 @@ class RetryStrategy(IntEnum):
 
 
 MAX_CIRCLE_RETRIES: int = 6 * 3
+
+RAPID_SCAN_WINDOW_SIZE: float = 2.0
 
 
 class RetryPolicy:
@@ -290,6 +292,26 @@ class RetrySession:
 
     def set_retry_strategy(self, retry_strategy: RetryStrategy) -> None:
         self.retry_policy.bad_probe_strategy = retry_strategy
+
+
+class ProbeDistanceResult(NamedTuple):
+    time: float
+    distance: float
+
+
+# Probes that support distance collection(eddy current sensors e.g.) implement a `begin_collect_distance()`
+# method which returns this object.
+class ProbeDistanceCollector(Protocol):
+    # Finish collecting samples, and return all collected samples.
+    # Finish can be called multiple times, but only the first call must always
+    # return meaningful data. Any later calls can return any(or no) data, as
+    # long as collection is eventually stopped.
+    def finish(self, before_time: float) -> list[ProbeDistanceResult]: ...
+
+    # Minimum expected sample rate during the collection. The rapid scanning
+    # routine will add some slack, but providing samples at a much lower rate
+    # than this will result in missing samples.
+    def sample_rate(self) -> float: ...
 
 
 class sentinel:
@@ -1104,11 +1126,6 @@ class ProbePointsHelper:
                 "Either select a probe with PROBE= or use METHOD=manual "
                 "to enter manual probing mode."
             )
-        if method == "rapid_scan":
-            gcmd.respond_info(
-                "METHOD=rapid_scan not supported, using automatic"
-            )
-            method = "automatic"
 
         self.results = []
         self._probe_pass_direction_reversed = self.start_reverse
@@ -1125,6 +1142,17 @@ class ProbePointsHelper:
         )
         if enforce_lift_speed is not None:
             self.enforce_lift_speed = enforce_lift_speed
+
+        if probe is not None and method == "rapid_scan":
+            mcu_probe = probe.mcu_probe
+            can_scan = hasattr(mcu_probe, "begin_collect_distance")
+            if can_scan:
+                return self._start_rapid_scan(gcmd, probe)
+            else:
+                gcmd.respond_info(
+                    f"METHOD=rapid_scan not supported for probe {probe.name}, using automatic"
+                )
+                method = "automatic"
 
         if probe is None or method != "automatic":
             # Manual probe
@@ -1149,6 +1177,165 @@ class ProbePointsHelper:
             self._store_probe_result(pos)
         probe.multi_probe_end()
         self.retry_session.end()
+
+    def _start_rapid_scan(self, gcmd: GCodeCommand, probe: PrinterProbe):
+        toolhead: ToolHead = self.printer.lookup_object("toolhead")
+
+        self.probe_offsets = probe.get_offsets()
+        if self.horizontal_move_z < self.probe_offsets[2]:
+            raise gcmd.error(
+                "horizontal_move_z can't be less than probe's z_offset"
+            )
+        scan_height = self.horizontal_move_z
+        self.lift_speed = probe.get_lift_speed(gcmd)
+        max_speed, _ = toolhead.get_max_velocity()
+        probe_speed = gcmd.get_float("PROBE_SPEED", probe.speed, above=0.0)
+        scan_speed = gcmd.get_float(
+            "SCAN_SPEED",
+            min(self.speed, max_speed),
+            above=0.0,
+            maxval=max_speed,
+        )
+
+        window = RAPID_SCAN_WINDOW_SIZE / scan_speed
+
+        axis_twist_compensation = self.printer.lookup_object(
+            "axis_twist_compensation", None
+        )
+
+        probe.multi_probe_begin()
+
+        done = False
+        while not done:
+            # If needed, raise up so we can move down to pull out backlash
+            cur_pos = toolhead.get_position()
+            if cur_pos[2] < scan_height + 0.5:
+                cur_pos[2] = scan_height + 0.5
+                toolhead.manual_move(cur_pos, self.lift_speed)
+
+            # Move down to scan height
+            cur_pos[2] = scan_height
+            toolhead.manual_move(cur_pos, probe_speed)
+
+            path = self._generate_rapid_path()
+
+            toolhead.manual_move(path[0][0], scan_speed)
+            toolhead.wait_moves()
+
+            session = cast(
+                ProbeDistanceCollector, probe.mcu_probe.begin_collect_distance()
+            )
+            try:
+                sample_rate = session.sample_rate()
+                sample_interval = 1.0 / sample_rate
+
+                if window < sample_interval:
+                    max_speed = round(2.0 * sample_rate, 1)
+                    raise gcmd.error(
+                        "Sample rate is not high enough for the requested speed. "
+                        f"At {sample_rate} Hz, maximum possible speed is ~{max_speed} mm/s but {scan_speed} mm/s was requested. "
+                        "Actual attainable speed may be lower."
+                    )
+
+                toolhead.dwell(sample_interval)
+
+                point_times: list[tuple[float, tuple[float, float]]] = []
+
+                def capture_timestamp(time: float, point: tuple[float, float]):
+                    point_times.append((time, point))
+
+                for point, capture in path[1:]:
+                    toolhead.manual_move(point, scan_speed)
+                    if capture:
+                        toolhead.register_lookahead_callback(
+                            lambda time, p=point: capture_timestamp(time, p)
+                        )
+
+                toolhead.wait_moves()
+                toolhead.dwell(sample_interval)
+                samples = session.finish(toolhead.get_last_move_time())
+            except Exception:
+                session.finish(toolhead.get_last_move_time())
+                raise
+
+            # In `point_times` we now have the timestamp of reaching each point in `self.probe_points`,
+            # and we have all the (time,dist) samples. Both will be monotonically increasing in time,
+            # so walk through them together and calculate the bed surface z.
+
+            j = 0
+
+            # Window catches all samples within a 2mm disc centered on the target point,
+            # based on the maximum speed during the scan. Moving slower results in a bigger time window
+            # and thus more samples for that point.
+            half_window = window / 2.0
+            for time, point in point_times:
+                earliest = time - half_window
+                latest = time + half_window
+                while j < len(samples) and samples[j].time < earliest:
+                    j += 1
+                end = j
+                while end < len(samples) and samples[end].time < latest:
+                    end += 1
+                if j == end:
+                    raise gcmd.error(
+                        f"Scanning failed. Point at ({point[0]},{point[1]}) had no samples collected for it."
+                    )
+                relevant = samples[j:end]
+                invalid = any(abs(p.distance) >= 99.0 for p in relevant)
+                if invalid:
+                    raise gcmd.error(
+                        f"Scanning failed. Point at ({point[0]},{point[1]}) gathered one or more invalid samples."
+                    )
+                distance = sum([p.distance for p in relevant]) / (end - j)
+                z = scan_height - distance + self.probe_offsets[2]
+                if axis_twist_compensation is not None:
+                    z += axis_twist_compensation.get_z_compensation_value(
+                        (point[0], point[1], scan_height)
+                    )
+                self._store_probe_result((point[0], point[1], z))
+
+            res = self.finalize_callback(self.probe_offsets, self.results)
+            self.results = []
+            if isinstance(res, (int, float)):
+                if res == 0:
+                    done = True
+                if self.adaptive_horizontal_move_z:
+                    # then res is error
+                    error = math.ceil(res)
+                    scan_height = max(
+                        error + self.probe_offsets[2],
+                        self.min_horizontal_move_z,
+                    )
+            elif res != "retry":
+                done = True
+            if not done and self.alternate_probe_direction:
+                self._probe_pass_direction_reversed = (
+                    not self._probe_pass_direction_reversed
+                )
+
+        probe.multi_probe_end()
+        self.retry_session.end()
+
+    def _generate_rapid_path(self) -> list[tuple[tuple[float, float], bool]]:
+        # TODO: When changing direction, add an arc where the points don't capture
+        points = []
+
+        source = self.probe_points
+        if self._probe_pass_direction_reversed:
+            source = list(reversed(source))
+
+        (x, y) = source[0]
+        if self.use_offsets:
+            x -= self.probe_offsets[0]
+            y -= self.probe_offsets[1]
+        points.append(((x, y), False))
+
+        for x, y in source:
+            if self.use_offsets:
+                x -= self.probe_offsets[0]
+                y -= self.probe_offsets[1]
+            points.append(((x, y), True))
+        return points
 
     def _manual_probe_start(self):
         done = self._move_next()

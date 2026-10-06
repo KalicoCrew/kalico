@@ -6,7 +6,7 @@
 import bisect
 import math
 
-from klippy import mcu
+from klippy import gcode, mcu
 
 from . import manual_probe, probe
 
@@ -212,6 +212,49 @@ class EddyCalibration:
         )
 
 
+class EddyDistanceCollector(probe.ProbeDistanceCollector):
+    def __init__(self, endstop_wrapper: "EddyEndstopWrapper"):
+        self.endstop_wrapper = endstop_wrapper
+        self.samples = []
+        self.stop_after = None
+        self.stop_notify = endstop_wrapper._printer.get_reactor().completion()
+        endstop_wrapper._sensor_helper.add_client(self._collect_samples)
+
+    def _collect_samples(self, msg):
+        samples = msg["data"]
+
+        for sample in samples:
+            time = sample[0]
+
+            if self.stop_after is not None and time >= self.stop_after:
+                samples = self.samples
+                self.samples = []
+                self.stop_notify.complete(samples)
+                return False
+
+            self.samples.append(probe.ProbeDistanceResult(time, sample[2]))
+
+        return True
+
+    def finish(self, before_time: float) -> list[probe.ProbeDistanceResult]:
+        self.stop_after = before_time
+        now = self.endstop_wrapper._printer.get_reactor().monotonic()
+        timeout = (
+            before_time
+            - self.endstop_wrapper._mcu.estimated_print_time(now)
+            + 1.0
+        )
+        ret = self.stop_notify.wait(now + timeout)
+        if ret is None:
+            raise gcode.CommandError(
+                "Timeout waiting for eddy current probe sample collection"
+            )
+        return ret
+
+    def sample_rate(self) -> float:
+        return self.endstop_wrapper._sensor_helper.get_sample_rate()
+
+
 # Helper for implementing PROBE style commands
 class EddyEndstopWrapper:
     REASON_SENSOR_ERROR = mcu.MCU_trsync.REASON_COMMS_TIMEOUT + 1
@@ -349,6 +392,9 @@ class EddyEndstopWrapper:
         new_pos = toolhead.get_position()
         new_pos[2] += self._z_offset - halt_z
         return new_pos
+
+    def begin_collect_distance(self):
+        return EddyDistanceCollector(self)
 
     def multi_probe_begin(self):
         if not self._calibration.is_calibrated():
