@@ -156,6 +156,10 @@ config WANT_TMCUART
     bool
     depends on HAVE_GPIO
     default y
+config WANT_TMC_SPI_ENDSTOP
+    bool
+    depends on WANT_SPI && !HAVE_LIMITED_CODE_SIZE
+    default y
 config WANT_NEOPIXEL
     bool
     depends on HAVE_GPIO
