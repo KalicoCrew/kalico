@@ -11,9 +11,13 @@ exceptiongroup==1.2.2 ; python_full_version < '3.11'
 execnet==2.1.1
     # via pytest-xdist
 filelock==3.19.1 ; python_full_version < '3.10'
-    # via virtualenv
+    # via
+    #   python-discovery
+    #   virtualenv
 filelock==3.29.7 ; python_full_version >= '3.10'
-    # via virtualenv
+    # via
+    #   python-discovery
+    #   virtualenv
 identify==2.6.6
     # via pre-commit
 iniconfig==2.0.0
@@ -21,7 +25,9 @@ iniconfig==2.0.0
 nodeenv==1.9.1
     # via pre-commit
 packaging==24.2
-    # via pytest
+    # via
+    #   pytest
+    #   virtualenv
 platformdirs==4.3.6
     # via virtualenv
 pluggy==1.5.0
@@ -32,6 +38,8 @@ pygments==2.20.0
 pytest==8.4.2
     # via pytest-xdist
 pytest-xdist==3.8.0
+python-discovery==1.6.1
+    # via virtualenv
 pyyaml==6.0.2
     # via pre-commit
 ruff==0.15.22
@@ -39,5 +47,5 @@ tomli==2.2.1 ; python_full_version < '3.11'
     # via pytest
 typing-extensions==4.13.2 ; python_full_version < '3.11'
     # via virtualenv
-virtualenv==20.36.1
+virtualenv==21.14.5
     # via pre-commit
