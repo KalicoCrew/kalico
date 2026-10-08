@@ -332,6 +332,8 @@ class EddyEndstopWrapper:
         trigger_time = self._sensor_helper.clear_home()
         self._stop_measurements(is_home=True)
         res = self._dispatch.stop()
+        if res == self.REASON_SENSOR_ERROR:
+            raise self._printer.command_error("Sensor readout error")
         if res >= mcu.MCU_trsync.REASON_COMMS_TIMEOUT:
             raise self._printer.command_error(
                 "Communication timeout during homing"

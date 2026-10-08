@@ -2870,6 +2870,10 @@ sensor_type: ldc1612
 #intb_pin:
 #   MCU gpio pin connected to the ldc1612 sensor's INTB pin (if
 #   available). The default is to not use the INTB pin.
+#amplitude_errors: both
+#   Controls the amplitude related errors that will register as sensor failure.
+#   Valid options are: none, low, high, both. Defaults to both, meaning
+#   any amplitude related errors register as sensor failure.
 #z_offset:
 #   The nominal distance (in mm) between the nozzle and bed that a
 #   probing attempt should stop at. This parameter must be provided.
