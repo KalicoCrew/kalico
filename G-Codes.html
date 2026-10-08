@@ -3157,6 +3157,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#list_probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LIST_PROBES
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#query_probe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -8394,6 +8405,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#list_probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LIST_PROBES
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#query_probe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -9790,7 +9812,7 @@ available for tle5012b chips.</p>
 <a href="Config_Reference.html#axis_twist_compensation">axis_twist_compensation config
 section</a> is enabled.</p>
 <h4 id="axis_twist_compensation_calibrate">AXIS_TWIST_COMPENSATION_CALIBRATE<a class="headerlink" href="#axis_twist_compensation_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=&lt;X|Y&gt;]
+<p><code>AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=&lt;name&gt;] [AXIS=&lt;X|Y&gt;]
 [SAMPLE_COUNT=&lt;value&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>:</p>
 <p>Calibrates axis twist compensation by specifying the target axis or
 enabling automatic calibration.</p>
@@ -10970,7 +10992,7 @@ information from your slicer to Kalico.</p>
 <a href="Config_Reference.html#bltouch">bltouch config section</a> is enabled (also
 see the <a href="Probe_Calibrate.html">probe calibrate guide</a>).</p>
 <h4 id="probe_1">PROBE<a class="headerlink" href="#probe_1" title="Permanent link">&para;</a></h4>
-<p><code>PROBE [PROBE_SPEED=&lt;mm/s&gt;] [LIFT_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
+<p><code>PROBE [PROBE=&lt;name&gt;] [PROBE_SPEED=&lt;mm/s&gt;] [LIFT_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
 [SAMPLE_RETRACT_DIST=&lt;mm&gt;] [SAMPLES_TOLERANCE=&lt;mm&gt;]
 [SAMPLES_TOLERANCE_RETRIES=&lt;count&gt;] [SAMPLES_RESULT=median|average]
 [BAD_PROBE_STRATEGY=&lt;FAIL|IGNORE|RETRY|CIRCLE&gt;] [BAD_PROBE_RETRIES=&lt;count&gt;]
@@ -10979,7 +11001,9 @@ Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the <a href="Config_Reference.html#probe">probe config section</a>.</p>
 <ul>
-<li><code>HOME</code>: Set the value <code>z</code> to home the z axis from the probe result
+<li><code>HOME</code>: Set the value <code>z</code> to home the z axis from the probe result</li>
+<li><code>PROBE</code>: Name of probe to use for this operation. Leave out to use the 
+  default probe.
 The following optional parameters control probe quality handling (for probes
 that support quality detection): ⚠️</li>
 <li><code>BAD_PROBE_STRATEGY</code>: Strategy to use when a bad probe is detected.
@@ -10990,17 +11014,19 @@ that support quality detection): ⚠️</li>
 <li><code>PATTERN_SPACING</code>: Spacing (in mm) for the circular retry pattern when
   using CIRCLE strategy.</li>
 </ul>
+<h4 id="list_probes">LIST_PROBES<a class="headerlink" href="#list_probes" title="Permanent link">&para;</a></h4>
+<p><code>LIST_PROBES</code>: List the registered probes.</p>
 <h4 id="query_probe">QUERY_PROBE<a class="headerlink" href="#query_probe" title="Permanent link">&para;</a></h4>
-<p><code>QUERY_PROBE</code>: Report the current status of the probe ("triggered" or
+<p><code>QUERY_PROBE [PROBE=&lt;name&gt;]</code>: Report the current status of the probe ("triggered" or
 "open").</p>
 <h4 id="probe_accuracy">PROBE_ACCURACY<a class="headerlink" href="#probe_accuracy" title="Permanent link">&para;</a></h4>
-<p><code>PROBE_ACCURACY [PROBE_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
+<p><code>PROBE_ACCURACY [PROBE=&lt;name&gt;] [PROBE_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
 [SAMPLE_RETRACT_DIST=&lt;mm&gt;]</code>: Calculate the maximum, minimum, average,
 median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.</p>
 <h4 id="probe_calibrate">PROBE_CALIBRATE<a class="headerlink" href="#probe_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>PROBE_CALIBRATE [SPEED=&lt;speed&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>: Run a
+<p><code>PROBE_CALIBRATE [PROBE=&lt;name&gt;] [SPEED=&lt;speed&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>: Run a
 helper script useful for calibrating the probe's z_offset. See the
 PROBE command for details on the optional probe parameters. See the
 MANUAL_PROBE command for details on the SPEED parameter and the
@@ -11008,7 +11034,7 @@ additional commands available while the tool is active. Please note,
 the PROBE_CALIBRATE command uses the speed variable to move in XY
 direction as well as Z.</p>
 <h4 id="z_offset_apply_probe">Z_OFFSET_APPLY_PROBE<a class="headerlink" href="#z_offset_apply_probe" title="Permanent link">&para;</a></h4>
-<p><code>Z_OFFSET_APPLY_PROBE</code>: Take the current Z Gcode offset (aka,
+<p><code>Z_OFFSET_APPLY_PROBE [PROBE=&lt;name&gt;]</code>: Take the current Z Gcode offset (aka,
 babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a <code>SAVE_CONFIG</code> to take effect.</p>
@@ -11619,9 +11645,9 @@ automatically upon homing.</li>
 <a href="Config_Reference.html#z_calibration">z_calibration config section</a> is enabled
 (also see the <a href="Z_Calibration.html">Z-Calibration guide</a>):</p>
 <ul>
-<li><code>CALIBRATE_Z</code>: This calibrates the current offset between the nozzle and
+<li><code>CALIBRATE_Z [PROBE=&lt;probe&gt;]</code>: This calibrates the current offset between the nozzle and
   the print surface.</li>
-<li><code>PROBE_Z_ACCURACY [PROBE_SPEED=&lt;mm/s&gt;] [LIFT_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
+<li><code>PROBE_Z_ACCURACY [PROBE=&lt;probe&gt;] [PROBE_SPEED=&lt;mm/s&gt;] [LIFT_SPEED=&lt;mm/s&gt;] [SAMPLES=&lt;count&gt;]
   [SAMPLE_RETRACT_DIST=&lt;mm&gt;]</code>: Calculate the maximum, minimum,
   average, median, and standard deviation of multiple probe
   samples. By default, 10 SAMPLES are taken. Otherwise the optional
