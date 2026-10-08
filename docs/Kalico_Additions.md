@@ -64,6 +64,7 @@
 ## TMC Drivers
 
 - [`[tmc2240] driver_CS and current_range`](./Config_Reference.md#tmc2240) let you tune the current scaler and current range of your tmc2240 drivers.
+- [Sensorless homing via SPI](./TMC_Drivers.md#sensorless-homing-via-spi) polls the stallguard flag of SPI drivers, so no DIAG pin is needed.
 
 ## Macros
 
