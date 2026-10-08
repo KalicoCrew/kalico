@@ -3570,9 +3570,9 @@ Using this endpoint may increase Klipper's system load.</p>
 <code>{"id": 123, "method":"load_cell/dump_force",
 "params": {"sensor": "load_cell", "response_template": {}}}</code>
 and might return:
-<code>{"id": 123,"result":{"header":["time", "force (g)", "counts", "tare_counts"]}}</code>
+<code>{"id": 123,"result":{"header":["time", "force (g)", "counts", "tare_counts", "channel-0 force (g)", "channel-0 counts"]}}</code>
 and might later produce asynchronous messages such as:
-<code>{"params":{"data":[[3292.432935, 40.65, 562534, -234467]]}}</code></p>
+<code>{"params":{"data":[[3292.432935, 40.65, 562534, -234467, 40.65, 562534]]}}</code></p>
 <p>The "header" field in the initial query response is used to describe
 the fields found in later "data" responses.</p>
 <h3 id="load_cell_probedump_taps">load_cell_probe/dump_taps<a class="headerlink" href="#load_cell_probedump_taps" title="Permanent link">&para;</a></h3>

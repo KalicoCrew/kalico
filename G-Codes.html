@@ -10492,8 +10492,8 @@ seconds of load cell data and reports statistics that can help you verify proper
 operation of the load cell. This command can be run on both calibrated and
 uncalibrated load cells.</p>
 <h3 id="load_cell_calibrate">LOAD_CELL_CALIBRATE<a class="headerlink" href="#load_cell_calibrate" title="Permanent link">&para;</a></h3>
-<p><code>LOAD_CELL_CALIBRATE [LOAD_CELL=&lt;config_name&gt;]</code>: Start the guided calibration
-utility. Calibration is a 3 step process:</p>
+<p><code>LOAD_CELL_CALIBRATE [LOAD_CELL=&lt;config_name&gt;] [TARE=TRUE] [SAVE=TRUE]</code>: 
+Start the guided calibration utility. Calibration is a 3 step process:</p>
 <ol>
 <li>First you remove all load from the load cell and run the <code>TARE</code> command</li>
 <li>Next you apply a known load to the load cell and run the
@@ -10501,6 +10501,11 @@ utility. Calibration is a 3 step process:</p>
 <li>Finally use the <code>ACCEPT</code> command to save the results</li>
 </ol>
 <p>You can cancel the calibration process at any time with <code>ABORT</code>.</p>
+<p>If the <code>TARE</code> option is included <code>reference_tare_counts</code> will be set at the
+current force. The <code>SAVE</code> option also prompts you to save the value and restart
+the printer. The default is to not save the value. Use this option to home the
+load cell in a print start routine at a time when the force on the load cell is
+'zero'. E.g. after [safe_z_home] or similar safety move.</p>
 <h3 id="load_cell_tare">LOAD_CELL_TARE<a class="headerlink" href="#load_cell_tare" title="Permanent link">&para;</a></h3>
 <p><code>LOAD_CELL_TARE [LOAD_CELL=&lt;config_name&gt;]</code>: This works just like the tare button
 on digital scale. It sets the current raw reading of the load cell to be the
