@@ -158,6 +158,12 @@ class TMCErrorCheck:
         # Setup for temperature query
         self.adc_temp = None
         self.adc_temp_reg = self.fields.lookup_register("adc_temp")
+        # Optional driver-specific ADC->°C converter. The default formula
+        # (`(v - 2038) / 7.7`) below matches the TMC2240's 13-bit
+        # ADC_TEMP. Drivers with a different ADC width or scaling can
+        # set a `temp_from_adc(adc_value) -> celsius` callable on their
+        # mcu_tmc instance to override.
+        self.temp_from_adc = getattr(mcu_tmc, "temp_from_adc", None)
         if self.adc_temp_reg is not None:
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.register_monitor(config)
@@ -255,7 +261,10 @@ class TMCErrorCheck:
             return {"drv_status": None, "temperature": None}
         temp = None
         if self.adc_temp is not None:
-            temp = round((self.adc_temp - 2038) / 7.7, 2)
+            if self.temp_from_adc is not None:
+                temp = round(self.temp_from_adc(self.adc_temp), 2)
+            else:
+                temp = round((self.adc_temp - 2038) / 7.7, 2)
         last_value, reg_name = self.drv_status_reg_info[:2]
         if last_value != self.last_drv_status:
             self.last_drv_status = last_value
