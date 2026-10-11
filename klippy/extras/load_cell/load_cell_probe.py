@@ -1026,4 +1026,6 @@ class LoadCellPrinterProbe:
         return self._printer_probe
 
     def get_status(self, eventtime):
-        return self._tapping_move.get_status(eventtime)
+        status = self._tapping_move.get_status(eventtime)
+        status["last_z_result"] = self._printer_probe.last_z_result
+        return status
