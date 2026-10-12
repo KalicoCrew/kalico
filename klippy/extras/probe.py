@@ -328,12 +328,20 @@ class ProbeList:
         return probes
 
     def __init__(self, printer):
+        self.printer = printer
         self.probes: dict[str, PrinterProbe] = {}
         self.default_probe = None
+        printer.register_event_handler("klippy:connect", self._handle_connect)
         gcode = printer.lookup_object("gcode")
         gcode.register_command(
             "LIST_PROBES", self.cmd_LIST_PROBES, desc=self.cmd_LIST_PROBES_help
         )
+
+    def _handle_connect(self):
+        if self.default_probe is None:
+            probe = self.printer.lookup_object("probe", None)
+            if probe is not None:
+                self.default_probe = ("probe", probe)
 
     def get_status(self, eventtime):
         return {

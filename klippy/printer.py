@@ -337,6 +337,9 @@ class Printer:
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
+        from .extras.probe import ProbeList
+
+        ProbeList.get_list(self)
         for section_config in config.get_prefix_sections(""):
             self.load_object(config, section_config.get_name(), None)
         # Kalico on-by-default extras
