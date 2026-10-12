@@ -805,9 +805,16 @@ class TMCSpiEndstop:
     POLL_TIME = 0.001
     # Stallguard needs some time at speed before its flag is valid
     SETTLE_TIME = 0.150
+    # Matches MAX_DATA_LEN in src/tmc_spi_endstop.c
+    MAX_CHAIN_LEN = 8
 
     def __init__(self, printer, mcu_tmc):
         tmc_spi = mcu_tmc.tmc_spi
+        if tmc_spi.chain_len > self.MAX_CHAIN_LEN:
+            raise printer.config_error(
+                "Sensorless homing via SPI supports at most %d drivers"
+                " in a daisy chain" % (self.MAX_CHAIN_LEN,)
+            )
         self._printer = printer
         self._mutex = mcu_tmc.mutex
         self._mcu_tmc = mcu_tmc

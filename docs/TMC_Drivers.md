@@ -275,7 +275,7 @@ endstop_pin: tmc5160_stepper_x:virtual_endstop
 ...
 ```
 The flag is polled every 1ms and is ignored until the axis has reached
-the homing speed (plus 50ms), so the homing move must start far enough
+the homing speed (plus 150ms), so the homing move must start far enough
 from the end of the rail to finish accelerating. Setting `min_home_dist`
 in the stepper section (e.g. 15mm) makes Kalico back off and home again
 when it starts too close. This is not available on UART drivers.

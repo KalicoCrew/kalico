@@ -13,6 +13,7 @@
 #include "spicmds.h" // spidev_transfer
 #include "trsync.h" // trsync_do_trigger
 
+// 5 byte datagram per driver, up to 8 drivers in a daisy chain
 #define MAX_DATA_LEN 40
 #define SPI_STATUS_SG2 0x04
 
