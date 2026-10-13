@@ -131,9 +131,10 @@ Kalico supports many standard 3d printer features:
   speed can be monitored on fans that have a tachometer.
 
 * Support for run-time configuration of TMC2130, TMC2208/TMC2224,
-  TMC2209, TMC2240, TMC2660, TMC5160 and TMC2160 stepper motor drivers.
-  There is also support for current control of traditional stepper drivers
-  via AD5206, DAC084S085, MCP4451, MCP4728, MCP4018, and PWM pins.
+  TMC2209, TMC2240, TMC2660, TMC5160, TMC2160 and TMC5262 stepper motor
+  drivers. There is also support for current control of traditional
+  stepper drivers via AD5206, DAC084S085, MCP4451, MCP4728, MCP4018, and
+  PWM pins.
 
 * Support for common LCD displays attached directly to the printer. A
   default menu is also available. The contents of the display and menu
