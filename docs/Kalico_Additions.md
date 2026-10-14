@@ -9,6 +9,7 @@
 ## Additional configuration options
 
 - [`[mcu] is_non_critical`](./Config_Reference.md#mcu) enables marking of an mcu as optional - it can be freely disconnected and connected at will. (useful for MCU-based accelerometer boards, mcu-based probes that shut down in hot chambers, etc...)
+- [`[mcu] is_child_mcu`](./Config_Reference.md#mcu) enables marking of an mcu as a child - this means the mcu may loose communication because the mcu it's connected to keeps power during firmware reset but not the usb communication. (useful for MCUs connected through Orbitool usb hub or other similar toolboard mcus with a usb hub, etc...)
 - [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust Kalico values that were previously hidden
 - Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#corexy-kinematics-with-limits-for-x-and-y-axes)
 - `--rotate-log-at-restart` can be added to your Kalico start script or service to force log rotation every restart.
