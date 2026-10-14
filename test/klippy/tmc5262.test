@@ -1,0 +1,31 @@
+# Tests for the TMC5262 driver
+CONFIG tmc5262.cfg
+DICTIONARY atmega2560.dict
+
+; Home and move to seed register state
+G28
+G90
+G1 F6000
+G1 X1
+G1 Y1
+G1 Z1
+
+; DUMP_TMC must work on both steppers (covers register dump path)
+DUMP_TMC STEPPER=stepper_x
+DUMP_TMC STEPPER=stepper_x1
+
+; Test re-init (writes every register again, including PLL)
+INIT_TMC STEPPER=stepper_x
+INIT_TMC STEPPER=stepper_x1
+
+; Current changes - exercise the IFS/IRUN math at multiple range buckets
+SET_TMC_CURRENT STEPPER=stepper_x CURRENT=1.0
+SET_TMC_CURRENT STEPPER=stepper_x CURRENT=2.0
+SET_TMC_CURRENT STEPPER=stepper_x1 CURRENT=0.3
+
+; Field writes - exercise CHOPCONF, COOLCONF and DRV_CONF paths
+SET_TMC_FIELD STEPPER=stepper_x FIELD=intpol VALUE=0
+SET_TMC_FIELD STEPPER=stepper_x FIELD=tbl VALUE=1
+SET_TMC_FIELD STEPPER=stepper_x FIELD=slope_control VALUE=2
+SET_TMC_FIELD STEPPER=stepper_x FIELD=sgt VALUE=5
+SET_TMC_FIELD STEPPER=stepper_x1 FIELD=current_range VALUE=1
