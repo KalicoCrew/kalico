@@ -26,6 +26,9 @@ markdown_extensions:
   - mdx_truly_sane_lists
   - mdx_breakless_lists
   - admonition
+  - pymdownx.arithmatex:
+      generic: true
+
 plugins:
   search:
     lang: en
@@ -75,6 +78,10 @@ theme:
 
 extra_css:
   - _kalico/css/extra.css
+
+extra_javascript:
+  - _kalico/js/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js
 
 extra:
   social:
