@@ -18,7 +18,12 @@ bootloader_request(void)
         return;
     // Bootloader hack
     irq_disable();
-#if CONFIG_MACH_SAMD21
+#if CONFIG_MACH_SAMD21 && CONFIG_SAMD21_BOOTLOADER_UF2
+    writel((void*)0x20007FFC, 0xf01669ef);
+#elif CONFIG_MACH_SAMD21 && CONFIG_SAMD21_BOOTLOADER_SAMBA
+    writel((void*)0x20007FFC, 0x07738135);
+#elif CONFIG_MACH_SAMD21 && CONFIG_FLASH_APPLICATION_ADDRESS
+ #warning No SAMD21 bootloader type set - run "make menuconfig"
     writel((void*)0x20007FFC, 0x07738135);
 #elif CONFIG_MACH_SAMX5
     writel((void*)(HSRAM_ADDR + HSRAM_SIZE - 4), 0xf01669ef);

@@ -229,7 +229,7 @@ at91samd bootloader 0
 program out/klipper.elf verify
 ```
 
-## SAMD21 micro-controllers (Arduino Zero)
+## SAMD21 micro-controllers (Adafruit M0, Arduino Zero, XIAO SAMD21 and Similar )
 
 The SAMD21 bootloader is flashed via the ARM Serial Wire Debug (SWD)
 interface. This is commonly done with a dedicated SWD hardware dongle.
@@ -250,11 +250,18 @@ at91samd bootloader 0
 program samd21_sam_ba.bin verify
 ```
 
-The most common bootloader on the SAMD21 is the one found on the
-"Arduino Zero". It uses an 8KiB bootloader (the application must be
-compiled with a start address of 8KiB). One can enter this bootloader
-by double clicking the reset button. To flash an application use
-something like:
+One common bootloader is the one found on the "Arduino Zero",
+the SAM-BA. It uses an 8KiB bootloader (the application must be
+compiled with a start address of 8KiB).
+When building Kalico, select `SAM-BA` for Bootloader type.
+
+Adafruit M0 and Seeed Studio XIAO SAMD21 boards typically use a UF2
+bootloader which also calls for an 8KiB start address.
+When building Kalico, select `UF2` for Bootloader type.
+
+One can enter the SAM-BA or UF2 bootloaders by double clicking the
+reset button. To flash an application with either of these bootloaders,
+use something like:
 ```
 bossac -U -p /dev/ttyACM0 --offset=0x2000 -w out/klipper.bin -v -b -R
 ```

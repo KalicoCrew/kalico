@@ -160,6 +160,14 @@ config FLASH_APPLICATION_ADDRESS
     default 0x2000 if SAMD_FLASH_START_2000
     default 0x0000
 
+choice
+    prompt "Bootloader type" if MACH_SAMD21 && !SAMD_FLASH_START_0000
+    config SAMD21_BOOTLOADER_SAMBA
+        bool "SAM-BA (Arduino Zero)"
+    config SAMD21_BOOTLOADER_UF2
+        bool "UF2 (Adafruit, Seeed XIAO)"
+endchoice
+
 
 ######################################################################
 # Clock
