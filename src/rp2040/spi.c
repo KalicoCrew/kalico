@@ -88,15 +88,15 @@ spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 
     struct spi_config res = {spi_bus[bus].spi, 0, 0};
 
-    uint8_t prescale;
+    uint32_t prescale;
     for (prescale = 2; prescale <= 254; prescale += 2) {
-        if (pclk < (prescale + 2) * 256 * rate)
+        if ((prescale + 2) * 256 * rate > pclk)
             break;
     }
 
-    uint8_t postdiv;
+    uint32_t postdiv;
     for (postdiv = 255; postdiv > 0; --postdiv) {
-        if ((pclk / (prescale * postdiv)) > rate)
+        if (prescale * postdiv * rate < pclk)
             break;
     }
 
@@ -130,18 +130,27 @@ spi_prepare(struct spi_config config)
             ;
 }
 
+#define MAX_FIFO 8 // Max rx fifo size (don't tx past this size)
+
 void
 spi_transfer(struct spi_config config, uint8_t receive_data,
              uint8_t len, uint8_t *data)
 {
+    uint8_t *wptr = data, *end = data + len;
     spi_hw_t *spi = config.spi;
-    while (len--) {
-        spi->dr = *data;
-        while (!(spi->sr & SPI_SSPSR_RNE_BITS))
-            ;
+    while (data < end) {
+        uint32_t sr = spi->sr & (SPI_SSPSR_TNF_BITS | SPI_SSPSR_RNE_BITS);
+        if (sr == SPI_SSPSR_TNF_BITS && wptr < end && wptr < data + MAX_FIFO)
+            spi->dr = *wptr++;
+        if (!(sr & SPI_SSPSR_RNE_BITS))
+            continue;
         uint8_t rdata = spi->dr;
-        if(receive_data)
+        if (receive_data)
             *data = rdata;
         data++;
     }
+    // Wait for any remaining SCLK updates before returning
+    while ((spi->sr & (SPI_SSPSR_TFE_BITS|SPI_SSPSR_BSY_BITS))
+           != SPI_SSPSR_TFE_BITS)
+        ;
 }

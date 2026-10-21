@@ -593,11 +593,23 @@ def git_version():
     return ver
 
 
+# Obtain version info from "klippy/.version" file
+def file_version():
+    if not os.path.exists("klippy/.version"):
+        logging.debug("No 'klippy/.version' file/directory found")
+        return ""
+    ver = check_output("cat klippy/.version").strip()
+    logging.debug("Got klippy version: %s" % (repr(ver),))
+    return ver
+
+
 def build_version(extra, cleanbuild):
     version = git_version()
     if not version:
         cleanbuild = False
-        version = "?"
+        version = file_version()
+        if not version:
+            version = "?"
     elif "dirty" in version:
         cleanbuild = False
     if not cleanbuild:
@@ -663,6 +675,23 @@ class HandleVersions:
 
 
 Handlers.append(HandleVersions())
+
+
+class HandleKConfig:
+    def __init__(self):
+        self.ctr_dispatch = {}
+        self.defconfig = ""
+
+    def update_data_dictionary(self, data):
+        data["kconfig"] = self.defconfig
+
+    def generate_code(self, options):
+        with open(options.kconfig) as f:
+            self.defconfig = f.read()
+        return ""
+
+
+Handlers.append(HandleKConfig())
 
 
 ######################################################################
@@ -731,6 +760,11 @@ def main():
         "-d",
         dest="write_dictionary",
         help="file to write mcu protocol dictionary",
+    )
+    opts.add_option(
+        "-k",
+        dest="kconfig",
+        help="file containing the minimal (savedefconfig) build configuration",
     )
     opts.add_option(
         "-t",

@@ -21,9 +21,6 @@ DEFAULT_ERROR_GCODE = """
 class VirtualSD:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.printer.register_event_handler(
-            "klippy:shutdown", self.handle_shutdown
-        )
         # sdcard state
         sd = config.get("path")
         self.with_subdirs = config.getboolean("with_subdirs", False)
@@ -58,8 +55,11 @@ class VirtualSD:
             self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help,
         )
+        self.printer.register_event_handler(
+            "klippy:analyze_shutdown", self._handle_analyze_shutdown
+        )
 
-    def handle_shutdown(self):
+    def _handle_analyze_shutdown(self, msg, details):
         if self.work_timer is not None:
             self.must_pause_work = True
             try:

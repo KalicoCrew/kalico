@@ -15,6 +15,7 @@ TRINAMIC_DRIVERS = [
     "tmc2240",
     "tmc2660",
     "tmc5160",
+    "tmc5262",
 ]
 
 

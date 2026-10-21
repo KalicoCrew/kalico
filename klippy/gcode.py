@@ -518,8 +518,6 @@ class GCodeDispatch:
 class GCodeIO:
     def __init__(self, printer):
         self.printer = printer
-        printer.register_event_handler("klippy:ready", self._handle_ready)
-        printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         self.gcode = printer.lookup_object("gcode")
         self.gcode_mutex = self.gcode.get_mutex()
         self.fd = printer.get_start_args().get("gcode_fd")
@@ -538,6 +536,12 @@ class GCodeIO:
         self.pending_commands = []
         self.bytes_read = 0
         self.input_log = collections.deque([], 50)
+        # Register event handlers
+        printer.register_event_handler("klippy:ready", self._handle_ready)
+        printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        printer.register_event_handler(
+            "klippy:analyze_shutdown", self._handle_analyze_shutdown
+        )
 
     def _handle_ready(self):
         self.is_printer_ready = True
@@ -546,7 +550,7 @@ class GCodeIO:
                 self.fd, self._process_data
             )
 
-    def _dump_debug(self):
+    def _handle_analyze_shutdown(self, msg, details):
         out = []
         out.append("Dumping gcode input %d blocks" % (len(self.input_log),))
         for eventtime, data in self.input_log:
@@ -557,7 +561,6 @@ class GCodeIO:
         if not self.is_printer_ready:
             return
         self.is_printer_ready = False
-        self._dump_debug()
         if self.is_fileinput:
             self.printer.request_exit("error_exit")
 
@@ -586,18 +589,17 @@ class GCodeIO:
                 self.gcode.request_restart("exit")
             pending_commands.append("")
         # Handle case where multiple commands pending
-        if self.is_processing_data or len(pending_commands) > 1:
-            if len(pending_commands) < 20:
-                # Check for M112 out-of-order
-                for line in lines:
-                    if self.m112_r.match(line) is not None:
-                        self.gcode.cmd_M112(None)
-            if self.is_processing_data:
-                if len(pending_commands) >= 20:
-                    # Stop reading input
-                    self.reactor.unregister_fd(self.fd_handle)
-                    self.fd_handle = None
-                return
+        if len(pending_commands) < 20:
+            # Check for M112 out-of-order
+            for line in lines:
+                if self.m112_r.match(line) is not None:
+                    self.gcode.cmd_M112(None)
+        if self.is_processing_data:
+            if len(pending_commands) >= 20:
+                # Stop reading input
+                self.reactor.unregister_fd(self.fd_handle)
+                self.fd_handle = None
+            return
         # Process commands
         self.is_processing_data = True
         while pending_commands:

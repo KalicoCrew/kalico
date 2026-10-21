@@ -1,6 +1,6 @@
 from klippy.extras import fan
 
-from .compat import ConfigWrapper
+from .compat import MIN_SCHEDULE_TIME_INIT, ConfigWrapper
 
 BLOCKED_CHECK_SECONDS = 5
 
@@ -21,9 +21,13 @@ class IndxHeatsinkFan:
             },
         )
         self.fan = fan.Fan(config)
+        # Expose speed/rpm to frontends, which list "heater_fan" objects
+        self.toolboard.printer.add_object(
+            f"heater_fan {self.toolboard.name}_heatsink", self
+        )
 
         self.toolboard.printer.register_event_handler(
-            "klippy:connect", self.handle_connect
+            "klippy:ready", self.handle_ready
         )
         self.toolboard.printer.register_event_handler(
             "klippy:shutdown", self.handle_shutdown
@@ -34,9 +38,14 @@ class IndxHeatsinkFan:
         self.steppers = []
         self.heaters = []
 
-    def handle_connect(self):
+    def get_status(self, eventtime):
+        return self.fan.get_status(eventtime)
+
+    def handle_ready(self):
         reactor = self.toolboard.printer.get_reactor()
-        self.check_timer = reactor.register_timer(self.check_event, reactor.NOW)
+        self.check_timer = reactor.register_timer(
+            self.check_event, reactor.monotonic() + MIN_SCHEDULE_TIME_INIT
+        )
 
         stepper_enable = self.toolboard.printer.lookup_object("stepper_enable")
         steppers = [

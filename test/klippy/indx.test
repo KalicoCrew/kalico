@@ -10,3 +10,6 @@ INDX_FORCE_BRACKET_TEMP TEMP=25
 
 # Verify the toolboard status is exported
 ASSERT TEST='{printer.indx.last_dock_measurement is none}'
+
+# Verify the heatsink fan is exported as a heater_fan object
+ASSERT TEST='{printer["heater_fan indx_heatsink"].speed == 0}'

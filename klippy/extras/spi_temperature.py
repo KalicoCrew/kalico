@@ -21,9 +21,12 @@ MAX_INVALID_COUNT = 3
 class SensorBase:
     def __init__(self, config, chip_type, config_cmd=None, spi_mode=1):
         self.printer = config.get_printer()
+        self.name = config.get_name()
         self.chip_type = chip_type
         self._callback = None
         self.min_sample_value = self.max_sample_value = 0
+        self.min_temp = self.max_temp = None
+        self._last_value = self._last_fault = None
         self._report_clock = 0
         self.spi = bus.MCU_SPI_from_config(
             config, spi_mode, pin_option="sensor_pin", default_speed=4000000
@@ -41,8 +44,11 @@ class SensorBase:
         )
         self._is_connected = False
         mcu.register_config_callback(self._build_config)
+        error_mcu = self.printer.load_object(config, "error_mcu")
+        error_mcu.add_clarify("Thermocouple reader fault", self._clarify_fault)
 
     def setup_minmax(self, min_temp, max_temp):
+        self.min_temp, self.max_temp = min_temp, max_temp
         adc_range = [self.calc_adc(min_temp), self.calc_adc(max_temp)]
         self.min_sample_value = min(adc_range)
         self.max_sample_value = max(adc_range)
@@ -84,6 +90,7 @@ class SensorBase:
         )
 
     def _handle_spi_response(self, params):
+        self._last_value, self._last_fault = params["value"], params["fault"]
         if not self._is_connected:
             return
         if params["fault"]:
@@ -94,6 +101,30 @@ class SensorBase:
         last_read_clock = next_clock - self._report_clock
         last_read_time = self.mcu.clock_to_print_time(last_read_clock)
         self._callback(last_read_time, temp)
+
+    def _clarify_fault(self, msg, details):
+        # Report which sensor caused a "Thermocouple reader fault" shutdown
+        if self.min_temp is None or self._last_value is None:
+            return None
+        if self._last_fault:
+            return "Sensor '%s' reported fault 0x%x" % (
+                self.name,
+                self._last_fault,
+            )
+        value = self._last_value
+        if self.min_sample_value <= value <= self.max_sample_value:
+            return None
+        tempstr = "?"
+        try:
+            tempstr = "%.3f" % (self.calc_temp(value),)
+        except Exception:
+            logging.exception("Error in calc_temp callback")
+        return "Sensor '%s' temperature %s not in range %.3f:%.3f" % (
+            self.name,
+            tempstr,
+            self.min_temp,
+            self.max_temp,
+        )
 
     def report_fault(self, msg):
         logging.warning(msg)

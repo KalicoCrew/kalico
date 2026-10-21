@@ -97,6 +97,7 @@ BOARD_DEFS = {
         "spi_pins": "PC8,PD2,PC12",
         "cs_pin": "PC11",
         "skip_verify": True,
+        "requires_unique_fw_name": True,
     },
     "monster8": {"mcu": "stm32f407xx", "spi_bus": "spi3a", "cs_pin": "PC9"},
     "fly-gemini-v2": {"mcu": "stm32f405xx", "spi_bus": "spi1", "cs_pin": "PA4"},

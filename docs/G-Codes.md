@@ -164,7 +164,7 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>]
+`AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=<name>] [AXIS=<X|Y>]
 [SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
 
 Calibrates axis twist compensation by specifying the target axis or
@@ -978,14 +978,20 @@ operation of the load cell. This command can be run on both calibrated and
 uncalibrated load cells.
 
 ### LOAD_CELL_CALIBRATE
-`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
-utility. Calibration is a 3 step process:
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>] [TARE=TRUE] [SAVE=TRUE]`: 
+Start the guided calibration utility. Calibration is a 3 step process:
 1. First you remove all load from the load cell and run the `TARE` command
 1. Next you apply a known load to the load cell and run the
 `CALIBRATE GRAMS=nnn` command
 1. Finally use the `ACCEPT` command to save the results
 
 You can cancel the calibration process at any time with `ABORT`.
+
+If the `TARE` option is included `reference_tare_counts` will be set at the
+current force. The `SAVE` option also prompts you to save the value and restart
+the printer. The default is to not save the value. Use this option to home the
+load cell in a print start routine at a time when the force on the load cell is
+'zero'. E.g. after [safe_z_home] or similar safety move.
 
 ### LOAD_CELL_TARE
 `LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
@@ -1098,7 +1104,8 @@ thermal model parameters at runtime. Updated values are staged for
 SAVE_CONFIG.
 
 #### INDX_SET_PID
-`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]`:
+`INDX_SET_PID [KP=<value>] [TI=<value>] [TD=<value>] [B=<value>]
+[I_WINDOW=<degrees>] [I_LIMIT=<duty>]`:
 Update the PID parameters of the controller running on the toolboard.
 
 #### INDX_MEASURE_POWER
@@ -1107,10 +1114,12 @@ draw over DURATION (default 5) seconds and report the total energy
 and average power.
 
 #### INDX_DOCK_MEASURE
-`INDX_DOCK_MEASURE [X_FIRST=[0|1]]`: Measure the dock X/Y position of
-an INDX toolchanger by energizing the XY motors and homing. Set
-X_FIRST=1 to home X before Y. The result is reported and exported in
-the module status.
+`INDX_DOCK_MEASURE [X_FIRST=[0|1]] [RETREAT=X,Y]`: Measure the dock
+X/Y position of an INDX toolchanger by energizing the XY motors and
+homing. Set X_FIRST=1 to home X before Y. The result is reported and
+exported in the module status. RETREAT can optionally be specified,
+in which case the toolhead will perform this move before doing the
+homing operations.
 
 #### INDX_FORCE_BRACKET_TEMP
 `INDX_FORCE_BRACKET_TEMP [TEMP=<temp>]`: Override the sensor bracket
@@ -1567,7 +1576,7 @@ The following commands are available when a
 see the [probe calibrate guide](Probe_Calibrate.md)).
 
 #### PROBE
-`PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE [PROBE=<name>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
 [SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]
 [BAD_PROBE_STRATEGY=<FAIL|IGNORE|RETRY|CIRCLE>] [BAD_PROBE_RETRIES=<count>]
@@ -1576,6 +1585,8 @@ Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
 - `HOME`: Set the value `z` to home the z axis from the probe result
+- `PROBE`: Name of probe to use for this operation. Leave out to use the 
+  default probe.
 The following optional parameters control probe quality handling (for probes
 that support quality detection): ⚠️
 - `BAD_PROBE_STRATEGY`: Strategy to use when a bad probe is detected.
@@ -1586,19 +1597,22 @@ that support quality detection): ⚠️
 - `PATTERN_SPACING`: Spacing (in mm) for the circular retry pattern when
   using CIRCLE strategy.
 
+#### LIST_PROBES
+`LIST_PROBES`: List the registered probes.
+
 #### QUERY_PROBE
-`QUERY_PROBE`: Report the current status of the probe ("triggered" or
+`QUERY_PROBE [PROBE=<name>]`: Report the current status of the probe ("triggered" or
 "open").
 
 #### PROBE_ACCURACY
-`PROBE_ACCURACY [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE_ACCURACY [PROBE=<name>] [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum, average,
 median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.
 
 #### PROBE_CALIBRATE
-`PROBE_CALIBRATE [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
+`PROBE_CALIBRATE [PROBE=<name>] [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
 helper script useful for calibrating the probe's z_offset. See the
 PROBE command for details on the optional probe parameters. See the
 MANUAL_PROBE command for details on the SPEED parameter and the
@@ -1607,7 +1621,7 @@ the PROBE_CALIBRATE command uses the speed variable to move in XY
 direction as well as Z.
 
 #### Z_OFFSET_APPLY_PROBE
-`Z_OFFSET_APPLY_PROBE`: Take the current Z Gcode offset (aka,
+`Z_OFFSET_APPLY_PROBE [PROBE=<name>]`: Take the current Z Gcode offset (aka,
 babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.
@@ -2325,9 +2339,9 @@ automatically upon homing.
 The following commands are available when a
 [z_calibration config section](Config_Reference.md#z_calibration) is enabled
 (also see the [Z-Calibration guide](Z_Calibration.md)):
-- `CALIBRATE_Z`: This calibrates the current offset between the nozzle and
+- `CALIBRATE_Z [PROBE=<probe>]`: This calibrates the current offset between the nozzle and
   the print surface.
-- `PROBE_Z_ACCURACY [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
+- `PROBE_Z_ACCURACY [PROBE=<probe>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
   [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum,
   average, median, and standard deviation of multiple probe
   samples. By default, 10 SAMPLES are taken. Otherwise the optional

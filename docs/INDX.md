@@ -78,7 +78,8 @@ automatically. The extruder heater is exposed as the virtual pin
 `indx:heater` and the nozzle temperature as `sensor_type: indx`. The
 heatsink fan is managed by the toolboard module itself: it turns on
 whenever the heater is active, the nozzle is hot or a stepper on the
-toolboard is enabled, and a blocked fan triggers a shutdown.
+toolboard is enabled, and a blocked fan triggers a shutdown. Its
+speed and rpm are reported as the `heater_fan indx_heatsink` object.
 
 ## Calibration
 

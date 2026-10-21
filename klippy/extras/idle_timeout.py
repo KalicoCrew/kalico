@@ -40,7 +40,11 @@ class IdleTimeout:
         printing_time = 0.0
         if self.state == "Printing":
             printing_time = eventtime - self.last_print_start_systime
-        return {"state": self.state, "printing_time": printing_time}
+        return {
+            "state": self.state,
+            "printing_time": printing_time,
+            "idle_timeout": self.idle_timeout,
+        }
 
     def handle_ready(self):
         self.toolhead = self.printer.lookup_object("toolhead")

@@ -945,5 +945,5 @@ class DockableProbe:
 
 def load_config(config):
     msp = DockableProbe(config)
-    config.get_printer().add_object("probe", probe.PrinterProbe(config, msp))
+    probe.PrinterProbe(config, msp)
     return msp

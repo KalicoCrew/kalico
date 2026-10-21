@@ -63,6 +63,8 @@ communication with the Kalico developers.
 
 - [Code overview](Code_Overview.md): Developers should read this
   first.
+- [Developer cookbook](Developer_Cookbook.md): Recipes for common
+  tasks when writing a host module.
 - [Kinematics](Kinematics.md): Technical details on how Kalico
   implements motion.
 - [Protocol](Protocol.md): Information on the low-level messaging

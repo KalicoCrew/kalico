@@ -320,7 +320,8 @@ position_max:
 #   Distance to backoff (in mm) before homing a second time during
 #   homing. If `use_sensorless_homing` is false, this setting can be set
 #   to zero to disable the second home. If `use_sensorless_homing` is
-#   true, this setting can be > 0 to backoff after homing. The default
+#   true, this setting can be > 0 to backoff after homing (physical
+#   endstops stay on the endstop after the final touch). The default
 #   is 5mm.
 #homing_retract_speed:
 #   Speed to use on the retract move after homing in case this should
@@ -2458,6 +2459,36 @@ main printer config file. Wildcards may also be used (eg,
 [include my_other_config.cfg]
 ```
 
+Variables may be passed to an include by listing them below the include
+line. The included file is then rendered as a Jinja2 template, using
+`{! !}` for expressions and `{!% %!}` for statements (so they don't clash
+with the `{ }` / `{% %}` templates used by gcode macros). The variables
+are also available to any file it includes. A file included without
+variables is read as-is. Referencing a variable that was not passed is
+an error.
+
+```
+[include toolhead_board.cfg]
+mcu_name: toolhead0
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead0
+
+[include toolhead_board.cfg]
+mcu_name: toolhead1
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead1
+```
+
+Where `toolhead_board.cfg` contains:
+
+```
+[mcu {! mcu_name !}]
+serial: {! mcu_serial !}
+
+{!% if mcu_name == "toolhead0" %!}
+[fan_generic {! mcu_name !}_fan]
+pin: {! mcu_name !}:gpio13
+{!% endif %!}
+```
+
 ### [duplicate_pin_override]
 
 This tool allows a single micro-controller pin to be defined multiple
@@ -2483,12 +2514,13 @@ pins:
 Z height probe. One may define this section to enable Z height probing
 hardware. When this section is enabled, PROBE and QUERY_PROBE extended
 [g-code commands](G-Codes.md#probe) become available. Also, see the
-[probe calibrate guide](Probe_Calibrate.md). The probe section also
-creates a virtual "probe:z_virtual_endstop" pin. One may set the
-stepper_z endstop_pin to this virtual pin on cartesian style printers
-that use the probe in place of a z endstop. If using
-"probe:z_virtual_endstop" then do not define a position_endstop in the
-stepper_z config section.
+[probe calibrate guide](Probe_Calibrate.md). The probe section, and all
+other probe types, also create virtual endstops by the name of
+`<probe name>:z_virtual_endstop`. The default probe additionally registers
+itself as `probe:z_virtual_endstop`. One may set the stepper_z endstop_pin
+to such a virtual pin on cartesian style printers that use the probe in
+place of a z endstop. If using "probe:z_virtual_endstop" then do not define
+a position_endstop in the stepper_z config section.
 
 ```
 [probe]
@@ -2536,6 +2568,11 @@ z_offset:
 #   not obtained in the given number of retries then an error is
 #   reported. The default is zero which causes an error to be reported
 #   on the first sample that exceeds samples_tolerance.
+#register_as_probe: True
+#   If this probe should be automatically registered as the default one.
+#   Defaults to true. When using multiple probes, only a single probe is
+#   allowed to register as the default, and all other probe configuration
+#   blocks must set this to false.
 #activate_gcode:
 #   A list of G-Code commands to execute prior to each probe attempt.
 #   See docs/Command_Templates.md for G-Code format. This may be
@@ -2583,6 +2620,14 @@ z_offset:
 #   0 will disable scrubbing. The default is 0.
 ```
 
+It is also possible to create named probes.
+```
+[probe named_probe]
+# All options from [probe] are accepted.
+```
+At most one probe may set `register_as_probe: True`. If an unnamed `[probe]`
+is present, no other probe may set `register_as_probe: True`.
+
 ### [nozzle_cleanup]
 
 Enables the [NOZZLE_CLEANUP](G-Codes.md#nozzle_cleanup) gcode command. This 
@@ -2599,7 +2644,8 @@ quality detection, such as the [load_cell_probe](#load_cell_probe).
 #   Number of probe locations along the X axis. Can be negative. Default is 10.
 #pattern_y: 4
 #   Number of probe locations along the Y axis. Can be negative. Default is 4.
-#
+#probe:
+#   Probe to use, if not the default probe.
 #These config values are inherited from [probe] if not specified:
 #speed:
 #lift_speed:
@@ -2665,6 +2711,7 @@ control_pin:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -2775,6 +2822,7 @@ detach_position: 0,0,0
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "probe" section for information on these parameters.
@@ -2828,6 +2876,7 @@ z_offset:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #deactivate_on_each_sample:
@@ -2851,6 +2900,10 @@ sensor_type: ldc1612
 #intb_pin:
 #   MCU gpio pin connected to the ldc1612 sensor's INTB pin (if
 #   available). The default is to not use the INTB pin.
+#amplitude_errors: both
+#   Controls the amplitude related errors that will register as sensor failure.
+#   Valid options are: none, low, high, both. Defaults to both, meaning
+#   any amplitude related errors register as sensor failure.
 #z_offset:
 #   The nominal distance (in mm) between the nozzle and bed that a
 #   probing attempt should stop at. This parameter must be provided.
@@ -2871,6 +2924,7 @@ sensor_type: ldc1612
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #   See the "probe" section for information on these parameters.
 ```
 
@@ -3904,11 +3958,11 @@ a shutdown_speed equal to max_power.
 ### [controller_fan]
 
 Controller cooling fan (one may define any number of sections with a
-"controller_fan" prefix). A "controller fan" is a fan that will be
-enabled whenever its associated heater or its associated stepper
-driver is active. The fan will stop whenever an idle_timeout is
-reached to ensure no overheating will occur after deactivating a
-watched component.
+"controller_fan" prefix). A "controller fan" changes speed based on
+its associated heater or stepper driver. The fan runs at fan_speed
+while a watched component is active, then at idle_speed for
+idle_timeout seconds. After that timeout, and before the first watched
+activity after startup, the fan runs at standby_speed.
 
 ```
 [controller_fan my_controller_fan]
@@ -3929,13 +3983,17 @@ watched component.
 #   will be set to when a heater or stepper driver is active.
 #   The default is 1.0
 #idle_timeout:
-#   The amount of time (in seconds) after a stepper driver or heater
-#   was active and the fan should be kept running. The default
-#   is 30 seconds.
+#   The amount of time (in seconds) to use idle_speed after a stepper
+#   driver or heater becomes inactive. A value of 0 transitions
+#   directly to standby_speed. The default is 30 seconds.
 #idle_speed:
 #   The fan speed (expressed as a value from 0.0 to 1.0) that the fan
-#   will be set to when a heater or stepper driver was active and
-#   before the idle_timeout is reached. The default is fan_speed.
+#   will be set to after a heater or stepper driver becomes inactive
+#   and before the idle_timeout is reached. The default is fan_speed.
+#standby_speed: 0.0
+#   The fan speed (expressed as a value from 0.0 to 1.0) that the fan
+#   will be set to before the first heater or stepper driver activity
+#   and after idle_timeout is reached. The default is 0.0.
 #heater:
 #stepper:
 #   Name of the config section defining the heater/stepper that this fan
@@ -5073,6 +5131,88 @@ sense_resistor:
 #   sensorless homing.
 ```
 
+### [tmc5262]
+
+Configure a TMC5262 stepper motor driver via SPI. Define a section with a
+"tmc5262" prefix followed by the name of the corresponding stepper
+(for example, "[tmc5262 stepper_x]").
+
+This implementation supports SpreadCycle with a physical endstop.
+
+```
+[tmc5262 stepper_x]
+cs_pin:
+#   The pin connected to the driver's chip select input. This parameter
+#   must be provided.
+#spi_speed:
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section.
+#chain_position:
+#chain_length:
+#   See the tmc5160 section for SPI daisy chain settings.
+#interpolate: True
+#   Enable interpolation to 256 microsteps. The default is True.
+run_current:
+#   Motor current in amps RMS. This parameter must be provided.
+#   Klipper selects the smallest hardware current range that fits this
+#   value. SET_TMC_CURRENT is limited to that range; configure a higher
+#   run_current and restart to select a larger range if needed.
+#hold_current:
+#   Current in amps RMS when the motor is not moving. The default is
+#   run_current. Setting a separate hold_current is not recommended;
+#   see TMC_Drivers.md.
+#home_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
+#rref: 12000
+#   Resistance in ohms of the reference resistor between REF and GND.
+#   Obtain this value from the driver board documentation or schematic.
+#   The default is 12000. The driver uses integrated current sensing,
+#   not an external sense resistor.
+#driver_MSLUT0: 2863314260
+#driver_MSLUT1: 1251300522
+#driver_MSLUT2: 608774441
+#driver_MSLUT3: 269500962
+#driver_MSLUT4: 4227858431
+#driver_MSLUT5: 3048961917
+#driver_MSLUT6: 1227445590
+#driver_MSLUT7: 4211234
+#driver_W0: 2
+#driver_W1: 1
+#driver_W2: 1
+#driver_W3: 1
+#driver_X1: 128
+#driver_X2: 255
+#driver_X3: 255
+#driver_START_SIN: 0
+#driver_START_SIN90: 247
+#driver_OFFSET_SIN90: 0
+#   See the tmc2240 section for Microstep Table settings.
+#driver_MULTISTEP_FILT: True
+#driver_IHOLDDELAY: 7
+#driver_IRUNDELAY: 4
+#driver_TPOWERDOWN: 10
+#driver_TBL: 2
+#driver_TOFF: 3
+#driver_HEND: 2
+#driver_HSTRT: 5
+#driver_FD3: 0
+#driver_DISFDCC: 0
+#driver_TPFD: 4
+#driver_CHM: 0
+#driver_SLOPE_CONTROL: 3
+#   Set the corresponding register field during driver configuration.
+#   See the TMC5262 datasheet for field definitions. The defaults are
+#   shown above.
+```
+
+
 ## Run-time stepper motor current configuration
 
 ### [ad5206]
@@ -5949,6 +6089,31 @@ sensor_type:
 #   decreasing force value when placed under load.
 ```
 
+#### CS1237
+
+The CS1237 sensor backend supports both `[load_cell]` and
+`[load_cell_probe]`.
+
+```
+[load_cell my_cs1237]
+sensor_type: cs1237
+sclk_pin:
+#   The pin connected to the CS1237 clock line. This parameter must be
+#   provided.
+dout_pin:
+#   The pin connected to the bidirectional CS1237 DOUT line. This parameter
+#   must be provided.
+#sample_rate: 640
+#   Valid values for sample_rate are 10, 40, 640, or 1280. The default is 640.
+#gain: 128
+#   Valid values for gain are 1, 2, 64, or 128. The default is 128.
+#reference_output: True
+#   Enable the CS1237 REFO reference output. The default is True.
+```
+
+Both pins must be on the same MCU. DOUT is bidirectional during
+configuration.
+
 #### HX711
 This is a 24 bit low sample rate chip using "bit-bang" communications. It is
 suitable for filament scales.
@@ -6199,6 +6364,7 @@ sensor_type:
 #samples_result:
 #samples_tolerance:
 #samples_tolerance_retries:
+#register_as_probe:
 #activate_gcode:
 #deactivate_gcode:
 #   See the "[probe]" section for a description of the above parameters.
@@ -6235,9 +6401,11 @@ mcu:
 #   used by the thermal model to compensate for part cooling airflow.
 #   Set to an empty string to disable.
 #pid_kp: 4.0
-#pid_ti: 0.0
+#pid_ti: 0.2
 #pid_td: 0.0
 #pid_b: 1.0
+#pid_i_window: 0.2
+#pid_i_limit: 0.5
 #   Parameters for the PID controller running on the toolboard. The
 #   defaults should work for most setups.
 #max_temp_nozzle: 305.0

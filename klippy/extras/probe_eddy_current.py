@@ -6,9 +6,9 @@
 import bisect
 import math
 
-from klippy import mcu
+from klippy import gcode, mcu
 
-from . import ldc1612, manual_probe, probe
+from . import manual_probe, probe
 
 
 # Tool for calibrating the sensor Z detection and applying that calibration
@@ -16,6 +16,7 @@ class EddyCalibration:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.pprobe: probe.PrinterProbe | None = None
         # Current calibration data
         self.cal_freqs = []
         self.cal_zpos = []
@@ -166,8 +167,7 @@ class EddyCalibration:
         curpos[2] += 5.0
         move(curpos, self.probe_speed)
         # Move sensor over nozzle position
-        pprobe = self.printer.lookup_object("probe")
-        x_offset, y_offset, z_offset = pprobe.get_offsets()
+        x_offset, y_offset, z_offset = self.pprobe.get_offsets()
         curpos[0] -= x_offset
         curpos[1] -= y_offset
         move(curpos, self.probe_speed)
@@ -210,6 +210,49 @@ class EddyCalibration:
         manual_probe.ManualProbeHelper(
             self.printer, gcmd, self.post_manual_probe
         )
+
+
+class EddyDistanceCollector(probe.ProbeDistanceCollector):
+    def __init__(self, endstop_wrapper: "EddyEndstopWrapper"):
+        self.endstop_wrapper = endstop_wrapper
+        self.samples = []
+        self.stop_after = None
+        self.stop_notify = endstop_wrapper._printer.get_reactor().completion()
+        endstop_wrapper._sensor_helper.add_client(self._collect_samples)
+
+    def _collect_samples(self, msg):
+        samples = msg["data"]
+
+        for sample in samples:
+            time = sample[0]
+
+            if self.stop_after is not None and time >= self.stop_after:
+                samples = self.samples
+                self.samples = []
+                self.stop_notify.complete(samples)
+                return False
+
+            self.samples.append(probe.ProbeDistanceResult(time, sample[2]))
+
+        return True
+
+    def finish(self, before_time: float) -> list[probe.ProbeDistanceResult]:
+        self.stop_after = before_time
+        now = self.endstop_wrapper._printer.get_reactor().monotonic()
+        timeout = (
+            before_time
+            - self.endstop_wrapper._mcu.estimated_print_time(now)
+            + 1.0
+        )
+        ret = self.stop_notify.wait(now + timeout)
+        if ret is None:
+            raise gcode.CommandError(
+                "Timeout waiting for eddy current probe sample collection"
+            )
+        return ret
+
+    def sample_rate(self) -> float:
+        return self.endstop_wrapper._sensor_helper.get_sample_rate()
 
 
 # Helper for implementing PROBE style commands
@@ -289,6 +332,8 @@ class EddyEndstopWrapper:
         trigger_time = self._sensor_helper.clear_home()
         self._stop_measurements(is_home=True)
         res = self._dispatch.stop()
+        if res == self.REASON_SENSOR_ERROR:
+            raise self._printer.command_error("Sensor readout error")
         if res >= mcu.MCU_trsync.REASON_COMMS_TIMEOUT:
             raise self._printer.command_error(
                 "Communication timeout during homing"
@@ -350,6 +395,9 @@ class EddyEndstopWrapper:
         new_pos[2] += self._z_offset - halt_z
         return new_pos
 
+    def begin_collect_distance(self):
+        return EddyDistanceCollector(self)
+
     def multi_probe_begin(self):
         if not self._calibration.is_calibrated():
             raise self._printer.command_error(
@@ -376,14 +424,14 @@ class PrinterEddyProbe:
         self.printer = config.get_printer()
         self.calibration = EddyCalibration(config)
         # Sensor type
-        sensors = {"ldc1612": ldc1612.LDC1612}
+        sensors = self.printer.lookup_components("eddy_current_sensors")
         sensor_type = config.getchoice("sensor_type", {s: s for s in sensors})
         self.sensor_helper = sensors[sensor_type](config, self.calibration)
         # Probe interface
         self.probe = EddyEndstopWrapper(
             config, self.sensor_helper, self.calibration
         )
-        self.printer.add_object("probe", probe.PrinterProbe(config, self.probe))
+        self.calibration.pprobe = probe.PrinterProbe(config, self.probe)
 
     def add_client(self, cb):
         self.sensor_helper.add_client(cb)

@@ -27,6 +27,7 @@ reference_tare_counts: 12345
   * [`ads1220`](Config_Reference.md#ads1220)
   * [`ads131m02`](Config_Reference.md#ads131m02)
   * [`ads131m04`](Config_Reference.md#ads131m04)
+  * [`cs1237`](Config_Reference.md#cs1237)
 
 - `counts_per_gram: 245`\
   _Default Value: None_\

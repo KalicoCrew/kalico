@@ -20,6 +20,7 @@ TRINAMIC_DRIVERS = [
     "tmc2240",
     "tmc2660",
     "tmc5160",
+    "tmc5262",
 ]
 
 CALIBRATION_BITS = 6  # 64 entries
@@ -712,7 +713,7 @@ class HelperMT6826S:
             gcmd.respond_info("AUTOCAL_FREQ = %i" % (val >> 4 & 0x7))
         elif reg == 0x113:
             val = self._read_reg(reg)
-            gcmd.respond_info("Status: %s" % (self.cal_status[val >> 6]))
+            gcmd.respond_info("Status: %s" % (self.status_map[val >> 6]))
         else:
             val = self._read_reg(reg)
             gcmd.respond_info("REG[0x%04x] = 0x%02x" % (reg, val))

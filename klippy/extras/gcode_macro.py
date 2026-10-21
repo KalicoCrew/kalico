@@ -478,7 +478,8 @@ class GCodeMacro:
             json.dumps(literal, separators=(",", ":"))
         except (SyntaxError, TypeError, ValueError) as e:
             raise gcmd.error(
-                "Unable to parse '%s' as a literal: %s" % (value, e)
+                "Unable to parse '%s' as a literal: %s in '%s'"
+                % (value, e, gcmd.get_commandline())
             )
         v = dict(self.variables)
         v[variable] = literal

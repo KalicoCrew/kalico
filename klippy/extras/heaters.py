@@ -25,6 +25,7 @@ AMBIENT_TEMP = 25.0
 PID_PARAM_BASE = 255.0
 MAX_MAINTHREAD_TIME = 5.0
 QUELL_STALE_TIME = 7.0
+MIN_PWM_CHANGE_RATIO = 0.05
 PID_PROFILE_VERSION = 1
 PID_PROFILE_OPTIONS = {
     "pid_target": (float, "%.2f"),
@@ -95,6 +96,7 @@ class Heater:
         self.max_power = config.getfloat(
             "max_power", 1.0, above=0.0, maxval=1.0
         )
+        self.min_pwm_change = self.max_power * MIN_PWM_CHANGE_RATIO
         self.config_smooth_time = config.getfloat("smooth_time", 1.0, above=0.0)
         self.smooth_time = self.config_smooth_time
         self.inv_smooth_time = 1.0 / self.smooth_time
@@ -185,7 +187,7 @@ class Heater:
             value = 0.0
         if (read_time < self.next_pwm_time or not self.last_pwm_value) and abs(
             value - self.last_pwm_value
-        ) < 0.05:
+        ) < self.min_pwm_change:
             # No significant change in value - can suppress update
             return
         pwm_time = read_time + self.pwm_delay

@@ -26,6 +26,7 @@ src-$(CONFIG_WANT_ICM20948) += sensor_icm20948.c
 src-$(CONFIG_WANT_HX71X) += sensor_hx71x.c
 src-$(CONFIG_WANT_ADS1220) += sensor_ads1220.c
 src-$(CONFIG_WANT_ADS131M0X) += sensor_ads131m0x.c
+src-$(CONFIG_WANT_CS1237) += sensor_cs1237.c
 src-$(CONFIG_WANT_SENSOR_ANGLE) += sensor_angle.c
 src-$(CONFIG_NEED_SENSOR_BULK) += sensor_bulk.c
 src-$(CONFIG_NEED_SOS_FILTER) += sos_filter.c

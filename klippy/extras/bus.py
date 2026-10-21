@@ -230,7 +230,6 @@ class MCU_I2C:
         self.i2c_write_cmd = self.i2c_read_cmd = None
         printer = self.mcu.get_printer()
         printer.register_event_handler("klippy:connect", self._handle_connect)
-        self._debugoutput = printer.get_start_args().get("debugoutput")
         # backward support i2c_write inside the init section
         self._to_write = []
 
@@ -282,16 +281,6 @@ class MCU_I2C:
         if self.i2c_write_cmd is None:
             self._to_write.append(data)
             return
-        if self._debugoutput is not None:
-            self.i2c_write_cmd.send(
-                [self.oid, data], minclock=minclock, reqclock=reqclock
-            )
-            return
-        self.i2c_write_cmd.send_wait_ack(
-            [self.oid, data], minclock=minclock, reqclock=reqclock
-        )
-
-    def i2c_write_wait_ack(self, data, minclock=0, reqclock=0):
         self.i2c_write_cmd.send_wait_ack(
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
@@ -319,6 +308,11 @@ def MCU_I2C_from_config(config, default_addr=None, default_speed=100000):
             ppins.lookup_pin(config.get(name), share_type=name)
             for name in sw_pin_names
         ]
+        for pin_params in sw_pin_params:
+            if pin_params["chip"] != i2c_mcu:
+                raise ppins.error(
+                    "%s: i2c pins must be on same mcu" % (config.get_name(),)
+                )
         sw_pins = tuple([pin_params["pin"] for pin_params in sw_pin_params])
         bus = None
     else:

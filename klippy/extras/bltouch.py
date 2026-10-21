@@ -342,5 +342,5 @@ def load_config(config):
     global ENDSTOP_SAMPLE_COUNT
     ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
     blt = BLTouchEndstopWrapper(config)
-    config.get_printer().add_object("probe", probe.PrinterProbe(config, blt))
+    probe.PrinterProbe(config, blt)
     return blt

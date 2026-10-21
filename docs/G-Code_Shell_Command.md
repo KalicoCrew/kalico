@@ -71,6 +71,14 @@ echo "temp is: $1"
 echo "$1" >> "${HOME}/test.txt"
 ```
 
+Environment variables (`$HOME`, `${TMPDIR}`) and a leading `~` in each
+parameter are expanded before the command runs, the same way they are in
+`command`:
+
+```
+RUN_SHELL_COMMAND CMD=calibrate_shaper PARAMS="$TMPDIR/resonances_y.csv -o ~/printer_data/config/resonances_y.png"
+```
+
 ## Warning
 
 This extension may have a high potential for abuse if not used carefully! Also, depending on the command you execute, high system loads may occur and can cause system instabilities.
