@@ -229,6 +229,7 @@ class ShaperCalibrate:
                 "installed via `~/klippy-env/bin/pip install` (refer to "
                 "docs/Measuring_Resonances.md for more details)."
             )
+        self._smoother_integrals_cache = {}
 
     def background_process_exec(self, method, args):
         if self.printer is None:
@@ -388,23 +389,44 @@ class ShaperCalibrate:
         offset_180 *= inv_D
         return max(offset_90, abs(offset_180))
 
-    def _get_smoother_smoothing(self, smoother, accel=5000, scv=5.0):
+    def _calc_smoother_integrals(self, smoother):
+        # The smoothing offsets are linear in the accel- and scv-dependent
+        # terms, so the smoother geometry integrals below depend only on the
+        # smoother itself. Compute them once and cache, since find_max_accel
+        # evaluates the smoothing for many accel values of the same smoother.
+        cache_key = (smoother[1], tuple(smoother[0]))
+        cached = self._smoother_integrals_cache.get(cache_key)
+        if cached is not None:
+            return cached
         np = self.numpy
-        half_accel = accel * 0.5
-
         C, t_sm = smoother
         hst = 0.5 * t_sm
         t, dt = np.linspace(-hst, hst, 100, retstep=True)
         w = np.zeros(shape=t.shape)
         for c in C[::-1]:
             w = w * (-t) + c
-        inv_norm = 1.0 / np.trapz(w, dx=dt)
-        w *= inv_norm
+        w *= 1.0 / np.trapz(w, dx=dt)
         t -= np.trapz(t * w, dx=dt)
+        tw = t * w
+        t2w = t * tw
+        pos = t >= 0
+        neg = t < 0
+        integrals = (
+            np.trapz(t2w, dx=dt),  # full-range int(t^2 w), for offset_180
+            np.trapz(tw[pos], dx=dt),  # int_{t>=0}(t w)
+            np.trapz(t2w[pos], dx=dt),  # int_{t>=0}(t^2 w)
+            np.trapz(tw[neg], dx=dt),  # int_{t<0}(t w)
+            np.trapz(t2w[neg], dx=dt),  # int_{t<0}(t^2 w)
+        )
+        self._smoother_integrals_cache[cache_key] = integrals
+        return integrals
 
-        offset_180 = np.trapz(half_accel * t**2 * w, dx=dt)
-        offset_90_x = np.trapz(((scv + half_accel * t) * t * w)[t >= 0], dx=dt)
-        offset_90_y = np.trapz(((scv - half_accel * t) * t * w)[t < 0], dx=dt)
+    def _get_smoother_smoothing(self, smoother, accel=5000, scv=5.0):
+        i_180, jp1, jp2, jn1, jn2 = self._calc_smoother_integrals(smoother)
+        half_accel = accel * 0.5
+        offset_180 = half_accel * i_180
+        offset_90_x = scv * jp1 + half_accel * jp2
+        offset_90_y = scv * jn1 - half_accel * jn2
         offset_90 = math.sqrt(offset_90_x**2 + offset_90_y**2)
         return max(offset_90, abs(offset_180))
 
@@ -525,8 +547,9 @@ class ShaperCalibrate:
         # for max_accel without much smoothing
         TARGET_SMOOTHING = 0.12
         max_accel = self._bisect(
-            lambda test_accel: get_smoothing(s, test_accel, scv)
-            <= TARGET_SMOOTHING,
+            lambda test_accel: (
+                get_smoothing(s, test_accel, scv) <= TARGET_SMOOTHING
+            ),
             1e-2,
         )
         return max_accel
