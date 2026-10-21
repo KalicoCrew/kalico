@@ -2459,6 +2459,36 @@ main printer config file. Wildcards may also be used (eg,
 [include my_other_config.cfg]
 ```
 
+Variables may be passed to an include by listing them below the include
+line. The included file is then rendered as a Jinja2 template, using
+`{! !}` for expressions and `{!% %!}` for statements (so they don't clash
+with the `{ }` / `{% %}` templates used by gcode macros). The variables
+are also available to any file it includes. A file included without
+variables is read as-is. Referencing a variable that was not passed is
+an error.
+
+```
+[include toolhead_board.cfg]
+mcu_name: toolhead0
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead0
+
+[include toolhead_board.cfg]
+mcu_name: toolhead1
+mcu_serial: /dev/serial/by-id/usb-Klipper_rp2040_toolhead1
+```
+
+Where `toolhead_board.cfg` contains:
+
+```
+[mcu {! mcu_name !}]
+serial: {! mcu_serial !}
+
+{!% if mcu_name == "toolhead0" %!}
+[fan_generic {! mcu_name !}_fan]
+pin: {! mcu_name !}:gpio13
+{!% endif %!}
+```
+
 ### [duplicate_pin_override]
 
 This tool allows a single micro-controller pin to be defined multiple

@@ -15,6 +15,7 @@
 - [`[virtual_sdcard] with_subdirs`](./Config_Reference.md#virtual_sdcard) enables scanning of subdirectories for .gcode files, for the menu and M20/M23 commands
 - [`[firmware_retraction] z_hop_height`](./Config_Reference.md#firmware_retraction) adds an automatic z hop when using firmware retraction
 - [`[constants]` and `${constants.value}`](./Config_Reference.md#configuration-references) allow re-using values in your configuration
+- [`[include]` variables](./Config_Reference.md#include) let one included file be reused with different values, e.g. one board config for several toolhead MCUs
 
 ## Enhanced behavior
 

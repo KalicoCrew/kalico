@@ -355,17 +355,22 @@ class PrinterConfig:
         self.unused_sections = []
         self.unused_options = []
         self.save_config_pending = False
+        # Delimiters differ from gcode_macro's so macro templates (including
+        # their {# #} comments) pass through an include untouched
         self.jinja_env = jinja2.Environment(
-            "{!%",
-            "%!}",
-            "{!",
-            "!}",
+            block_start_string="{!%",
+            block_end_string="%!}",
+            variable_start_string="{!",
+            variable_end_string="!}",
+            comment_start_string="{!#",
+            comment_end_string="#!}",
+            undefined=jinja2.StrictUndefined,
+            keep_trailing_newline=True,
             extensions=[
                 "jinja2.ext.do",
                 "jinja2.ext.loopcontrols",
             ],
         )
-
         gcode = self.printer.lookup_object("gcode")
         if "SAVE_CONFIG" not in gcode.ready_gcode_handlers:
             gcode.register_command(
@@ -457,7 +462,6 @@ class PrinterConfig:
     def _resolve_include(
         self, source_filename, include_spec, fileconfig, visited, include_vars
     ):
-        # logging.info(f"include: {include_spec}, vars: {include_vars}")
         dirname = os.path.dirname(source_filename)
         include_spec = include_spec.strip()
         include_glob = os.path.join(dirname, include_spec)
@@ -471,9 +475,10 @@ class PrinterConfig:
         include_filenames.sort()
         for include_filename in include_filenames:
             include_data = self._read_config_file(include_filename)
-            include_data = self.jinja_env.from_string(include_data).render(
-                include_vars
-            )
+            if include_vars:
+                include_data = self._render_include(
+                    include_data, include_filename, include_vars
+                )
             self._parse_config(
                 include_data,
                 include_filename,
@@ -482,6 +487,12 @@ class PrinterConfig:
                 include_vars,
             )
         return include_filenames
+
+    def _render_include(self, data, filename, include_vars):
+        try:
+            return self.jinja_env.from_string(data).render(include_vars)
+        except jinja2.TemplateError as e:
+            raise error("Error rendering include file '%s': %s" % (filename, e))
 
     def _parse_config(
         self, data, filename, fileconfig, visited, include_vars=None
@@ -497,7 +508,6 @@ class PrinterConfig:
         pending_include = None
         pending_include_vars = dict(include_vars or {})
         for line in lines:
-            # logging.info(f"LINE: {line}")
             # Strip trailing comment
             pos = line.find("#")
             if pos >= 0:
@@ -525,10 +535,11 @@ class PrinterConfig:
                     if vr:
                         opt = vr.group("option")
                         val = vr.group("value")
-                        pending_include_vars[opt] = val
+                        pending_include_vars[opt] = val.strip()
                     elif len(line.strip()) != 0:
                         raise error(
-                            f"Line '{line}' is not a valid include variable definition"
+                            "Invalid include variable '%s' in '%s'"
+                            % (line.strip(), filename)
                         )
                     continue
 
