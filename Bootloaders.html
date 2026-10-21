@@ -2514,10 +2514,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#samd21-micro-controllers-arduino-zero" class="md-nav__link">
+  <a href="#samd21-micro-controllers-adafruit-m0-arduino-zero-xiao-samd21-and-similar" class="md-nav__link">
     <span class="md-ellipsis">
       
-        SAMD21 micro-controllers (Arduino Zero)
+        SAMD21 micro-controllers (Adafruit M0, Arduino Zero, XIAO SAMD21 and Similar )
       
     </span>
   </a>
@@ -3076,10 +3076,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#samd21-micro-controllers-arduino-zero" class="md-nav__link">
+  <a href="#samd21-micro-controllers-adafruit-m0-arduino-zero-xiao-samd21-and-similar" class="md-nav__link">
     <span class="md-ellipsis">
       
-        SAMD21 micro-controllers (Arduino Zero)
+        SAMD21 micro-controllers (Adafruit M0, Arduino Zero, XIAO SAMD21 and Similar )
       
     </span>
   </a>
@@ -3453,7 +3453,7 @@ at91samd bootloader 0
 program out/klipper.elf verify
 </code></pre></div>
 
-<h2 id="samd21-micro-controllers-arduino-zero">SAMD21 micro-controllers (Arduino Zero)<a class="headerlink" href="#samd21-micro-controllers-arduino-zero" title="Permanent link">&para;</a></h2>
+<h2 id="samd21-micro-controllers-adafruit-m0-arduino-zero-xiao-samd21-and-similar">SAMD21 micro-controllers (Adafruit M0, Arduino Zero, XIAO SAMD21 and Similar )<a class="headerlink" href="#samd21-micro-controllers-adafruit-m0-arduino-zero-xiao-samd21-and-similar" title="Permanent link">&para;</a></h2>
 <p>The SAMD21 bootloader is flashed via the ARM Serial Wire Debug (SWD)
 interface. This is commonly done with a dedicated SWD hardware dongle.
 Alternatively, one can use a
@@ -3471,11 +3471,16 @@ Alternatively, one can use a
 program samd21_sam_ba.bin verify
 </code></pre></div>
 
-<p>The most common bootloader on the SAMD21 is the one found on the
-"Arduino Zero". It uses an 8KiB bootloader (the application must be
-compiled with a start address of 8KiB). One can enter this bootloader
-by double clicking the reset button. To flash an application use
-something like:</p>
+<p>One common bootloader is the one found on the "Arduino Zero",
+the SAM-BA. It uses an 8KiB bootloader (the application must be
+compiled with a start address of 8KiB).
+When building Kalico, select <code>SAM-BA</code> for Bootloader type.</p>
+<p>Adafruit M0 and Seeed Studio XIAO SAMD21 boards typically use a UF2
+bootloader which also calls for an 8KiB start address.
+When building Kalico, select <code>UF2</code> for Bootloader type.</p>
+<p>One can enter the SAM-BA or UF2 bootloaders by double clicking the
+reset button. To flash an application with either of these bootloaders,
+use something like:</p>
 <div class="highlight"><pre><span></span><code>bossac -U -p /dev/ttyACM0 --offset=0x2000 -w out/klipper.bin -v -b -R
 </code></pre></div>
 
