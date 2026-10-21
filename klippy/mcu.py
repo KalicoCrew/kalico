@@ -1543,6 +1543,7 @@ class MCU:
                 self.non_critical_recon_event
             )
         self.non_critical_disconnected = False
+        self._reconnecting = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
         )
@@ -1562,10 +1563,10 @@ class MCU:
 
     # Non-critical mcu handling
     def handle_non_critical_disconnect(self):
-        if self.non_critical_disconnected:
+        if self.non_critical_disconnected or self._reconnecting:
             # motion_queuing.stats() keeps calling calibrate_clock() (and
-            # thus check_timeout()) while the mcu is disconnected; only
-            # handle the first disconnect notification
+            # thus check_timeout()) while the mcu is disconnected or still
+            # reconnecting; only handle the first disconnect notification
             return
         self.non_critical_disconnected = True
         self._conn_helper.disconnect()
@@ -1592,6 +1593,7 @@ class MCU:
             return eventtime + self.reconnect_interval
 
     def recon_mcu(self):
+        self._reconnecting = True
         try:
             if not self._mcu_identify():
                 return False
@@ -1609,6 +1611,8 @@ class MCU:
             )
             self._abort_recon_attempt()
             return False
+        finally:
+            self._reconnecting = False
         self._printer.send_event(self._non_critical_reconnect_event_name)
         return True
 

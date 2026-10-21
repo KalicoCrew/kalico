@@ -76,6 +76,7 @@ def _make_mcu(is_shutdown_response=0):
     restart._config_reset_cmd = None
     conn._restart_helper = restart
     mcu.non_critical_disconnected = True
+    mcu._reconnecting = False
     mcu._stats_helper = mcu_mod.MCUStatsHelper.__new__(mcu_mod.MCUStatsHelper)
     mcu._stats_helper._get_status_info = {}
     mcu._non_critical_reconnect_event_name = RECON_EVENT
@@ -156,3 +157,13 @@ def test_analyze_shutdown_skips_disconnected_non_critical_mcu():
 
     mcu._serial.dump_debug = _no_dump
     mcu._conn_helper._analyze_shutdown("MCU shutdown", {})
+
+
+def test_timeout_during_reconnect_is_not_a_new_disconnect():
+    # check_timeout() fires while the serial link is still being set up
+    mcu = _make_mcu()
+    mcu.non_critical_disconnected = False
+    mcu._reconnecting = True
+    mcu.handle_non_critical_disconnect()
+    assert mcu.non_critical_disconnected is False
+    assert mcu._serial.disconnected is False
