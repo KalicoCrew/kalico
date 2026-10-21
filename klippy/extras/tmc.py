@@ -127,6 +127,17 @@ class TMCErrorCheck:
         self.fields = mcu_tmc.get_fields()
         self.check_timer = None
         self.last_drv_status = self.last_drv_fields = None
+        # A non-critical mcu only counts as back once its config is resent
+        self.mcu_offline = False
+        mcu = mcu_tmc.get_mcu()
+        self.printer.register_event_handler(
+            mcu.get_non_critical_disconnect_event_name(),
+            self._handle_mcu_offline,
+        )
+        self.printer.register_event_handler(
+            mcu.get_non_critical_reconnect_event_name(),
+            self._handle_mcu_online,
+        )
         # Setup for GSTAT query
         reg_name = self.fields.lookup_register("drv_err")
         if reg_name is not None:
@@ -212,7 +223,16 @@ class TMCErrorCheck:
             self.adc_temp = None
             return
 
+    def _handle_mcu_offline(self):
+        self.mcu_offline = True
+
+    def _handle_mcu_online(self):
+        self.mcu_offline = False
+
     def _do_periodic_check(self, eventtime):
+        mcu = self.mcu_tmc.get_mcu()
+        if self.mcu_offline or mcu.non_critical_disconnected:
+            return eventtime + 1.0
         try:
             self._query_register(self.drv_status_reg_info)
             if self.gstat_reg_info is not None:
@@ -220,6 +240,9 @@ class TMCErrorCheck:
             if self.adc_temp_reg is not None:
                 self._query_temperature()
         except self.printer.command_error as e:
+            # A non-critical mcu dropping mid-query is not a driver fault
+            if mcu.non_critical_disconnected:
+                return eventtime + 1.0
             self.printer.invoke_shutdown(str(e))
             return self.printer.get_reactor().NEVER
         return eventtime + 1.0
