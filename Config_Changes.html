@@ -2722,6 +2722,14 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20261021: The temporary acceleration and velocity limits applied during
+<code>TEST_RESONANCES</code> and <code>SHAPER_CALIBRATE</code> are now derived from the actual
+test sequence instead of only the configured <code>accel_per_hz</code>. Previously an
+<code>ACCEL_PER_HZ</code> override above the configured value, or a sweeping test
+(<code>SWEEPING_PERIOD</code> &gt; 0), was silently velocity-clamped, attenuating the
+excitation. Such tests now produce larger (correct) vibration amplitudes,
+which can shift the recommended input shaper type and frequency. Consider
+re-running shaper calibration if you rely on either option.</p>
 <p>20261021: Support for the undocumented <code>max_stepper_error</code> option in
 the <code>[mcu]</code> config section has been removed.</p>
 <p>20261002: Homing with a physical endstop no longer backs off by
