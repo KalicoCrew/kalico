@@ -562,12 +562,16 @@ config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
 
 #### SET_NOZZLE_DIAMETER
-`SET_NOZZLE_DIAMETER [EXTRUDER=<config_name>] DIAMETER=<diameter>`:
-Set a new value for the nozzle diameter of the specified extruder
-(as defined in an [extruder](Config_Reference.md#extruder) config section).
-If EXTRUDER is not specified, it defaults to the active hotend.
-Changed settings are not retained on Klipper reset.
-
+`SET_NOZZLE_DIAMETER [EXTRUDER=<config_name>] DIAMETER=<diameter>
+[MAX_EXTRUDE_CROSS_SECTION=<area>]`: Set the nozzle diameter of the
+specified extruder (as defined in an [extruder](Config_Reference.md#extruder)
+config section). If EXTRUDER is not specified, it defaults to the active
+extruder. The maximum extrusion cross section is set to
+MAX_EXTRUDE_CROSS_SECTION (in mm^2) if given, e.g. for a purge line that
+needs more flow than the print. Otherwise it goes back to the
+`max_extrude_cross_section` from the config, or to the default for the new
+diameter (4 * DIAMETER^2) if that option isn't set. Changed settings are
+not retained on Kalico reset.
 
 ### [mixing_extruder]
 

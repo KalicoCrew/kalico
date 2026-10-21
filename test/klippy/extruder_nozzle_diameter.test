@@ -1,0 +1,19 @@
+# SET_NOZZLE_DIAMETER tests
+DICTIONARY atmega2560.dict
+CONFIG extruders.cfg
+
+G28
+G1 X20 Y20 Z1
+
+# 0.2mm of filament per mm of travel exceeds the default limit for a
+# 0.5mm nozzle (4 * 0.5^2 = 1mm^2) but not for a 1.0mm nozzle (4mm^2)
+SET_NOZZLE_DIAMETER DIAMETER=1.0
+G1 X30 Y20 E2
+
+# Explicit cross section with the original nozzle
+SET_NOZZLE_DIAMETER EXTRUDER=extruder DIAMETER=0.5 MAX_EXTRUDE_CROSS_SECTION=4
+G1 X40 Y20 E4
+
+# Without MAX_EXTRUDE_CROSS_SECTION the limit follows the new diameter again
+SET_NOZZLE_DIAMETER DIAMETER=1.0
+G1 X50 Y20 E6
