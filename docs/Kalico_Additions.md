@@ -10,6 +10,7 @@
 
 - [`[mcu] is_non_critical`](./Config_Reference.md#mcu) enables marking of an mcu as optional - it can be freely disconnected and connected at will. (useful for MCU-based accelerometer boards, mcu-based probes that shut down in hot chambers, etc...)
 - [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust Kalico values that were previously hidden
+- [`[non_critical_endstop_disconnect_values]`](./Config_Reference.md#non_critical_endstop_disconnect_values) together with `[danger_options] ignore_non_critical_endstop_disconnect` allows reporting a configured endstop state while a non-critical mcu is disconnected
 - Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#corexy-kinematics-with-limits-for-x-and-y-axes)
 - `--rotate-log-at-restart` can be added to your Kalico start script or service to force log rotation every restart.
 - [`[virtual_sdcard] with_subdirs`](./Config_Reference.md#virtual_sdcard) enables scanning of subdirectories for .gcode files, for the menu and M20/M23 commands
