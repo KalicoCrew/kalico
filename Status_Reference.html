@@ -1112,6 +1112,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#extruder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extruder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#extruder_stepper" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3448,6 +3459,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#extruder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extruder
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#extruder_stepper" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4147,6 +4169,14 @@ mcu is configured to use canbus):</p>
 <ul>
 <li><code>excluded_objects</code>: An array of strings listing the names of excluded objects.</li>
 <li><code>current_object</code>: The name of the object currently being printed.</li>
+</ul>
+<h2 id="extruder">extruder<a class="headerlink" href="#extruder" title="Permanent link">&para;</a></h2>
+<p>The following information is available for
+<a href="Config_Reference.html#extruder">extruder</a> objects, in addition to the
+<a href="#heater">heater</a> and <a href="#extruder_stepper">extruder_stepper</a> fields:</p>
+<ul>
+<li><code>nozzle_diameter</code>: The current nozzle diameter, as set in the config or
+  by <a href="G-Codes.html#set_nozzle_diameter">SET_NOZZLE_DIAMETER</a>.</li>
 </ul>
 <h2 id="extruder_stepper">extruder_stepper<a class="headerlink" href="#extruder_stepper" title="Permanent link">&para;</a></h2>
 <p>The following information is available for extruder_stepper objects (as well as

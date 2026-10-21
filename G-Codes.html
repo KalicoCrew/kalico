@@ -1686,6 +1686,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#set_nozzle_diameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SET_NOZZLE_DIAMETER
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -6962,6 +6973,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#set_nozzle_diameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SET_NOZZLE_DIAMETER
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -10173,6 +10195,17 @@ to become synchronized to the movement of an extruder specified by
 MOTION_QUEUE (as defined in an <a href="Config_Reference.html#extruder">extruder</a>
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.</p>
+<h4 id="set_nozzle_diameter">SET_NOZZLE_DIAMETER<a class="headerlink" href="#set_nozzle_diameter" title="Permanent link">&para;</a></h4>
+<p><code>SET_NOZZLE_DIAMETER [EXTRUDER=&lt;config_name&gt;] DIAMETER=&lt;diameter&gt;
+[MAX_EXTRUDE_CROSS_SECTION=&lt;area&gt;]</code>: Set the nozzle diameter of the
+specified extruder (as defined in an <a href="Config_Reference.html#extruder">extruder</a>
+config section). If EXTRUDER is not specified, it defaults to the active
+extruder. The maximum extrusion cross section is set to
+MAX_EXTRUDE_CROSS_SECTION (in mm^2) if given, e.g. for a purge line that
+needs more flow than the print. Otherwise it goes back to the
+<code>max_extrude_cross_section</code> from the config, or to the default for the new
+diameter (4 * DIAMETER^2) if that option isn't set. Changed settings are
+not retained on Kalico reset.</p>
 <h3 id="mixing_extruder">[mixing_extruder]<a class="headerlink" href="#mixing_extruder" title="Permanent link">&para;</a></h3>
 <p>The following commands are available when a
 <a href="Config_Reference.html#mixing_extruder">mixingextruder config section</a> is
