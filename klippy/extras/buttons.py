@@ -37,6 +37,9 @@ class MCU_buttons:
     def build_config(self):
         if not self.pin_list:
             return
+        # The firmware restarts its ack counter on buttons_query, which is
+        # also re-sent when a non-critical mcu reconnects after a reset
+        self.ack_count = self.last_button = 0
         self.oid = self.mcu.create_oid()
         self.mcu.add_config_cmd(
             "config_buttons oid=%d button_count=%d"
