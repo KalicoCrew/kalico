@@ -465,27 +465,20 @@ DEFAULT_RREF = 12000.0
 KIFS_BASE = 18.0
 
 
-class TMC5262CurrentHelper:
+class TMC5262CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        self.mcu_tmc = mcu_tmc
-        self.fields = mcu_tmc.get_fields()
         self.rref = config.getfloat(
             "rref", DEFAULT_RREF, minval=10000.0, maxval=14000.0
         )
-        max_current = self._ifs_rms_for(3, 3)
-        run_current = config.getfloat(
-            "run_current", above=0.0, maxval=max_current
+        super().__init__(
+            config, mcu_tmc, self._ifs_rms_for(3, 3), has_sense_resistor=False
         )
-        hold_current = config.getfloat(
-            "hold_current", run_current, above=0.0, maxval=max_current
-        )
-        self.req_hold_current = hold_current
-        cr, crs = self._calc_ranges(run_current)
+        cr, crs = self._calc_ranges(self.req_run_current)
         self.fields.set_field("current_range", cr)
         self.fields.set_field("current_range_scale", crs)
-        irun, ihold = self._calc_current(run_current, hold_current)
+        irun, ihold = self._calc_current(
+            self.req_run_current, self.req_hold_current
+        )
         self.fields.set_field("irun", irun)
         self.fields.set_field("ihold", ihold)
 
@@ -526,11 +519,13 @@ class TMC5262CurrentHelper:
             self._calc_current_from_field("ihold"),
             self.req_hold_current,
             self._ifs_rms(),
+            self.req_home_current,
         )
 
-    def set_current(self, run_current, hold_current, print_time):
-        self.req_hold_current = hold_current
-        irun, ihold = self._calc_current(run_current, hold_current)
+    def apply_current(self, print_time):
+        irun, ihold = self._calc_current(
+            self.actual_current, self.req_hold_current
+        )
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)

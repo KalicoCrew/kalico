@@ -5134,6 +5134,12 @@ run_current:
 #   Current in amps RMS when the motor is not moving. The default is
 #   run_current. Setting a separate hold_current is not recommended;
 #   see TMC_Drivers.md.
+#home_current:
+#   The amount of current (in amps RMS) to configure the driver to use
+#   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #rref: 12000
 #   Resistance in ohms of the reference resistor between REF and GND.
 #   Obtain this value from the driver board documentation or schematic.
