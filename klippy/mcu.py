@@ -400,6 +400,11 @@ class TriggerDispatch:
 
 
 class MCU_endstop:
+    # Class-level default so endstop wrappers/subclasses that do not call
+    # MCU_endstop.__init__ (for example probe endstops) still work. It is
+    # immutable and only ever replaced per instance, never mutated.
+    _endstop_names = ()
+
     def __init__(self, mcu, pin_params):
         self._mcu = mcu
         self._pin = pin_params["pin"]
@@ -410,14 +415,13 @@ class MCU_endstop:
         self._mcu.register_config_callback(self._build_config)
         self._rest_ticks = 0
         self._dispatch = TriggerDispatch(mcu)
-        self._endstop_names = []
 
     def get_mcu(self):
         return self._mcu
 
     def add_endstop_name(self, name):
         if name not in self._endstop_names:
-            self._endstop_names.append(name)
+            self._endstop_names = self._endstop_names + (name,)
 
     def get_endstop_names(self):
         return list(self._endstop_names)

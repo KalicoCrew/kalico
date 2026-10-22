@@ -90,7 +90,6 @@ def _make_endstop(printer=None, disconnected=True, names=(), pin_value=0):
     endstop._query_cmd = _FakeQueryCmd(pin_value)
     endstop._invert = 0
     endstop._oid = 0
-    endstop._endstop_names = []
     for name in names:
         endstop.add_endstop_name(name)
     return endstop
@@ -189,3 +188,60 @@ def test_unknown_endstop_name_is_config_error():
     with pytest.raises(_ConfigError, match="typo_endstop"):
         for cb in printer.event_handlers["klippy:connect"]:
             cb()
+
+
+class _ProbeEndstopWrapper(mcu_mod.MCU_endstop):
+    # Mimics probe endstop wrappers (e.g. Cartographer's
+    # KlipperProbeEndstop) that never call MCU_endstop.__init__
+    def __init__(self, mcu, pin_value=0):
+        self._mcu = mcu
+        self._oid = 0
+        self._invert = 0
+        self._query_cmd = _FakeQueryCmd(pin_value)
+
+
+def test_wrapper_without_init_names():
+    wrapper = _ProbeEndstopWrapper(_FakeMCU())
+    assert "_endstop_names" not in wrapper.__dict__
+    assert wrapper.get_endstop_names() == []
+    wrapper.add_endstop_name("probe")
+    wrapper.add_endstop_name("probe")
+    wrapper.add_endstop_name("z_virtual")
+    assert wrapper.get_endstop_names() == ["probe", "z_virtual"]
+    # Names are per instance, the class default stays untouched
+    assert mcu_mod.MCU_endstop._endstop_names == ()
+    assert _ProbeEndstopWrapper(_FakeMCU()).get_endstop_names() == []
+
+
+def test_wrapper_without_init_uses_fallback(_danger_options):
+    _danger_options.ignore_non_critical_endstop_disconnect = True
+    printer = _make_printer_with_values({"probe": "triggered"})
+    wrapper = _ProbeEndstopWrapper(_FakeMCU(printer), pin_value=0)
+    wrapper.add_endstop_name("probe")
+    assert wrapper.query_endstop(0.0) == 1
+
+
+def test_wrapper_without_init_unnamed_still_raises(_danger_options):
+    _danger_options.ignore_non_critical_endstop_disconnect = True
+    printer = _make_printer_with_values({"probe": "triggered"})
+    wrapper = _ProbeEndstopWrapper(_FakeMCU(printer))
+    with pytest.raises(_CommandError, match="disconnected MCU"):
+        wrapper.query_endstop(0.0)
+
+
+def test_wrapper_without_init_connected_uses_real_state(_danger_options):
+    _danger_options.ignore_non_critical_endstop_disconnect = True
+    printer = _make_printer_with_values({"probe": "triggered"})
+    wrapper = _ProbeEndstopWrapper(
+        _FakeMCU(printer, disconnected=False), pin_value=0
+    )
+    wrapper.add_endstop_name("probe")
+    assert wrapper.query_endstop(0.0) == 0
+
+
+def test_wrapper_without_init_option_disabled_raises():
+    printer = _make_printer_with_values({"probe": "triggered"})
+    wrapper = _ProbeEndstopWrapper(_FakeMCU(printer))
+    wrapper.add_endstop_name("probe")
+    with pytest.raises(_CommandError, match="disconnected MCU"):
+        wrapper.query_endstop(0.0)
