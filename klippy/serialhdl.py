@@ -17,6 +17,12 @@ class error(Exception):
     pass
 
 
+# How long check_canbus_connect() waits for a reply to its query, and how
+# often it polls the bus during that time
+CANBUS_CHECK_TIME = 1.0
+CANBUS_CHECK_POLL_TIME = 0.005
+
+
 class SerialReader:
     def __init__(self, reactor, warn_prefix="", mcu=None):
         self.reactor = reactor
@@ -167,36 +173,48 @@ class SerialReader:
                 can_filters=filters,
                 bustype="socketcan",
             )
-            bus.send(msg)
         except (can.CanError, os.error) as e:
             logging.warning("%scan issue: %s", self.warn_prefix, e)
             return False
-
-        start_time = curtime = self.reactor.monotonic()
-        while True:
-            tdiff = start_time + 1.0 - curtime
-            if tdiff <= 0.0:
-                break
-            msg = bus.recv(tdiff)
-            curtime = self.reactor.monotonic()
-            if (
-                msg is None
-                or msg.arbitration_id != CANBUS_ID_ADMIN + 1
-                or msg.dlc < 7
-                or msg.data[0] not in (RESP_NEED_NODEID, RESP_HAVE_NODEID)
-            ):
-                continue
-            found_uuid = sum(
-                [v << ((5 - i) * 8) for i, v in enumerate(msg.data[1:7])]
-            )
-            # logging.info(f"found_uuid: {hex(found_uuid)[2:]}")
-            if found_uuid == uuid:
-                self.disconnect()
-                bus.close = bus.shutdown  # XXX
-                return True
-        bus.close = bus.shutdown  # XXX
-        # logging.info(f"couldn't find uuid: {hex(uuid)[2:]}")
-        return False
+        try:
+            try:
+                bus.send(msg)
+            except (can.CanError, os.error) as e:
+                logging.warning("%scan issue: %s", self.warn_prefix, e)
+                return False
+            # This runs in the reactor thread (non-critical mcu reconnect
+            # timer), so poll without blocking and let the reactor run in
+            # between. A blocking recv() here stalls step flushing on all
+            # other mcus for the whole timeout ("Timer too close").
+            end_time = self.reactor.monotonic() + CANBUS_CHECK_TIME
+            while True:
+                try:
+                    msg = bus.recv(0.0)
+                except (can.CanError, os.error) as e:
+                    logging.warning("%scan issue: %s", self.warn_prefix, e)
+                    return False
+                if msg is None:
+                    curtime = self.reactor.monotonic()
+                    if curtime >= end_time:
+                        return False
+                    self.reactor.pause(
+                        min(end_time, curtime + CANBUS_CHECK_POLL_TIME)
+                    )
+                    continue
+                if (
+                    msg.arbitration_id != CANBUS_ID_ADMIN + 1
+                    or msg.dlc < 7
+                    or msg.data[0] not in (RESP_NEED_NODEID, RESP_HAVE_NODEID)
+                ):
+                    continue
+                found_uuid = sum(
+                    [v << ((5 - i) * 8) for i, v in enumerate(msg.data[1:7])]
+                )
+                if found_uuid == uuid:
+                    self.disconnect()
+                    return True
+        finally:
+            bus.shutdown()
 
     def connect_canbus(self, canbus_uuid, canbus_nodeid, canbus_iface="can0"):
         import can  # XXX
