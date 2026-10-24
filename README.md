@@ -22,6 +22,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [core: rotate log file at every restart](https://github.com/KalicoCrew/kalico/pull/181)
 
+- [core: STM32 H5 support](https://github.com/KalicoCrew/kalico/pull/348)
+
 - [core: options for API server socket file mode, user, and group](https://github.com/KalicoCrew/kalico/pull/612)
 
 - [core: options to change mode and group of linux mcu psuedoterminal](https://github.com/KalicoCrew/kalico/pull/692)

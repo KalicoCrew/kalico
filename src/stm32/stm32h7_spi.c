@@ -16,6 +16,27 @@ struct spi_info {
     uint8_t miso_pin, mosi_pin, sck_pin, function;
 };
 
+#if CONFIG_MACH_STM32H503
+DECL_ENUMERATION("spi_bus", "spi2", 0);
+DECL_CONSTANT_STR("BUS_PINS_spi2", "PB14,PB15,PB13");
+DECL_ENUMERATION("spi_bus", "spi1", 1);
+DECL_CONSTANT_STR("BUS_PINS_spi1", "PA6,PA7,PA5");
+DECL_ENUMERATION("spi_bus", "spi1a", 2);
+DECL_CONSTANT_STR("BUS_PINS_spi1a", "PB4,PB5,PB3");
+DECL_ENUMERATION("spi_bus", "spi2a", 3);
+DECL_CONSTANT_STR("BUS_PINS_spi2a", "PC2,PC3,PB10");
+DECL_ENUMERATION("spi_bus", "spi3a", 4);
+DECL_CONSTANT_STR("BUS_PINS_spi3a", "PC11,PC12,PC10");
+#elif CONFIG_MACH_STM32H562
+DECL_ENUMERATION("spi_bus", "spi2", 0);
+DECL_CONSTANT_STR("BUS_PINS_spi2", "PB14,PB15,PB13");
+DECL_ENUMERATION("spi_bus", "spi1", 1);
+DECL_CONSTANT_STR("BUS_PINS_spi1", "PA6,PA7,PA5");
+DECL_ENUMERATION("spi_bus", "spi2a", 2);
+DECL_CONSTANT_STR("BUS_PINS_spi2a", "PC2,PC3,PB10");
+DECL_ENUMERATION("spi_bus", "spi3a", 3);
+DECL_CONSTANT_STR("BUS_PINS_spi3a", "PC11,PC12,PC10");
+#else
 DECL_ENUMERATION("spi_bus", "spi2", 0);
 DECL_CONSTANT_STR("BUS_PINS_spi2", "PB14,PB15,PB13");
 DECL_ENUMERATION("spi_bus", "spi1", 1);
@@ -36,8 +57,23 @@ DECL_ENUMERATION("spi_bus", "spi6", 8);
 DECL_CONSTANT_STR("BUS_PINS_spi6", "PG12,PG14,PG13");
 DECL_ENUMERATION("spi_bus", "spi2b", 9);
 DECL_CONSTANT_STR("BUS_PINS_spi2b", "PI2,PI3,PI1");
+#endif
 
 static const struct spi_info spi_bus[] = {
+#if CONFIG_MACH_STM32H503
+    // DS14053 Table 11. SPI1/SPI2 are AF5. SPI3 on PC10/PC11/PC12 is AF6.
+    { SPI2, GPIO('B', 14), GPIO('B', 15), GPIO('B', 13), GPIO_FUNCTION(5) },
+    { SPI1, GPIO('A', 6), GPIO('A', 7), GPIO('A', 5), GPIO_FUNCTION(5) },
+    { SPI1, GPIO('B', 4), GPIO('B', 5), GPIO('B', 3), GPIO_FUNCTION(5) },
+    { SPI2, GPIO('C', 2), GPIO('C', 3), GPIO('B', 10), GPIO_FUNCTION(5) },
+    { SPI3, GPIO('C', 11), GPIO('C', 12), GPIO('C', 10), GPIO_FUNCTION(6) },
+#elif CONFIG_MACH_STM32H562
+    // Same balls as H503. SPI1/SPI2 sit in AF5; SPI3 on PC10/PC11/PC12 is AF6.
+    { SPI2, GPIO('B', 14), GPIO('B', 15), GPIO('B', 13), GPIO_FUNCTION(5) },
+    { SPI1, GPIO('A', 6), GPIO('A', 7), GPIO('A', 5), GPIO_FUNCTION(5) },
+    { SPI2, GPIO('C', 2), GPIO('C', 3), GPIO('B', 10), GPIO_FUNCTION(5) },
+    { SPI3, GPIO('C', 11), GPIO('C', 12), GPIO('C', 10), GPIO_FUNCTION(6) },
+#else
     { SPI2, GPIO('B', 14), GPIO('B', 15), GPIO('B', 13), GPIO_FUNCTION(5) },
     { SPI1, GPIO('A', 6), GPIO('A', 7), GPIO('A', 5), GPIO_FUNCTION(5) },
     { SPI1, GPIO('B', 4), GPIO('B', 5), GPIO('B', 3), GPIO_FUNCTION(5) },
@@ -48,6 +84,7 @@ static const struct spi_info spi_bus[] = {
     { SPI5, GPIO('H', 7), GPIO('F', 11), GPIO('H', 6), GPIO_FUNCTION(5) },
     { SPI6, GPIO('G', 12), GPIO('G', 14), GPIO('G', 13), GPIO_FUNCTION(5)},
     { SPI2, GPIO('I', 2), GPIO('I', 3), GPIO('I', 1), GPIO_FUNCTION(5) },
+#endif
 };
 
 struct spi_config
