@@ -121,19 +121,28 @@ class HomingMove:
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
         endstop_triggers = []
-        for mcu_endstop, name in self.endstops:
-            rest_time = self._calc_endstop_rate(mcu_endstop, movepos, speed)
-            wait = mcu_endstop.home_start(
-                print_time,
-                ENDSTOP_SAMPLE_TIME,
-                ENDSTOP_SAMPLE_COUNT,
-                rest_time,
-                triggered=triggered,
-            )
-            endstop_triggers.append(wait)
-        all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
-
-        self.toolhead.dwell(HOMING_START_DELAY)
+        try:
+            for mcu_endstop, name in self.endstops:
+                rest_time = self._calc_endstop_rate(mcu_endstop, movepos, speed)
+                wait = mcu_endstop.home_start(
+                    print_time,
+                    ENDSTOP_SAMPLE_TIME,
+                    ENDSTOP_SAMPLE_COUNT,
+                    rest_time,
+                    triggered=triggered,
+                )
+                endstop_triggers.append(wait)
+            all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
+            self.toolhead.dwell(HOMING_START_DELAY)
+        except Exception:
+            # Stop endstops already started so they release their resources
+            end_time = self.toolhead.get_last_move_time()
+            for mcu_endstop, name in self.endstops[: len(endstop_triggers)]:
+                try:
+                    mcu_endstop.home_wait(end_time)
+                except self.printer.command_error:
+                    pass
+            raise
         # Issue move
         error = None
         try:

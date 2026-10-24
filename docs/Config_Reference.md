@@ -4593,6 +4593,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc2208]
@@ -4975,6 +4978,9 @@ run_current:
 #   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
 #   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5160]
@@ -5129,6 +5135,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5262]
