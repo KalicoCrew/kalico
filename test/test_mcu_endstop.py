@@ -180,14 +180,36 @@ def test_invalid_value_is_config_error():
         _make_printer_with_values({"mmu_gear_0": "invalid"})
 
 
+def _run_connect(printer):
+    for cb in printer.event_handlers["klippy:connect"]:
+        cb()
+
+
 def test_unknown_endstop_name_is_config_error():
-    printer = _make_printer_with_values({"typo_endstop": "open"})
-    printer.objects["query_endstops"] = SimpleNamespace(
-        endstops=[(None, "mmu_gear_0")]
+    # Stepper endstops are registered with their short name ("x"), so
+    # "stepper_x" is reported as unknown together with the valid names
+    printer = _make_printer_with_values(
+        {"stepper_x": "open", "mmu_gear_0": "triggered"}
     )
-    with pytest.raises(_ConfigError, match="typo_endstop"):
-        for cb in printer.event_handlers["klippy:connect"]:
-            cb()
+    printer.objects["query_endstops"] = SimpleNamespace(
+        endstops=[(None, "x"), (None, "mmu_gear_0")]
+    )
+    with pytest.raises(_ConfigError) as excinfo:
+        _run_connect(printer)
+    msg = str(excinfo.value)
+    assert (
+        "Unknown endstop(s) in [non_critical_endstop_disconnect_values]" in msg
+    )
+    assert "stepper_x" in msg
+    assert "known endstops, as reported by QUERY_ENDSTOPS: mmu_gear_0, x" in msg
+
+
+def test_known_endstop_names_pass_connect_check():
+    printer = _make_printer_with_values({"x": "open", "mmu_gear_0": "1"})
+    printer.objects["query_endstops"] = SimpleNamespace(
+        endstops=[(None, "x"), (None, "y"), (None, "mmu_gear_0")]
+    )
+    _run_connect(printer)
 
 
 class _ProbeEndstopWrapper(mcu_mod.MCU_endstop):

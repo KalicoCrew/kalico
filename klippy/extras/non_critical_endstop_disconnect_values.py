@@ -45,7 +45,8 @@ class NonCriticalEndstopDisconnectValues:
         if unknown:
             raise self.printer.config_error(
                 "Unknown endstop(s) in [non_critical_endstop_disconnect_values]:"
-                " %s" % (", ".join(unknown),)
+                " %s (known endstops, as reported by QUERY_ENDSTOPS: %s)"
+                % (", ".join(unknown), ", ".join(sorted(known)) or "none")
             )
 
     def has_value(self, name):

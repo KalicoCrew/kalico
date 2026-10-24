@@ -184,9 +184,10 @@ homing on a disconnected mcu is always rejected.
 [non_critical_endstop_disconnect_values]
 #<endstop_name>: open
 #   One line per endstop, using the name reported by QUERY_ENDSTOPS
-#   (for example `stepper_x`, `mmu_gear_0`, ...). The value is the
-#   state reported while the mcu is disconnected, one of `open`
-#   (also `false` or `0`) or `triggered` (also `closed`, `true` or `1`).
+#   (for example `x` for the [stepper_x] endstop, `mmu_gear_0`, ...).
+#   The value is the state reported while the mcu is disconnected, one
+#   of `open` (also `false` or `0`) or `triggered` (also `closed`,
+#   `true` or `1`).
 #   An invalid value or an unknown endstop name is a config error.
 ```
 
