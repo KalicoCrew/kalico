@@ -108,7 +108,7 @@ class ADS131MxBase(LoadCellSensor):
         self.name: str = config.get_name().split()[-1]
         self.sensor_type: str = sensor_type
         self.channel_count: int = channel_count
-        self.last_error_count: int = 0
+        self.error_count: int = 0
         self.consecutive_fails: int = 0
         self.sps: int = config.getchoice(
             "sample_rate",
@@ -219,12 +219,13 @@ class ADS131MxBase(LoadCellSensor):
     # Measurement decoding
     def _convert_samples(self, samples):
         samples_out = []
+        batch_errors: int = 0
         for sample in samples:
             ptime = sample[0]
             channel_counts = sample[1:]
             val = channel_counts[0]
             if val == SAMPLE_ERROR_CRC or val == SAMPLE_ERROR_RESET:
-                self.last_error_count += 1
+                batch_errors += 1
                 logging.error(
                     f"{self.sensor_type} sample error: {channel_counts[0]}"
                 )
@@ -234,10 +235,9 @@ class ADS131MxBase(LoadCellSensor):
                 converted_sample.append(channel)
                 converted_sample.append(channel * ADC_FACTOR)
             samples_out.append(converted_sample)
-        return list(samples_out)
+        return list(samples_out), batch_errors
 
     def _start_measurements(self):
-        self.last_error_count = 0
         self.consecutive_fails = 0
         self.reset_chip()
         self.setup_chip()
@@ -256,11 +256,13 @@ class ADS131MxBase(LoadCellSensor):
         logging.info(f"{self.sensor_type} finished '{self.name}' measurements")
 
     def _process_batch(self, eventtime):
-        samples = self.ffreader.pull_samples()
+        raw_samples, overflows = self.ffreader.pull_samples()
+        samples, batch_errors = self._convert_samples(raw_samples)
+        self.error_count += batch_errors
         return {
-            "data": self._convert_samples(samples),
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "data": samples,
+            "errors": batch_errors,
+            "overflows": overflows,
         }
 
     # --- SPI Communication Helpers ---

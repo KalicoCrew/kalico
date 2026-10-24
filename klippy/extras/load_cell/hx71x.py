@@ -31,7 +31,7 @@ class HX71xBase(LoadCellSensor):
     ):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
-        self.last_error_count = 0
+        self.error_count = 0
         self.consecutive_fails = 0
         self.sensor_type = sensor_type
         # Chip options
@@ -118,21 +118,23 @@ class HX71xBase(LoadCellSensor):
         self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     # Measurement decoding
-    def _convert_samples(self, samples):
+    @staticmethod
+    def _convert_samples(samples) -> int:
         adc_factor = 1.0 / (1 << 23)
         count = 0
+        batch_errors = 0
         for ptime, val in samples:
             if val == SAMPLE_ERROR_DESYNC or val == SAMPLE_ERROR_LONG_READ:
-                self.last_error_count += 1
+                batch_errors += 1
                 break  # additional errors are duplicates
             samples[count] = (round(ptime, 6), val, round(val * adc_factor, 9))
             count += 1
         del samples[count:]
+        return batch_errors
 
     # Start, stop, and process message batches
     def _start_measurements(self):
         self.consecutive_fails = 0
-        self.last_error_count = 0
         # Start bulk reading
         rest_ticks = self.mcu.seconds_to_clock(1.0 / (10.0 * self.sps))
         self.query_hx71x_cmd.send([self.oid, rest_ticks])
@@ -154,13 +156,10 @@ class HX71xBase(LoadCellSensor):
         )
 
     def _process_batch(self, eventtime) -> BulkAdcData:
-        prev_overflows = self.ffreader.get_last_overflows()
-        prev_error_count = self.last_error_count
-        samples = self.ffreader.pull_samples()
-        self._convert_samples(samples)
-        overflows = self.ffreader.get_last_overflows() - prev_overflows
-        errors = self.last_error_count - prev_error_count
-        if errors > 0:
+        samples, overflows = self.ffreader.pull_samples()
+        batch_errors = self._convert_samples(samples)
+        self.error_count += batch_errors
+        if batch_errors > 0:
             logging.error("%s: Forced sensor restart due to error", self.name)
             self._finish_measurements()
             self._start_measurements()
@@ -176,8 +175,8 @@ class HX71xBase(LoadCellSensor):
             self.consecutive_fails = 0
         return {
             "data": samples,
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": batch_errors,
+            "overflows": overflows,
         }
 
 

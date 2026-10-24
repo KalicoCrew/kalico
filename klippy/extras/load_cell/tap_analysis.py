@@ -12,9 +12,10 @@ from typing import Optional
 
 import numpy as np
 
+from klippy import Printer
+from klippy.extras.load_cell.load_cell import ApiClientHelper
+from klippy.extras.motion_report import DumpTrapQ, PrinterMotionReport
 from klippy.gcode import GCodeCommand
-
-from .load_cell import ApiClientHelper
 
 
 class TapClassifierModule(object):
@@ -455,14 +456,17 @@ class TapAnalysis:
         return homing_move.print_time + homing_move.move_t
 
     # extract and save TrapQueue moves
-    def _extract_trapq(self, printer):
-        trapq = printer.lookup_object("motion_report").trapqs["toolhead"]
+    def _extract_trapq(self, printer: Printer):
+        motion_report: PrinterMotionReport = printer.lookup_object(
+            "motion_report"
+        )
+        trapq: DumpTrapQ = motion_report.dtrapqs["toolhead"]
         moves, _ = trapq.extract_trapq(float(self._time[0] + self._time_offset))
         for move in moves:
             self._moves.append(TrapezoidalMove(move, self._time_offset))
 
     # perform analysis, throws exceptions
-    def analyze(self, printer):
+    def analyze(self, printer: Printer):
         self._extract_trapq(printer)
         num_moves = len(self._moves)
         if num_moves < 5:

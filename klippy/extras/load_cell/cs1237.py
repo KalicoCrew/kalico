@@ -14,7 +14,7 @@ class CS1237:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
-        self.last_error_count = 0
+        self.error_count = 0
         self._sensor_errors = {}
 
         rate_options = {"10": 0, "40": 1, "640": 2, "1280": 3}
@@ -97,8 +97,8 @@ class CS1237:
 
     def get_status(self, eventtime):
         return {
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": self.error_count,
+            "overflows": self.ffreader.get_total_overflows(),
             "sample_rate": self.sps,
         }
 
@@ -108,13 +108,15 @@ class CS1237:
     def add_client(self, callback):
         self.batch_bulk.add_client(callback)
 
-    def _convert_samples(self, samples):
+    @staticmethod
+    def _convert_samples(samples):
         adc_factor = 1.0 / (1 << 23)
         count = 0
+        batch_errors = 0
         for ptime, value in samples:
             top_byte = (value >> 24) & 0xFF
             if top_byte != 0x00 and top_byte != 0xFF:
-                self.last_error_count += 1
+                batch_errors += 1
                 continue
             samples[count] = (
                 round(ptime, 6),
@@ -123,6 +125,7 @@ class CS1237:
             )
             count += 1
         del samples[count:]
+        return batch_errors
 
     def _start_measurements(self):
         rest_ticks = self.mcu.seconds_to_clock(1.0 / (10.0 * self.sps))
@@ -140,12 +143,13 @@ class CS1237:
         logging.info("CS1237 finished '%s' measurements", self.name)
 
     def _process_batch(self, eventtime):
-        samples = self.ffreader.pull_samples()
-        self._convert_samples(samples)
+        samples, overflows = self.ffreader.pull_samples()
+        batch_errors = self._convert_samples(samples)
+        self.error_count += batch_errors
         return {
             "data": samples,
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": batch_errors,
+            "overflows": overflows,
         }
 
 
