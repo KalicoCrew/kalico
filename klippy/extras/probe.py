@@ -347,6 +347,9 @@ class ProbeList:
         return {
             "probes": list(self.probes.keys()),
             "default_probe": self.default_probe and self.default_probe[0],
+            "probe_status": {
+                k: p.get_status(eventtime) for (k, p) in self.probes.items()
+            },
         }
 
     def get_all(self):
