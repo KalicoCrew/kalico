@@ -11285,6 +11285,9 @@ sense_resistor:
 #   &quot;sensorless homing&quot;. (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 </code></pre></div>
 
 <h3 id="tmc2208">[tmc2208]<a class="headerlink" href="#tmc2208" title="Permanent link">&para;</a></h3>
@@ -11655,6 +11658,9 @@ run_current:
 #   &quot;sensorless homing&quot;. (Be sure to also set driver_SGT OR driver_SG4_THRS
 #   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 </code></pre></div>
 
 <h3 id="tmc5160">[tmc5160]<a class="headerlink" href="#tmc5160" title="Permanent link">&para;</a></h3>
@@ -11806,6 +11812,9 @@ sense_resistor:
 #   &quot;sensorless homing&quot;. (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 </code></pre></div>
 
 <h3 id="tmc5262">[tmc5262]<a class="headerlink" href="#tmc5262" title="Permanent link">&para;</a></h3>

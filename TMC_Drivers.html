@@ -1266,6 +1266,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Configure printer.cfg for sensorless homing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sensorless-homing-via-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sensorless homing via SPI
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -3130,6 +3147,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Configure printer.cfg for sensorless homing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sensorless-homing-via-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sensorless homing via SPI
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -3501,7 +3535,8 @@ also find more details on limitations of this setup.</p>
 <li>SPI / UART interface of the TMC driver wired to micro-controller
    (stand-alone mode does not work).</li>
 <li>The appropriate "DIAG" or "SG_TST" pin of TMC driver connected to
-   the micro-controller.</li>
+   the micro-controller. (Not needed on SPI drivers, see
+   <a href="#sensorless-homing-via-spi">Sensorless homing via SPI</a>.)</li>
 <li>The steps in the <a href="Config_checks.html">config checks</a> document must be
    run to confirm the stepper motors are configured and working
    properly.</li>
@@ -3585,6 +3620,25 @@ homing_retract_dist: 10
 homing. See the
 <a href="Config_Reference.html#tmc-stepper-driver-configuration">config reference</a>
 for all the available options.</p>
+<h5 id="sensorless-homing-via-spi">Sensorless homing via SPI<a class="headerlink" href="#sensorless-homing-via-spi" title="Permanent link">&para;</a></h5>
+<p>On tmc2130, tmc2240, tmc5160 and tmc2160 drivers wired over SPI, the
+DIAG pin is not required. If no <code>diag0_pin</code> or <code>diag1_pin</code> is set, the
+micro-controller polls the driver's stallguard flag over the SPI bus
+during homing instead of watching a pin:</p>
+<div class="highlight"><pre><span></span><code>[tmc5160 stepper_x]
+driver_SGT: 1
+...
+
+[stepper_x]
+endstop_pin: tmc5160_stepper_x:virtual_endstop
+...
+</code></pre></div>
+
+<p>The flag is polled every 1ms and is ignored until the axis has reached
+the homing speed (plus 150ms), so the homing move must start far enough
+from the end of the rail to finish accelerating. Setting <code>min_home_dist</code>
+in the stepper section (e.g. 15mm) makes Kalico back off and home again
+when it starts too close. This is not available on UART drivers.</p>
 <h4 id="find-highest-sensitivity-that-successfully-homes">Find highest sensitivity that successfully homes<a class="headerlink" href="#find-highest-sensitivity-that-successfully-homes" title="Permanent link">&para;</a></h4>
 <p>Place the carriage near the center of the rail. Use the SET_TMC_FIELD
 command to set the highest sensitivity. For tmc2209:</p>
