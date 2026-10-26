@@ -100,6 +100,8 @@ class ZThermalAdjuster:
 
     def handle_homing_move_end(self, homing_state, rails):
         "Set reference temperature after Z homing."
+        if not homing_state.homing_successful:
+            return
         if 2 in homing_state.get_axes():
             self.ref_temperature = self.smoothed_temp
             self.ref_temp_override = False

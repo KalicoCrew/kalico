@@ -195,7 +195,7 @@ class ArcSupport:
                     e_base += e_per_move
             if asF is not None:
                 g1_params["F"] = asF
-            g1_gcmd = self.gcode.create_gcode_command("G1", "G1", g1_params)
+            g1_gcmd = gcmd.create_subcommand("G1", "G1", g1_params)
             self.gcode_move.cmd_G1(g1_gcmd)
 
 

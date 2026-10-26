@@ -144,7 +144,7 @@ class FilamentWidthSensor:
         self.filament_array = []
         gcmd.respond_info("Filament width measurements cleared!")
         # Set extrude multiplier to 100%
-        self.gcode.run_script_from_command("M221 S100")
+        gcmd.run_script("M221 S100")
 
     def cmd_M405(self, gcmd):
         response = "Filament width sensor Turned On"
@@ -171,7 +171,7 @@ class FilamentWidthSensor:
             # Clear filament array
             self.filament_array = []
             # Set extrude multiplier to 100%
-            self.gcode.run_script_from_command("M221 S100")
+            gcmd.run_script("M221 S100")
         gcmd.respond_info(response)
 
 

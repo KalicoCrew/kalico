@@ -61,7 +61,7 @@ class HomingOverride:
         context["rawparams"] = gcmd.get_raw_command_parameters()
         try:
             self.in_script = True
-            self.template.run_gcode_from_command(context)
+            self.template.run_gcode(gcmd, context)
         finally:
             self.in_script = False
 
