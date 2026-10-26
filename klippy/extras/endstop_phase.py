@@ -146,6 +146,8 @@ class EndstopPhase:
         return delta * self.step_dist
 
     def handle_home_rails_end(self, homing_state, rails):
+        if not homing_state.homing_successful:
+            return
         for rail in rails:
             stepper = rail.get_steppers()[0]
             if stepper.get_name() == self.name:
@@ -195,6 +197,8 @@ class EndstopPhases:
             phase_calc.calc_phase(stepper, trig_mcu_pos)
 
     def handle_home_rails_end(self, homing_state, rails):
+        if not homing_state.homing_successful:
+            return
         for rail in rails:
             is_primary = True
             for _stepper in rail.get_steppers():

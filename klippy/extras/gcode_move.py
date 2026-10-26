@@ -111,6 +111,8 @@ class GCodeMove:
 
     def _handle_home_rails_end(self, homing_state, rails):
         self.reset_last_position()
+        if not homing_state.homing_successful:
+            return
         for axis in homing_state.get_axes():
             self.base_position[axis] = self.homing_position[axis]
 

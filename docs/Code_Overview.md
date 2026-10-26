@@ -108,6 +108,15 @@ printer object calls, which frequently translate the actions to
 commands to be executed on the micro-controller (as declared via the
 DECL_COMMAND macro in the micro-controller code).
 
+Handlers receive a GCodeCommand representing a parsed command. The
+run_script() and create_subcommand() methods are the entry points
+for calling other commands. See GCodeContextRoot and
+GCodeContextScope in **klippy/gcode.py** for mutex ownership and
+command lifetime handling. run_script_from_command() accepts an optional
+GCodeCommand for compatibility boundaries. Without a command, it uses
+GCodeContextLegacy as an escape hatch for callers that cannot practically
+obtain one; those callers cannot temporarily release the mutex.
+
 There are four threads in the Klippy host code. The main thread
 handles incoming gcode commands. A second thread (which resides
 entirely in the **klippy/chelper/serialqueue.c** C code) handles

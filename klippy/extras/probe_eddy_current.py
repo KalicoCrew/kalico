@@ -352,7 +352,7 @@ class EddyEndstopWrapper:
     def probing_move(self, pos, speed, gcmd):
         # Perform probing move
         phoming = self._printer.lookup_object("homing")
-        trig_pos = phoming.probing_move(self, pos, speed)
+        trig_pos = phoming.probing_move(self, pos, speed, gcmd)
         if not self._trigger_time:
             return trig_pos
         # Wait for samples to arrive

@@ -57,7 +57,7 @@ def _parse_axis(gcmd, raw_axis):
 
 
 @contextmanager
-def suspend_limits(printer, max_accel, max_velocity, input_shaping):
+def suspend_limits(printer, max_accel, max_velocity, input_shaping, gcmd):
     # Override maximum acceleration and cruise ratio
     # based on the maximum test frequency
     gcode = printer.lookup_object("gcode")
@@ -73,7 +73,7 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping):
     old_max_accel = toolhead_info["max_accel"]
     old_minimum_cruise_ratio = toolhead_info["minimum_cruise_ratio"]
     old_max_velocity = toolhead_info["max_velocity"]
-    gcode.run_script_from_command(
+    gcmd.run_script(
         "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=0 VELOCITY=%.3f"
         % (max_accel, max_velocity)
     )
@@ -107,7 +107,7 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping):
             input_shaper.enable_shaping()
             gcode.respond_info("Re-enabled [input_shaper]")
         # Restore the original acceleration values
-        gcode.run_script_from_command(
+        gcmd.run_script(
             "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f VELOCITY=%.3f"
             % (old_max_accel, old_minimum_cruise_ratio, old_max_velocity)
         )
@@ -253,6 +253,7 @@ class ResonanceTestExecutor:
             max_accel + 10.0,
             max_v + 1.0,
             gcmd.get_int("INPUT_SHAPING", 0),
+            gcmd,
         ):
             self._run_test(test_seq, axis, gcmd)
 
