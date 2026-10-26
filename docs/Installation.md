@@ -99,6 +99,30 @@ Note that these scripts install Kalico itself; Moonraker and a web
 interface such as Mainsail or Fluidd still need to be installed
 separately.
 
+## Running in Docker
+
+A container image is published at `ghcr.io/kalicocrew/kalico` for
+`amd64` and `arm64`. It is a drop-in replacement for the
+[prind](https://github.com/mkuf/prind) `mkuf/klipper` image: paths,
+uid and volumes are the same, so an existing prind setup only needs
+the image changed in `docker-compose.yaml`:
+
+```yaml
+services:
+  klipper:
+    image: ghcr.io/kalicocrew/kalico:latest
+```
+
+Available tags:
+
+- `latest`: the most recent monthly release
+- `vYYYY.MM.NN`: a specific release
+- `main`: the current `main` branch
+
+Only the klippy image is published. prind's `tools` and `hostmcu`
+images are not, so build and flash the micro-controller firmware
+(including the Linux host MCU) from the Kalico repository, see below.
+
 ## Building and flashing the micro-controller
 
 To compile the micro-controller code, start by running these commands

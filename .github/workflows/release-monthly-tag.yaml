@@ -9,6 +9,8 @@ on:
 jobs:
   create-tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,3 +42,24 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ steps.tag.outputs.name }}" -m "release ${{ steps.tag.outputs.name }}"
           git push origin "${{ steps.tag.outputs.name }}"
+
+  # Tags pushed with GITHUB_TOKEN don't trigger other workflows, so the
+  # image build is called directly
+  docker-image:
+    needs: create-tag
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci-builder.yaml
+    with:
+      tag: ${{ needs.create-tag.outputs.tag }}
+    secrets: inherit
+
+  kalico-image:
+    needs: create-tag
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/cd-docker.yaml
+    with:
+      tag: ${{ needs.create-tag.outputs.tag }}

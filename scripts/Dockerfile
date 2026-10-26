@@ -1,44 +1,62 @@
-# This is an example Dockerfile showing how it's possible to install Klipper in Docker.
-# IMPORTANT: The docker build must be run from the root of the repo, either copy the
-# Dockerfile to the root, or run docker build with "-f", for example:
-#       docker build . -f scripts/Dockerfile -t klipper
-# Note that the host still needs to run Linux to connect the printers serial port to
-# the container.
-# When running, the serial port of your printer should be connected, including an
-# argument such as:
-#       --device /dev/ttyUSB0:/dev/ttyUSB0
-# It's also required that your control program (eg: OctoPrint) be included in the same
-# container as Docker does not allow sharing of the virtual serial port outside the
-# container.
-# The config should be in a file named "printer.cfg" in a directory mounted at:
-#       /home/klippy/.config/
-# For more Dockerfile examples with Klipper (and Octoprint) see:
-# https://github.com/sillyfrog/OctoPrint-Klipper-mjpg-Dockerfile
-FROM ubuntu:18.04
+# Kalico runtime image, a drop-in replacement for mkuf/klipper
+#
+# Derived from prind (https://github.com/mkuf/prind), GPL-3.0.
+# Paths, uid and volumes match mkuf/klipper so existing compose setups
+# only need to change the image name.
 
-RUN apt-get update && \
-    apt-get install -y sudo
+## Build venv and chelper
+##
+FROM python:3.13-trixie AS build
 
-# Create user
-RUN useradd -ms /bin/bash klippy && adduser klippy dialout
-USER klippy
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON=/usr/local/bin/python3 \
+    UV_PYTHON_DOWNLOADS=never
 
-#This fixes issues with the volume command setting wrong permissions
-RUN mkdir /home/klippy/.config
-VOLUME /home/klippy/.config
+WORKDIR /opt/klipper
+COPY . .
 
-### Klipper setup ###
-WORKDIR /home/klippy
+# The image runs on other CPUs than the build host, so build chelper
+# without -march=native
+RUN (git describe --tags --always --dirty > klippy/.version || true) \
+ && rm -rf .git \
+ && uv sync --frozen --no-dev --group graphs --no-install-project \
+ && /opt/venv/bin/python -m compileall klippy \
+ && rm -f klippy/chelper/c_helper.so \
+ && /opt/venv/bin/python -c "import sys; sys.path.insert(0, 'klippy'); \
+      import chelper; chelper.check_gcc_option = lambda o: False; \
+      chelper.get_ffi()"
+###
 
-COPY . klipper/
-USER root
-RUN echo 'klippy ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/klippy && \
-    chown klippy:klippy -R klipper
-# This is to allow the install script to run without error
-RUN ln -s /bin/true /bin/systemctl
-USER klippy
-RUN ./klipper/scripts/install-ubuntu-18.04.sh
-# Clean up install script workaround
-RUN sudo rm -f /bin/systemctl
 
-CMD ["/home/klippy/klippy-env/bin/python", "/home/klippy/klipper/klippy/klippy.py", "/home/klippy/.config/printer.cfg"]
+## Runtime
+##
+FROM python:3.13-slim-trixie AS run
+
+WORKDIR /opt
+RUN groupadd kalico --gid 1000 \
+ && useradd kalico --create-home --uid 1000 --gid kalico \
+ && usermod kalico --append --groups dialout,tty \
+ && mkdir -p printer_data/run printer_data/gcodes printer_data/logs \
+      printer_data/config \
+ && chown -R kalico:kalico /opt/*
+
+# Optional compose healthcheck: test: ["python3", "/opt/health.py"]
+COPY --chown=kalico:kalico <<EOF health.py
+import json, socket, sys
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect("/opt/printer_data/run/klipper.sock")
+sock.sendall(json.dumps({"id": 1, "method": "info"}).encode() + b"\x03")
+resp = json.loads(sock.recv(4096).decode().strip("\x03"))
+sys.exit(0 if resp["result"]["state"] == "ready" else 1)
+EOF
+
+# Only what klippy needs at runtime; lib/ and src/ are for MCU builds
+COPY --chown=kalico:kalico --from=build /opt/klipper/klippy ./klipper/klippy
+COPY --chown=kalico:kalico --from=build /opt/klipper/config ./klipper/config
+COPY --chown=kalico:kalico --from=build /opt/klipper/scripts ./klipper/scripts
+COPY --chown=kalico:kalico --from=build /opt/venv ./venv
+
+USER kalico
+VOLUME ["/opt/printer_data/run", "/opt/printer_data/gcodes", "/opt/printer_data/logs", "/opt/printer_data/config"]
+ENTRYPOINT ["/opt/venv/bin/python", "klipper/klippy/klippy.py"]
+CMD ["-I", "printer_data/run/klipper.tty", "-a", "printer_data/run/klipper.sock", "printer_data/config/printer.cfg"]

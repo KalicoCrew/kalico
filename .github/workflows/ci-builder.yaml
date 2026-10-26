@@ -2,6 +2,12 @@ name: Klipper Container Build and Push
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and publish in addition to latest"
+        type: string
+        required: false
   push:
     branches:
       - main
@@ -22,13 +28,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+env:
+  # dangerklippers is kept until consumers move to GHCR
+  IMAGES: dangerklippers/klipper-build ghcr.io/kalicocrew/kalico-ci
+
 jobs:
   login:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -36,8 +51,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build
-        run: docker build -f scripts/Dockerfile-build -t dangerklippers/klipper-build:latest .
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          TAGS=""
+          for img in $IMAGES; do
+            TAGS="$TAGS -t $img:latest"
+            if [ -n "$TAG" ]; then
+              TAGS="$TAGS -t $img:$TAG"
+            fi
+          done
+          docker build -f scripts/Dockerfile-build $TAGS .
 
       - name: Push
-        run: docker push dangerklippers/klipper-build:latest
+        run: |
+          for img in $IMAGES; do
+            docker push --all-tags $img
+          done
