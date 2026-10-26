@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -52,6 +53,9 @@ class _FakePrinter:
     def __init__(self, template):
         self._objects = {
             "toolhead": _FakeToolhead(),
+            "manual_probe": SimpleNamespace(
+                verify_no_manual_probe=lambda: None
+            ),
             "gcode_macro": self,
         }
         self._template = template

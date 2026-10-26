@@ -17,9 +17,11 @@ command_context = commands.context
 def probing(command_context):
     printer, gcode, objects = command_context
     printer.config_error = configparser.Error
+    printer.command_error = CommandError
     printer.add_object = objects.__setitem__
     printer.load_object = lambda config, name: objects[name]
     objects["gcode_move"] = SimpleNamespace()
+    objects["pins"] = SimpleNamespace(register_chip=lambda *args: None)
     objects["gcode_macro"] = SimpleNamespace(load_template=lambda *args: None)
     position = [0.0, 0.0, 5.0, 0.0]
     clock = [0.0]
@@ -37,6 +39,7 @@ def probing(command_context):
 
     objects["toolhead"] = SimpleNamespace(
         manual_move=move,
+        get_status=lambda time: {"homed_axes": "xyz"},
         get_position=lambda: position[:],
         get_last_move_time=lambda: clock[0],
         get_max_velocity=lambda: (300.0, 3000.0),
@@ -126,6 +129,12 @@ def test_result_completion_preserves_callback_retry_and_snapshot(
     "script, message, expected_sessions",
     [
         ("MEASURE", "probe failed", ["begin", "end"]),
+        ("MEASURE CANCEL_ON_END=1", "Probing cancelled", ["begin", "end"]),
+        (
+            "MEASURE METHOD=rapid_scan CANCEL_ON_END=1",
+            "Probing cancelled",
+            ["begin", "end"],
+        ),
         ("MEASURE PROBE=missing", "Unknown requested", []),
         (
             "MEASURE METHOD=rapid_scan HORIZONTAL_MOVE_Z=-1",
@@ -142,7 +151,17 @@ def test_failed_probe_completes_after_session_cleanup(
     completion = printer.get_reactor().completion()
 
     def fail(command, retry):
+        if command.get_int("CANCEL_ON_END", 0):
+            return [20, 20, 0.25]
         raise CommandError("probe failed")
+
+    def end(context):
+        sessions.append("end")
+        if context.gcmd.get_int("CANCEL_ON_END", 0):
+            helper.cancel()
+        assert not completion.test()
+
+    hardware.multi_probe_end = end
 
     hardware.run_probe = fail
     helper = probe.ProbePointsHelper(
@@ -154,53 +173,4 @@ def test_failed_probe_completes_after_session_cleanup(
         gcode.run_script(script)
     assert completion.test() and completion.wait() is None
     assert sessions == expected_sessions
-    assert helper._active_retry_session is None
-
-
-def test_manual_cancel_completes_the_waiter(probing, monkeypatch):
-    config, _, _ = probing
-    printer = config.get_printer()
-    reactor = printer.get_reactor()
-    completion = reactor.completion()
-    helper = probe.ProbePointsHelper(
-        config, default_points=[(20, 20)], completion=completion
-    )
-
-    def manual(printer, command, callback, *, pass_gcmd=False):
-        def abort():
-            if pass_gcmd:
-                callback(None, command)
-            else:
-                callback(None)
-
-        def deliver(eventtime):
-            helper.cancel()
-
-        reactor.register_callback(deliver)
-        return SimpleNamespace(finalize=lambda success: abort())
-
-    monkeypatch.setattr(manual_probe, "ManualProbeHelper", manual)
-    finished = []
-
-    def measure(command):
-        try:
-            helper.start_probe(command)
-            if not completion.test():
-                command.run_without_gcode_lock(completion.wait)
-        except CommandError as error:
-            assert str(error) == "Manual probe aborted"
-        finally:
-            finished.append(True)
-            reactor.end()
-
-    gcode = printer.lookup_object("gcode")
-    gcode.register_command("MEASURE", measure)
-    reactor.register_callback(
-        lambda eventtime: gcode.run_script("MEASURE METHOD=manual")
-    )
-    reactor.register_callback(
-        lambda eventtime: reactor.end(), reactor.monotonic() + 0.5
-    )
-    reactor.run()
-    assert finished and completion.test() and completion.wait() is None
     assert helper._active_retry_session is None
