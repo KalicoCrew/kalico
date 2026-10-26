@@ -7,6 +7,7 @@ from klippy.extras import probe
 
 def test_external_probe_without_context_keeps_working():
     calls = []
+    context = probe.ProbingContext(gcmd=object())
 
     class ExternalProbe:
         def multi_probe_begin(self):
@@ -17,15 +18,15 @@ def test_external_probe_without_context_keeps_working():
 
     wrapper = probe.PrinterProbe.__new__(probe.PrinterProbe)
     external = ExternalProbe()
-    with probe.multi_probe_session(external):
+    with probe.multi_probe_session(external, context):
         assert calls == ["begin"]
     assert calls == ["begin", "end"]
     calls.clear()
     wrapper.mcu_probe = external
     wrapper.multi_probe_count = 0
-    with probe.multi_probe_session(wrapper):
+    with probe.multi_probe_session(wrapper, context):
         for _ in range(2):
-            with probe.multi_probe_session(wrapper):
+            with probe.multi_probe_session(wrapper, context):
                 assert wrapper.multi_probe_count == 2
                 assert calls == ["begin"]
             assert wrapper.multi_probe_count == 1
@@ -35,7 +36,7 @@ def test_external_probe_without_context_keeps_working():
 
 
 def test_probe_session_preserves_internal_type_errors():
-    context = probe.ProbingContext(always_restore_toolhead=True)
+    context = probe.ProbingContext(gcmd=object(), always_restore_toolhead=True)
     calls = []
 
     class Probe:

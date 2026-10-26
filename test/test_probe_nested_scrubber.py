@@ -42,7 +42,7 @@ class _FakeTemplate:
     def create_template_context(self):
         return {}
 
-    def run_gcode_from_command(self, context):
+    def run_gcode(self, gcmd, context):
         self.on_run()
 
 

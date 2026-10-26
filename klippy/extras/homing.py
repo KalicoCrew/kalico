@@ -55,11 +55,10 @@ class StepperPosition:
 
 # Implementation of homing/probing moves
 class HomingMove:
-    def __init__(self, printer, endstops, toolhead=None):
+    def __init__(self, printer, endstops, toolhead, gcmd):
         self.printer = printer
+        self.gcmd = gcmd
         self.endstops = endstops
-        if toolhead is None:
-            toolhead = printer.lookup_object("toolhead")
         self.toolhead = toolhead
         self.stepper_positions = []
         self.distance_elapsed = []
@@ -247,13 +246,15 @@ class HomingMove:
 
 # State tracking of homing requests
 class Homing:
-    def __init__(self, printer):
+    def __init__(self, printer, gcmd):
         self.printer = printer
+        self.gcmd = gcmd
         self.toolhead = printer.lookup_object("toolhead")
         self.changed_axes = []
         self.trigger_mcu_pos = {}
         self.adjust_pos = {}
         self.saved_accel = None
+        self.homing_successful = False
 
     def set_axes(self, axes):
         self.changed_axes = axes
@@ -319,94 +320,105 @@ class Homing:
 
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
-        self.printer.send_event("homing:home_rails_begin", self, rails)
-        # Alter kinematics class to think printer is at forcepos
-        force_axes = [axis for axis in range(3) if forcepos[axis] is not None]
-        homing_axes = "".join(["xyz"[i] for i in force_axes])
-        startpos = self._fill_coord(forcepos)
-        homepos = self._fill_coord(movepos)
-        self.toolhead.set_position(startpos, homing_axes=homing_axes)
-        # Perform first home
-        endstops = [es for rail in rails for es in rail.get_endstops()]
-        hi = rails[0].get_homing_info()
-        hmove = HomingMove(self.printer, endstops)
-
+        self.homing_successful = False
         try:
-            self._set_homing_accel(hi.accel, pre_homing=True)
-            self._set_homing_current(homing_axes, pre_homing=True)
-            self._reset_endstop_states(endstops)
-            hmove.homing_move(homepos, hi.speed)
+            self.printer.send_event("homing:home_rails_begin", self, rails)
+            # Alter kinematics class to think printer is at forcepos
+            force_axes = [
+                axis for axis in range(3) if forcepos[axis] is not None
+            ]
+            homing_axes = "".join(["xyz"[i] for i in force_axes])
+            startpos = self._fill_coord(forcepos)
+            homepos = self._fill_coord(movepos)
+            self.toolhead.set_position(startpos, homing_axes=homing_axes)
+            # Perform first home
+            endstops = [es for rail in rails for es in rail.get_endstops()]
+            hi = rails[0].get_homing_info()
+            hmove = HomingMove(self.printer, endstops, self.toolhead, self.gcmd)
 
-            needs_rehome = False
-            retract_dist = hi.retract_dist
-            if hmove.moved_less_than_dist(hi.min_home_dist, force_axes):
-                needs_rehome = True
-                retract_dist = hi.min_home_dist
+            try:
+                self._set_homing_accel(hi.accel, pre_homing=True)
+                self._set_homing_current(homing_axes, pre_homing=True)
+                self._reset_endstop_states(endstops)
+                hmove.homing_move(homepos, hi.speed)
 
-            # Perform second home
-            if retract_dist:
-                logging.info("homing: needs rehome: %s", needs_rehome)
-                # Retract
-                startpos = self._fill_coord(forcepos)
-                homepos = self._fill_coord(movepos)
-                axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-                move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
-                retract_r = min(1.0, retract_dist / move_d)
-                retractpos = [
-                    hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
-                ]
-                self.toolhead.move(retractpos, hi.retract_speed)
-                if not hi.use_sensorless_homing or needs_rehome:
-                    # Home again
-                    startpos = [
-                        rp - ad * retract_r
-                        for rp, ad in zip(retractpos, axes_d)
+                needs_rehome = False
+                retract_dist = hi.retract_dist
+                if hmove.moved_less_than_dist(hi.min_home_dist, force_axes):
+                    needs_rehome = True
+                    retract_dist = hi.min_home_dist
+
+                # Perform second home
+                if retract_dist:
+                    logging.info("homing: needs rehome: %s", needs_rehome)
+                    # Retract
+                    startpos = self._fill_coord(forcepos)
+                    homepos = self._fill_coord(movepos)
+                    axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
+                    move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
+                    retract_r = min(1.0, retract_dist / move_d)
+                    retractpos = [
+                        hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
                     ]
-                    self.toolhead.set_position(startpos)
-                    self._reset_endstop_states(endstops)
-
-                    hmove = HomingMove(self.printer, endstops)
-                    hmove.homing_move(homepos, hi.second_homing_speed)
-
-                    if hmove.check_no_movement() is not None:
-                        raise self.printer.command_error(
-                            "Endstop %s still triggered after retract"
-                            % (hmove.check_no_movement(),)
-                        )
-                    if (
-                        hi.use_sensorless_homing
-                        and needs_rehome
-                        and hmove.moved_less_than_dist(
-                            hi.min_home_dist, force_axes
-                        )
-                    ):
-                        raise self.printer.command_error(
-                            "Early homing trigger on second home!"
-                        )
-
-                    if hi.use_sensorless_homing and hi.retract_dist:
-                        # Retract (again)
-                        startpos = self._fill_coord(forcepos)
-                        homepos = self._fill_coord(movepos)
-                        axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-                        move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
-                        retract_r = min(1.0, hi.retract_dist / move_d)
-                        retractpos = [
-                            hp - ad * retract_r
-                            for hp, ad in zip(homepos, axes_d)
+                    self.toolhead.move(retractpos, hi.retract_speed)
+                    if not hi.use_sensorless_homing or needs_rehome:
+                        # Home again
+                        startpos = [
+                            rp - ad * retract_r
+                            for rp, ad in zip(retractpos, axes_d)
                         ]
-                        self.toolhead.move(retractpos, hi.retract_speed)
-        finally:
-            self._set_homing_accel(hi.accel, pre_homing=False)
-            self._set_homing_current(homing_axes, pre_homing=False)
+                        self.toolhead.set_position(startpos)
+                        self._reset_endstop_states(endstops)
 
-        # Signal home operation complete
-        self.toolhead.flush_step_generation()
-        self.trigger_mcu_pos = {
-            sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions
-        }
-        self.adjust_pos = {}
-        self.printer.send_event("homing:home_rails_end", self, rails)
+                        hmove = HomingMove(
+                            self.printer, endstops, self.toolhead, self.gcmd
+                        )
+                        hmove.homing_move(homepos, hi.second_homing_speed)
+
+                        if hmove.check_no_movement() is not None:
+                            raise self.printer.command_error(
+                                "Endstop %s still triggered after retract"
+                                % (hmove.check_no_movement(),)
+                            )
+                        if (
+                            hi.use_sensorless_homing
+                            and needs_rehome
+                            and hmove.moved_less_than_dist(
+                                hi.min_home_dist, force_axes
+                            )
+                        ):
+                            raise self.printer.command_error(
+                                "Early homing trigger on second home!"
+                            )
+
+                        if hi.use_sensorless_homing and hi.retract_dist:
+                            # Retract (again)
+                            startpos = self._fill_coord(forcepos)
+                            homepos = self._fill_coord(movepos)
+                            axes_d = [
+                                hp - sp for hp, sp in zip(homepos, startpos)
+                            ]
+                            move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
+                            retract_r = min(1.0, hi.retract_dist / move_d)
+                            retractpos = [
+                                hp - ad * retract_r
+                                for hp, ad in zip(homepos, axes_d)
+                            ]
+                            self.toolhead.move(retractpos, hi.retract_speed)
+            finally:
+                self._set_homing_accel(hi.accel, pre_homing=False)
+                self._set_homing_current(homing_axes, pre_homing=False)
+
+            # Signal home operation complete
+            self.toolhead.flush_step_generation()
+            self.trigger_mcu_pos = {
+                sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions
+            }
+            self.adjust_pos = {}
+            self.homing_successful = True
+        finally:
+            self.printer.send_event("homing:home_rails_end", self, rails)
+
         if any(self.adjust_pos.values()):
             # Apply any homing offsets
             kin = self.toolhead.get_kinematics()
@@ -432,9 +444,16 @@ class PrinterHoming:
         gcode.register_command("G28", self.cmd_G28)
 
     def manual_home(
-        self, toolhead, endstops, pos, speed, triggered, check_triggered
+        self,
+        toolhead,
+        endstops,
+        pos,
+        speed,
+        triggered,
+        check_triggered,
+        gcmd,
     ):
-        hmove = HomingMove(self.printer, endstops, toolhead)
+        hmove = HomingMove(self.printer, endstops, toolhead, gcmd)
         try:
             hmove.homing_move(
                 pos, speed, triggered=triggered, check_triggered=check_triggered
@@ -446,9 +465,11 @@ class PrinterHoming:
                 )
             raise
 
-    def probing_move(self, mcu_probe, pos, speed):
+    def probing_move(self, mcu_probe, pos, speed, gcmd):
         endstops = [(mcu_probe, "probe")]
-        hmove = HomingMove(self.printer, endstops)
+        hmove = HomingMove(
+            self.printer, endstops, self.printer.lookup_object("toolhead"), gcmd
+        )
         try:
             epos = hmove.homing_move(pos, speed, probe_pos=True)
         except self.printer.command_error:
@@ -471,7 +492,7 @@ class PrinterHoming:
                 axes.append(pos)
         if not axes:
             axes = [0, 1, 2]
-        homing_state = Homing(self.printer)
+        homing_state = Homing(self.printer, gcmd)
         homing_state.set_axes(axes)
         kin = self.printer.lookup_object("toolhead").get_kinematics()
         try:
