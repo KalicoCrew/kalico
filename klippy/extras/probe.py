@@ -106,25 +106,25 @@ class RetryPolicyFactory:
 
 
 class GcodeNozzleScrubberConfig:
-    scrubbing_frequency: int = 0
-    template: Template
-
     def __init__(self, config: ConfigWrapper):
+        self.template: Template
         gcode_macro = config.get_printer().load_object(config, "gcode_macro")
         self.template = gcode_macro.load_template(
             config, "nozzle_scrubber_gcode", ""
         )
-        self.scrubbing_frequency = self._cfg_scrubbing_frequency = (
-            config.getint("scrubbing_frequency", 0, minval=0)
+        self._cfg_scrubbing_frequency = config.getint(
+            "scrubbing_frequency", 0, minval=0
         )
 
-    def customize(self, gcmd: GCodeCommand):
-        self.scrubbing_frequency = gcmd.get_int(
+    def get_scrubbing_frequency(self, gcmd: GCodeCommand) -> int:
+        return gcmd.get_int(
             "SCRUBBING_FREQUENCY", self._cfg_scrubbing_frequency, minval=0
         )
 
 
 class GcodeNozzleScrubber:
+    is_scrubbing: bool = False
+
     def __init__(
         self,
         config: ConfigWrapper,
@@ -133,27 +133,36 @@ class GcodeNozzleScrubber:
         self.config = GcodeNozzleScrubberConfig(config)
 
     def clean_nozzle(self, gcmd: GCodeCommand, attempt, retries):
-        self.config.customize(gcmd)
         if not self.config.template:
             return
-        if attempt == 0 or self.config.scrubbing_frequency <= 0:
+        scrubbing_frequency = self.config.get_scrubbing_frequency(gcmd)
+        if attempt == 0 or scrubbing_frequency <= 0:
             return
-        if attempt % self.config.scrubbing_frequency != 0:
+        if attempt % scrubbing_frequency != 0:
             return
-        toolhead = self._printer.lookup_object("toolhead")
-        start_pos = toolhead.get_position()
-        context = self.config.template.create_template_context()
-        context["params"] = {
-            "ATTEMPT": attempt,
-            "RETRIES": retries,
-        }
-        self.config.template.run_gcode_from_command(context)
-        end_pos = toolhead.get_position()
-        if not start_pos[:3] == end_pos[:3]:
-            self._printer.command_error(
-                "Nozzle Scrubber GCode did not return to the start position. "
-                "(Hint: Use RESTORE_GCODE_STATE MOVE=1)"
+        if GcodeNozzleScrubber.is_scrubbing:
+            raise gcmd.error(
+                "Nozzle Scrubber GCode called itself."
+                " (Hint: Use BAD_PROBE_STRATEGY=IGNORE or FAIL)"
             )
+        try:
+            GcodeNozzleScrubber.is_scrubbing = True
+            toolhead = self._printer.lookup_object("toolhead")
+            start_pos = toolhead.get_position()
+            context = self.config.template.create_template_context()
+            context["params"] = {
+                "ATTEMPT": attempt,
+                "RETRIES": retries,
+            }
+            self.config.template.run_gcode_from_command(context)
+            end_pos = toolhead.get_position()
+            if not start_pos[:3] == end_pos[:3]:
+                raise gcmd.error(
+                    "Nozzle Scrubber GCode did not return to the start position. "
+                    "(Hint: Use RESTORE_GCODE_STATE MOVE=1)"
+                )
+        finally:
+            GcodeNozzleScrubber.is_scrubbing = False
 
 
 class ProbeRetryState:
@@ -691,9 +700,6 @@ class PrinterProbe:
             "SAMPLES_TOLERANCE_RETRIES", self.samples_retries, minval=0
         )
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
-        must_notify_multi_probe = not self.multi_probe_pending
-        if must_notify_multi_probe:
-            self.multi_probe_begin(always_restore_toolhead=True)
         # Initialize probe retry state
         local_retry_session: RetrySession
         if retry_session is None:
@@ -704,6 +710,19 @@ class PrinterProbe:
             local_retry_session.set_position(toolhead.get_position())
         else:
             local_retry_session = retry_session
+        strategy = local_retry_session.retry_policy.bad_probe_strategy
+        # only allow FAIL or IGNORE probe strategy inside while scrubbing
+        if GcodeNozzleScrubber.is_scrubbing and strategy not in (
+            RetryStrategy.FAIL,
+            RetryStrategy.IGNORE,
+        ):
+            raise gcmd.error(
+                "Probing from the Nozzle Scrubber Gcode cannot use retries."
+                " (Hint: Use BAD_PROBE_STRATEGY=IGNORE or FAIL)"
+            )
+        must_notify_multi_probe = not self.multi_probe_pending
+        if must_notify_multi_probe:
+            self.multi_probe_begin(always_restore_toolhead=True)
         # save X and Y position
         toolhead = self.printer.lookup_object("toolhead")
         request_pos = toolhead.get_position()[:2]
