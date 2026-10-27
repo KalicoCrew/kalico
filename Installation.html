@@ -1156,6 +1156,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#running-in-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running in Docker
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#building-and-flashing-the-micro-controller" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2832,6 +2843,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#running-in-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running in Docker
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#building-and-flashing-the-micro-controller" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2955,6 +2977,26 @@ creates the <code>~/klippy-env</code> python environment and registers the
 <p>Note that these scripts install Kalico itself; Moonraker and a web
 interface such as Mainsail or Fluidd still need to be installed
 separately.</p>
+<h2 id="running-in-docker">Running in Docker<a class="headerlink" href="#running-in-docker" title="Permanent link">&para;</a></h2>
+<p>A container image is published at <code>ghcr.io/kalicocrew/kalico</code> for
+<code>amd64</code> and <code>arm64</code>. It is a drop-in replacement for the
+<a href="https://github.com/mkuf/prind">prind</a> <code>mkuf/klipper</code> image: paths,
+uid and volumes are the same, so an existing prind setup only needs
+the image changed in <code>docker-compose.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">klipper</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/kalicocrew/kalico:latest</span>
+</code></pre></div>
+
+<p>Available tags:</p>
+<ul>
+<li><code>latest</code>: the most recent monthly release</li>
+<li><code>vYYYY.MM.NN</code>: a specific release</li>
+<li><code>main</code>: the current <code>main</code> branch</li>
+</ul>
+<p>Only the klippy image is published. prind's <code>tools</code> and <code>hostmcu</code>
+images are not, so build and flash the micro-controller firmware
+(including the Linux host MCU) from the Kalico repository, see below.</p>
 <h2 id="building-and-flashing-the-micro-controller">Building and flashing the micro-controller<a class="headerlink" href="#building-and-flashing-the-micro-controller" title="Permanent link">&para;</a></h2>
 <p>To compile the micro-controller code, start by running these commands
 on your host device:</p>
