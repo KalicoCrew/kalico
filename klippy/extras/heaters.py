@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import contextlib
 import logging
 import os
 import threading
@@ -60,6 +61,18 @@ def lookup_dual_loop_pid_inner_target_temp(config):
         config.deprecate(DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION)
         return inner_max_temp
     return config.getfloat(DUAL_LOOP_PID_INNER_TARGET_OPTION)
+
+
+class HeaterCalibration:
+    def __init__(self, heater):
+        self.heater = heater
+
+    def set_control(self, control, keep_target=True):
+        if self.heater._calibration is not self:
+            raise self.heater.printer.command_error(
+                "Heater calibration is no longer active"
+            )
+        return self.heater._set_control(control, keep_target)
 
 
 class Heater:
@@ -128,6 +141,7 @@ class Heater:
         self.printer.load_object(config, "pid_calibrate")
         self.gcode = self.printer.lookup_object("gcode")
         self.pmgr = self.ProfileManager(self)
+        self._calibration = None
         self.control = self.lookup_control(
             self.pmgr.init_default_profile(), True
         )
@@ -266,7 +280,28 @@ class Heater:
                 eventtime, self.smoothed_temp, self.target_temp
             )
 
+    def check_not_calibrating(self):
+        if self._calibration is not None:
+            raise self.printer.command_error(
+                "Heater '%s' is being calibrated" % self.get_name()
+            )
+
+    @contextlib.contextmanager
+    def calibration(self):
+        """Reserve this heater for the duration of a calibration."""
+        self.check_not_calibrating()
+        calibration = HeaterCalibration(self)
+        self._calibration = calibration
+        try:
+            yield calibration
+        finally:
+            self._calibration = None
+
     def set_control(self, control, keep_target=True):
+        self.check_not_calibrating()
+        return self._set_control(control, keep_target)
+
+    def _set_control(self, control, keep_target):
         with self.lock:
             old_control = self.control
             self.control = control
@@ -322,6 +357,7 @@ class Heater:
         return False
 
     def set_cold_extrude(self, cold_extrude, min_extrude_temp):
+        self.check_not_calibrating()
         if cold_extrude is None and min_extrude_temp is None:
             self.gcode.respond_info(
                 "Cold extrudes are %s (min temp %.2fC)"
@@ -351,6 +387,7 @@ class Heater:
     cmd_SET_HEATER_TEMPERATURE_help = "Sets a heater temperature"
 
     def cmd_SET_HEATER_TEMPERATURE(self, gcmd):
+        self.check_not_calibrating()
         temp = gcmd.get_float("TARGET", 0.0)
         pheaters = self.printer.lookup_object("heaters")
         pheaters.set_temperature(self, temp)
@@ -367,6 +404,7 @@ class Heater:
     cmd_SET_SMOOTH_TIME_help = "Set the smooth time for the given heater"
 
     def cmd_SET_SMOOTH_TIME(self, gcmd):
+        self.check_not_calibrating()
         save_to_profile = gcmd.get_int("SAVE_TO_PROFILE", 0, minval=0, maxval=1)
         self.smooth_time = gcmd.get_float(
             "SMOOTH_TIME", self.config_smooth_time, minval=0.0
@@ -380,6 +418,7 @@ class Heater:
     cmd_SET_HEATER_PID_help = "Sets a heater PID parameter"
 
     def cmd_SET_HEATER_PID(self, gcmd):
+        self.check_not_calibrating()
         if not isinstance(self.control, (ControlPID, ControlVelocityPID)):
             raise gcmd.error("Not a PID/PID_V controlled heater")
         kp = gcmd.get_float("KP", None)
@@ -935,6 +974,7 @@ class Heater:
         cmd_PID_PROFILE_help = "PID Profile Persistent Storage management"
 
         def cmd_PID_PROFILE(self, gcmd):
+            self.outer_instance.check_not_calibrating()
             options = collections.OrderedDict(
                 {
                     "LOAD": self.load_profile,
@@ -1436,6 +1476,8 @@ class PrinterHeaters:
     cmd_TURN_OFF_HEATERS_help = "Turn off all heaters"
 
     def cmd_TURN_OFF_HEATERS(self, gcmd):
+        for heater in self.heaters.values():
+            heater.check_not_calibrating()
         self.turn_off_all_heaters()
 
     # G-Code M105 temperature reporting
@@ -1461,7 +1503,7 @@ class PrinterHeaters:
         if not did_ack:
             gcmd.respond_raw(msg)
 
-    def _wait_for_temperature(self, heater):
+    def _wait_for_temperature(self, heater, gcmd):
         # Helper to wait on heater.check_busy() and report M105 temperatures
 
         if self.printer.get_start_args().get("debugoutput") is not None:
@@ -1471,14 +1513,15 @@ class PrinterHeaters:
             self.gcode.respond_raw(self._get_temp(eventtime))
             return heater.check_busy(eventtime)
 
-        self.printer.wait_while(check)
+        waiter = self.gcode.get_interrupt_token() if gcmd is None else gcmd
+        waiter.wait_while(check)
 
-    def set_temperature(self, heater, temp, wait=False):
+    def set_temperature(self, heater, temp, wait=False, gcmd=None):
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.register_lookahead_callback((lambda pt: None))
         heater.set_temp(temp)
         if wait and temp:
-            self._wait_for_temperature(heater)
+            self._wait_for_temperature(heater, gcmd)
 
     cmd_TEMPERATURE_WAIT_help = "Wait for a temperature on a sensor"
 
@@ -1493,12 +1536,14 @@ class PrinterHeaters:
             raise gcmd.error(
                 "Error on 'TEMPERATURE_WAIT': missing MINIMUM or MAXIMUM."
             )
-        if self.printer.get_start_args().get("debugoutput") is not None:
-            return
         if sensor_name in self.heaters:
             sensor = self.heaters[sensor_name]
         else:
             sensor = self.printer.lookup_object(sensor_name)
+        if isinstance(sensor, Heater):
+            sensor.check_not_calibrating()
+        if self.printer.get_start_args().get("debugoutput") is not None:
+            return
 
         def check(eventtime):
             temp, _ = sensor.get_temp(eventtime)
@@ -1507,7 +1552,7 @@ class PrinterHeaters:
             gcmd.respond_raw(self._get_temp(eventtime))
             return True
 
-        self.printer.wait_while(check, error_on_cancel)
+        gcmd.wait_while(check, error_on_cancel)
 
 
 def load_config(config):
