@@ -29,8 +29,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # dangerklippers is kept until consumers move to GHCR
-  IMAGES: dangerklippers/klipper-build ghcr.io/kalicocrew/kalico-ci
+  IMAGE: ghcr.io/kalicocrew/kalico-ci
 
 jobs:
   login:
@@ -45,12 +44,6 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
@@ -62,17 +55,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          TAGS=""
-          for img in $IMAGES; do
-            TAGS="$TAGS -t $img:latest"
-            if [ -n "$TAG" ]; then
-              TAGS="$TAGS -t $img:$TAG"
-            fi
-          done
-          docker build -f scripts/Dockerfile-build $TAGS .
+          docker build -f scripts/Dockerfile-build -t $IMAGE:latest \
+            ${TAG:+-t $IMAGE:$TAG} .
 
       - name: Push
-        run: |
-          for img in $IMAGES; do
-            docker push --all-tags $img
-          done
+        run: docker push --all-tags $IMAGE

@@ -53,7 +53,6 @@ jobs:
     uses: ./.github/workflows/ci-builder.yaml
     with:
       tag: ${{ needs.create-tag.outputs.tag }}
-    secrets: inherit
 
   kalico-image:
     needs: create-tag

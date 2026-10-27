@@ -17,7 +17,7 @@ COPY . .
 
 # The image runs on other CPUs than the build host, so build chelper
 # without -march=native
-RUN (git describe --tags --always --dirty > klippy/.version || true) \
+RUN (git describe --tags --always > klippy/.version || true) \
  && rm -rf .git \
  && uv sync --frozen --no-dev --group graphs --no-install-project \
  && /opt/venv/bin/python -m compileall klippy \
