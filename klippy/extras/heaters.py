@@ -294,6 +294,9 @@ class Heater:
         self._calibration = calibration
         try:
             yield calibration
+        except BaseException:
+            self.set_temp(0.0)
+            raise
         finally:
             self._calibration = None
 
