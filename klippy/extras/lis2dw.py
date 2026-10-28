@@ -117,7 +117,7 @@ class LIS2DW:
         )
 
     def check_connected(self):
-        if self.mcu.non_critical_disconnected:
+        if self.mcu.non_critical_disconnected or self.mcu._reconnecting:
             raise self.printer.command_error(
                 f"LIS2DW: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
             )
@@ -145,7 +145,6 @@ class LIS2DW:
             )
 
     def start_internal_client(self):
-        self.check_connected()
         aqh = adxl345.AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
@@ -164,6 +163,7 @@ class LIS2DW:
 
     # Start, stop, and process message batches
     def _start_measurements(self):
+        self.check_connected()
         # In case of miswiring, testing LIS2DW device ID prevents treating
         # noise or wrong signal as a correctly initialized device
         dev_id = self.read_reg(REG_LIS2DW_WHO_AM_I_ADDR)
