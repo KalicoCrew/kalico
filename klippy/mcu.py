@@ -160,7 +160,10 @@ class CommandWrapper:
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
