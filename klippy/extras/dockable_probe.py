@@ -880,7 +880,7 @@ class DockableProbe:
                 "Toolhead moved during probe activate_gcode script"
             )
 
-    def multi_probe_begin(self, always_restore_toolhead=False):
+    def multi_probe_begin(self, context):
         self.multi = MULTI_FIRST
 
         # Attach probe before moving to the first probe point and
@@ -889,11 +889,11 @@ class DockableProbe:
         # point but for the latter the toolhead is already in position.
         # If the toolhead is not returned to the current position it
         # will complete the probing next to the dock. This behavior
-        # is driven by probe.py which defines always_restore_toolhead
+        # is driven by the probing context from probe.py
         return_pos = self.toolhead.get_position()
-        self.auto_attach_probe(return_pos, always_restore_toolhead)
+        self.auto_attach_probe(return_pos, context.always_restore_toolhead)
 
-    def multi_probe_end(self):
+    def multi_probe_end(self, context):
         self.multi = MULTI_OFF
 
         return_pos = self.toolhead.get_position()

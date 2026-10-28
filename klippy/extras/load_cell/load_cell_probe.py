@@ -901,11 +901,11 @@ class ProbeActivationHelper:
         self._is_multi = False
         self._is_active = False
 
-    def multi_probe_begin(self):
+    def multi_probe_begin(self, context):
         self._is_multi = True
         self.activate_probe()
 
-    def multi_probe_end(self):
+    def multi_probe_end(self, context):
         self._is_multi = False
         self.deactivate_probe()
 
