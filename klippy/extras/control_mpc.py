@@ -617,24 +617,27 @@ class MpcCalibrate:
             )
             gcmd.respond_info(f"Average stable power: {power_base} W")
         else:
-            for idx in range(0, fan_breakpoints):
-                speed = idx / (fan_breakpoints - 1)
-                curtime = self.heater.reactor.monotonic()
-                fan.set_speed(speed)
-                gcmd.respond_info("Waiting for temperature to stabilize")
-                self.wait_stable(gcmd, 3)
-                gcmd.respond_info(
-                    f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
-                )
-                power = self.measure_power(
-                    ambient_max_measure_time, ambient_measure_sample_time, gcmd
-                )
-                gcmd.respond_info(
-                    f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
-                )
-                fan_powers.append((speed, power))
-            curtime = self.heater.reactor.monotonic()
-            fan.set_speed(0.0)
+            try:
+                for idx in range(0, fan_breakpoints):
+                    speed = idx / (fan_breakpoints - 1)
+                    curtime = self.heater.reactor.monotonic()
+                    fan.set_speed(speed)
+                    gcmd.respond_info("Waiting for temperature to stabilize")
+                    self.wait_stable(gcmd, 3)
+                    gcmd.respond_info(
+                        f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
+                    )
+                    power = self.measure_power(
+                        ambient_max_measure_time,
+                        ambient_measure_sample_time,
+                        gcmd,
+                    )
+                    gcmd.respond_info(
+                        f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
+                    )
+                    fan_powers.append((speed, power))
+            finally:
+                fan.set_speed(0.0)
             power_base = fan_powers[0][1]
 
         return {
