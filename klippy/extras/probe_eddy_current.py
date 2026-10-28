@@ -398,14 +398,14 @@ class EddyEndstopWrapper:
     def begin_collect_distance(self):
         return EddyDistanceCollector(self)
 
-    def multi_probe_begin(self):
+    def multi_probe_begin(self, context):
         if not self._calibration.is_calibrated():
             raise self._printer.command_error(
                 "Must calibrate probe_eddy_current first"
             )
         self._start_measurements()
 
-    def multi_probe_end(self):
+    def multi_probe_end(self, context):
         self._stop_measurements()
 
     def probe_prepare(self, hmove):
