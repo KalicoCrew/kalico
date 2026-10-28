@@ -107,7 +107,7 @@ class MPU9250:
         )
 
     def check_connected(self):
-        if self.mcu.non_critical_disconnected:
+        if self.mcu.non_critical_disconnected or self.mcu._reconnecting:
             raise self.printer.command_error(
                 f"MPU: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
             )
@@ -120,7 +120,6 @@ class MPU9250:
         self.i2c.i2c_write([reg, val & 0xFF], minclock=minclock)
 
     def start_internal_client(self):
-        self.check_connected()
         aqh = adxl345.AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh
@@ -139,6 +138,7 @@ class MPU9250:
 
     # Start, stop, and process message batches
     def _start_measurements(self):
+        self.check_connected()
         # In case of miswiring, testing MPU9250 device ID prevents treating
         # noise or wrong signal as a correctly initialized device
         dev_id = self.read_reg(REG_DEVID)
