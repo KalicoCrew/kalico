@@ -127,6 +127,7 @@ class IndxBracketTempSensor:
         self.cmd_set_ambient_temp.send([float_to_u32(value + KELVIN_OFFSET)])
 
     def cmd_FORCE_BRACKET_TEMP(self, gcmd):
+        self.heater._check_not_calibrating()
         self.force_temp = gcmd.get_float("TEMP", None)
 
 
@@ -638,7 +639,11 @@ class IndxToolboardHeater:
             target_temp = float("nan")
         self.cmd_set_target.send([float_to_u32(target_temp + KELVIN_OFFSET)])
 
+    def _check_not_calibrating(self):
+        compat.check_not_calibrating(self.heater)
+
     def cmd_SET_PID(self, gcmd):
+        self._check_not_calibrating()
         self.pid_kp = gcmd.get_float("KP", self.pid_kp)
         self.pid_ti = gcmd.get_float("TI", self.pid_ti, minval=0.0)
         self.pid_td = gcmd.get_float("TD", self.pid_td, minval=0.0)
@@ -652,12 +657,14 @@ class IndxToolboardHeater:
         self.apply_pid_params()
 
     def cmd_SET_CYCLE_LIMIT(self, gcmd):
+        self._check_not_calibrating()
         cmd = self.toolboard.mcu.lookup_command(
             "indx_cycle_limit limit=%u", cq=self.cmd_queue
         )
         cmd.send([gcmd.get_int("LIMIT")])
 
     def cmd_SET_IR_SENSOR_PARAMS(self, gcmd):
+        self._check_not_calibrating()
         cmd = self.toolboard.mcu.lookup_command(
             "indx_set_ir_sensor_params exponent=%u obj_gain=%u bracket_gain=%u",
             cq=self.cmd_queue,
@@ -674,11 +681,18 @@ class IndxToolboardHeater:
         )
 
     def cmd_CALIBRATE(self, gcmd):
+        if self.heater is None:
+            raise gcmd.error("INDX heater is not bound to an extruder/heater")
+        self._check_not_calibrating()
         if self.cur_target_temp() is not None:
             raise gcmd.error(
                 "Cannot calibrate while the heater is active. "
                 "Turn the heater off first."
             )
+        with compat.heater_calibration(self.heater):
+            self._calibrate(gcmd)
+
+    def _calibrate(self, gcmd):
         self.thermal_model.params = self.thermal_model.params._replace(
             max_power=None,
             max_power_temp_coeff=None,
@@ -797,24 +811,25 @@ class IndxToolboardHeater:
         toolhead.dwell(calibration.MODEL_CAL_STEPPER_DWELL)
 
     def _model_cal_wait_temp(
-        self, reactor, gcmd, predicate, last_temp, timeout, timeout_msg
+        self, gcmd, predicate, last_temp, timeout, timeout_msg
     ):
+        reactor = self.toolboard.printer.get_reactor()
         deadline = reactor.monotonic() + timeout
-        while True:
+
+        def waiting(eventtime):
             t = last_temp[0]
             if t is not None and predicate(t):
-                return
-            if reactor.monotonic() > deadline:
+                return False
+            if eventtime > deadline:
                 raise gcmd.error(timeout_msg)
-            reactor.pause(
-                reactor.monotonic() + calibration.MODEL_CAL_POLL_INTERVAL
-            )
+            return True
+
+        compat.wait_while(gcmd, waiting, calibration.MODEL_CAL_POLL_INTERVAL)
 
     def _wait_cooldown(self, gcmd, min_temp):
         # Block until the nozzle has cooled below min_temp (the heater must
         # already be off) so the following operation runs at a consistent,
         # repeatable temperature.
-        reactor = self.toolboard.printer.get_reactor()
         last_temp = [None]
 
         def temp_cb(reading):
@@ -825,7 +840,6 @@ class IndxToolboardHeater:
         self.temperature_callbacks.append(temp_cb)
         try:
             self._model_cal_wait_temp(
-                reactor,
                 gcmd,
                 lambda t: True,
                 last_temp,
@@ -837,7 +851,6 @@ class IndxToolboardHeater:
                     "INDX: cooling below %.0f C before tuning" % min_temp
                 )
                 self._model_cal_wait_temp(
-                    reactor,
                     gcmd,
                     lambda t: t < min_temp,
                     last_temp,
@@ -885,7 +898,6 @@ class IndxToolboardHeater:
         )
 
         printer = self.toolboard.printer
-        reactor = printer.get_reactor()
         toolhead = printer.lookup_object("toolhead")
 
         samples = []
@@ -927,7 +939,6 @@ class IndxToolboardHeater:
             installed = True
 
             self._model_cal_wait_temp(
-                reactor,
                 gcmd,
                 lambda t: True,
                 last_temp,
@@ -939,7 +950,6 @@ class IndxToolboardHeater:
                     "INDX: cooling below %.0f C before calibration" % min_temp
                 )
                 self._model_cal_wait_temp(
-                    reactor,
                     gcmd,
                     lambda t: t < min_temp,
                     last_temp,
@@ -950,9 +960,7 @@ class IndxToolboardHeater:
             # Baseline (heater off) draw to subtract from measured power.
             phase[0] = "baseline"
             gcmd.respond_info("INDX: measuring baseline power")
-            reactor.pause(
-                reactor.monotonic() + calibration.MODEL_CAL_BASELINE_TIME
-            )
+            compat.sleep(gcmd, calibration.MODEL_CAL_BASELINE_TIME)
             baseline_power = calibration.mean_phase_power(samples, "baseline")
             if baseline_power is None:
                 raise gcmd.error("INDX: no baseline power samples received")
@@ -965,7 +973,6 @@ class IndxToolboardHeater:
             )
             self.heater_raw_set_temp(max_temp)
             self._model_cal_wait_temp(
-                reactor,
                 gcmd,
                 lambda t: t >= max_temp,
                 last_temp,
@@ -977,7 +984,7 @@ class IndxToolboardHeater:
             if hold_time > 0.0:
                 phase[0] = "hold"
                 gcmd.respond_info("INDX: holding for %.0f s" % hold_time)
-                reactor.pause(reactor.monotonic() + hold_time)
+                compat.sleep(gcmd, hold_time)
 
             # Cooldown (constrains R*C).
             self.heater.set_temp(0.0)
@@ -986,7 +993,7 @@ class IndxToolboardHeater:
                 gcmd.respond_info(
                     "INDX: measuring cooldown for %.0f s" % cooldown_time
                 )
-                reactor.pause(reactor.monotonic() + cooldown_time)
+                compat.sleep(gcmd, cooldown_time)
 
             self.temperature_callbacks.remove(sampler)
             installed = False
@@ -1084,7 +1091,13 @@ class IndxToolboardHeater:
         gcmd.respond_info("INDX thermal model calibrated:\n" + "\n".join(lines))
 
     def cmd_FAN_CALIBRATE(self, gcmd):
-        if self.heater is None or not self._heater_config_valid():
+        if self.heater is None:
+            raise gcmd.error("INDX thermal model is not calibrated")
+        with compat.heater_calibration(self.heater):
+            self._calibrate_fan(gcmd)
+
+    def _calibrate_fan(self, gcmd):
+        if not self._heater_config_valid():
             raise gcmd.error("INDX thermal model is not calibrated")
         if self.part_cooling_fan is None:
             raise gcmd.error("INDX part cooling fan is not configured")
@@ -1115,7 +1128,6 @@ class IndxToolboardHeater:
         )
         speeds = calibration.fan_calibration_breakpoints(breaks, min_speed)
         printer = self.toolboard.printer
-        reactor = printer.get_reactor()
         last_temp = [None]
         active_samples = [None]
 
@@ -1149,7 +1161,6 @@ class IndxToolboardHeater:
                 "INDX: waiting for %.0f C for fan calibration" % target
             )
             self._model_cal_wait_temp(
-                reactor,
                 gcmd,
                 lambda t: abs(t - target) <= 1.0,
                 last_temp,
@@ -1158,7 +1169,7 @@ class IndxToolboardHeater:
             )
             if settle_time:
                 gcmd.respond_info("INDX: settling for %.0f s" % settle_time)
-                reactor.pause(reactor.monotonic() + settle_time)
+                compat.sleep(gcmd, settle_time)
 
             for speed in speeds:
                 phase_samples = []
@@ -1167,7 +1178,7 @@ class IndxToolboardHeater:
                 gcmd.respond_info(
                     "INDX: fan %.0f%% for %.1f s" % (speed * 100.0, hold_time)
                 )
-                reactor.pause(reactor.monotonic() + hold_time)
+                compat.sleep(gcmd, hold_time)
                 active_samples[0] = None
                 samples.append((speed, phase_samples))
         finally:
@@ -1223,10 +1234,9 @@ class IndxToolboardHeater:
         )
 
     def cmd_MEASURE_POWER(self, gcmd):
+        self._check_not_calibrating()
         duration = gcmd.get_float("DURATION", above=0.0, default=5.0)
         gcmd.respond_info(f"Measuring power for {duration:.1f} seconds")
-
-        reactor = self.toolboard.printer.get_reactor()
 
         totals = [0, 0, 0]
 
@@ -1237,8 +1247,7 @@ class IndxToolboardHeater:
 
         try:
             self.temperature_callbacks.append(cb)
-            begin_time = reactor.monotonic()
-            reactor.pause(begin_time + duration)
+            compat.sleep(gcmd, duration)
         finally:
             self.temperature_callbacks.remove(cb)
 
@@ -1256,6 +1265,7 @@ class IndxToolboardHeater:
         )
 
     def cmd_LOAD_FILAMENT(self, gcmd):
+        self._check_not_calibrating()
         if not self.thermal_model.is_valid():
             raise gcmd.error("INDX thermal model is not calibrated")
 
@@ -1414,6 +1424,7 @@ class IndxToolboardHeater:
         )
 
     def cmd_CLEAR_FILAMENT(self, gcmd):
+        self._check_not_calibrating()
         self.thermal_model.params = self.thermal_model.params._replace(
             filament_density=0.0,
             filament_heat_capacity=0.0,
@@ -1427,6 +1438,7 @@ class IndxToolboardHeater:
         )
 
     def cmd_EXTRUDER_MOVE(self, gcmd):
+        self._check_not_calibrating()
         distance = gcmd.get_float("DISTANCE")
         speed = gcmd.get_float("SPEED", above=0.0)
         current = gcmd.get_float("CURRENT", above=0.0)
@@ -1472,6 +1484,7 @@ class IndxToolboardHeater:
             )
 
     def cmd_SET_MODEL_PARAMS(self, gcmd):
+        self._check_not_calibrating()
         cur = self.thermal_model.params
 
         max_power = gcmd.get_float(
