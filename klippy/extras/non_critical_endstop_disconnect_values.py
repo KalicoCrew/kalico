@@ -2,29 +2,34 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import re
 
 from .danger_options import get_danger_options
 
-OPEN_VALUES = ("open", "false", "0")
-TRIGGERED_VALUES = ("triggered", "closed", "true", "1")
+# Config options of the section and the endstop state they stand for.
+# Endstop names are given as values (not as option names), because names
+# reported by QUERY_ENDSTOPS may contain ':' (e.g. "mmu:mmu_shared_exit")
+# or upper case letters, neither of which survives as a config option name.
+STATES = (("open", 0), ("triggered", 1))
 
 
 class NonCriticalEndstopDisconnectValues:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.values = {}
-        for name in config.get_prefix_options(""):
-            raw = config.get(name).strip().lower()
-            if raw in OPEN_VALUES:
-                self.values[name] = 0
-            elif raw in TRIGGERED_VALUES:
-                self.values[name] = 1
-            else:
-                raise config.error(
-                    "Invalid value '%s' for endstop '%s' in section [%s];"
-                    " must be one of 'open' or 'triggered'"
-                    % (raw, name, config.get_name())
-                )
+        for option, state in STATES:
+            raw = config.get(option, "")
+            for name in re.split(r"[,\n]", raw):
+                name = name.strip()
+                if not name:
+                    continue
+                if name in self.values and self.values[name] != state:
+                    raise config.error(
+                        "Endstop '%s' is listed as both 'open' and"
+                        " 'triggered' in section [%s]"
+                        % (name, config.get_name())
+                    )
+                self.values[name] = state
         if not get_danger_options().ignore_non_critical_endstop_disconnect:
             logging.warning(
                 "[%s] is configured but [danger_options]"
