@@ -3,6 +3,8 @@
 # Copyright (C) 2020-2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import logging
 import struct
 import threading
@@ -251,7 +253,8 @@ class FixedFreqReader:
         self.bytes_per_sample = unpack.size
         self.samples_per_block = MAX_BULK_MSG_SIZE // self.bytes_per_sample
         self.last_sequence = self.max_query_duration = 0
-        self.last_overflows = 0
+        self._total_overflows = 0
+        self._batch_overflows = 0
         self.bulk_queue = self.oid = self.query_status_cmd = None
 
     def setup_query_command(self, msgformat, oid, cq):
@@ -267,15 +270,16 @@ class FixedFreqReader:
         # Read sensor_bulk_data messages and store in a queue
         self.bulk_queue = BulkDataQueue(self.mcu, oid=oid)
 
-    def get_last_overflows(self):
-        return self.last_overflows
+    def get_total_overflows(self) -> int:
+        return self._total_overflows
 
     def _clear_duration_filter(self):
         self.max_query_duration = 1 << 31
 
     def note_start(self):
         self.last_sequence = 0
-        self.last_overflows = 0
+        self._total_overflows = 0
+        self._batch_overflows = 0
         # Clear local queue (clear any stale samples from previous session)
         self.bulk_queue.clear_queue()
         # Set initial clock
@@ -293,8 +297,11 @@ class FixedFreqReader:
         seq_diff = (params["next_sequence"] - self.last_sequence) & 0xFFFF
         self.last_sequence += seq_diff
         buffered = params["buffered"]
-        po_diff = (params["possible_overflows"] - self.last_overflows) & 0xFFFF
-        self.last_overflows += po_diff
+        po_diff = (
+            params["possible_overflows"] - self._total_overflows
+        ) & 0xFFFF
+        self._batch_overflows += po_diff
+        self._total_overflows += po_diff
         duration = params["query_ticks"]
         if duration > self.max_query_duration:
             # Skip measurement as a high query time could skew clock tracking
@@ -318,13 +325,15 @@ class FixedFreqReader:
             self.clock_sync.update(avg_mcu_clock, chip_clock)
 
     # Convert sensor_bulk_data responses into list of samples
-    def pull_samples(self):
+    def pull_samples(self) -> tuple[list, int]:
         # Query MCU for sample timing and update clock synchronization
         self._update_clock()
+        overflows = self._batch_overflows
+        self._batch_overflows = 0
         # Pull sensor_bulk_data messages from local queue
         raw_samples = self.bulk_queue.pull_queue()
         if not raw_samples:
-            return []
+            return [], overflows
         # Load variables to optimize inner loop below
         last_sequence = self.last_sequence
         time_base, chip_base, inv_freq = self.clock_sync.get_time_translation()
@@ -347,4 +356,4 @@ class FixedFreqReader:
                 count += 1
         self.clock_sync.set_last_chip_clock(seq * samples_per_block + i)
         del samples[count:]
-        return samples
+        return samples, overflows

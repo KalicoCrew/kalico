@@ -110,6 +110,10 @@ class PrinterMotionQueuing:
         sync_time = self.last_step_gen_time
         ffi_main, ffi_lib = chelper.get_ffi()
         for mcu, ss in self.steppersyncs:
+            if mcu.non_critical_disconnected:
+                # No clock to synchronize with; the mcu is recalibrated
+                # here again once it has reconnected
+                continue
             offset, freq = mcu.calibrate_clock(sync_time, eventtime)
             ffi_lib.steppersync_set_time(ss, offset, freq)
         # Calculate history expiration

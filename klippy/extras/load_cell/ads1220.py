@@ -36,7 +36,6 @@ class ADS1220(LoadCellSensor):
     def __init__(self, config):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
-        self.last_error_count = 0
         self.consecutive_fails = 0
         # Chip options
         # Gain
@@ -203,7 +202,8 @@ class ADS1220(LoadCellSensor):
         self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     # Measurement decoding
-    def _convert_samples(self, samples):
+    @staticmethod
+    def _convert_samples(samples):
         adc_factor = 1.0 / (1 << 23)
         count = 0
         for ptime, val in samples:
@@ -213,7 +213,6 @@ class ADS1220(LoadCellSensor):
 
     # Start, stop, and process message batches
     def _start_measurements(self):
-        self.last_error_count = 0
         self.consecutive_fails = 0
         # Start bulk reading
         self.reset_chip()
@@ -234,12 +233,12 @@ class ADS1220(LoadCellSensor):
         logging.info("ADS1220 finished '%s' measurements", self.name)
 
     def _process_batch(self, eventtime) -> BulkAdcData:
-        samples = self.ffreader.pull_samples()
+        samples, overflows = self.ffreader.pull_samples()
         self._convert_samples(samples)
         return {
             "data": samples,
-            "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "errors": 0,
+            "overflows": overflows,
         }
 
     def reset_chip(self):
@@ -248,6 +247,8 @@ class ADS1220(LoadCellSensor):
         # read startup register state and validate
         val = self.read_reg(0x0, 4)
         if val != RESET_STATE:
+            if self.mcu.is_fileoutput():
+                return
             raise self.printer.command_error(
                 "Invalid ads1220 reset state (got %s vs %s).\n"
                 "This is generally indicative of connection problems\n"
@@ -285,6 +286,8 @@ class ADS1220(LoadCellSensor):
         self.spi.spi_send(write_command)
         stored_val = self.read_reg(reg, len(register_bytes))
         if bytearray(register_bytes) != stored_val:
+            if self.mcu.is_fileoutput():
+                return
             raise self.printer.command_error(
                 "Failed to set ADS1220 register [0x%x] to %s: got %s. "
                 "This may be a connection problem (e.g. faulty wiring)"

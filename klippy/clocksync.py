@@ -274,6 +274,12 @@ class SecondarySync(ClockSync):
         return "%s adj=%d" % (ClockSync.stats(self, eventtime), adjusted_freq)
 
     def calibrate_clock(self, print_time, eventtime):
+        if self.clock_est[2] <= 0.0:
+            # Never received a clock estimate from this mcu (for example a
+            # non-critical mcu that was not reachable at startup). The
+            # calculation below would degenerate and eventually divide by
+            # zero, so keep the current (unsynchronized) adjustment.
+            return self.clock_adj
         # Calculate: est_print_time = main_sync.estimatated_print_time()
         ser_time, ser_clock, ser_freq = self.main_sync.clock_est
         main_mcu_freq = self.main_sync.mcu_freq

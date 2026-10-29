@@ -375,10 +375,14 @@ A request may look like:
 and might return:
 `{"id": 123,"result":{"header":["time", "force (g)", "counts", "tare_counts", "channel-0 force (g)", "channel-0 counts"]}}`
 and might later produce asynchronous messages such as:
-`{"params":{"data":[[3292.432935, 40.65, 562534, -234467, 40.65, 562534]]}}`
+`{"params":{"data":[[3292.432935, 40.65, 562534, -234467, 40.65, 562534]],
+"errors":0,"overflows":0}}`
 
 The "header" field in the initial query response is used to describe
 the fields found in later "data" responses.
+
+The "errors" and "overflows" are the number that occurred while producing that
+message (which may have an empty "data" list).
 
 ### load_cell_probe/dump_taps
 

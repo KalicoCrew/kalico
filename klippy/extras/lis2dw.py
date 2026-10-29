@@ -229,14 +229,14 @@ class LIS2DW:
         self.set_reg(REG_LIS2DW_FIFO_CTRL, 0x00)
 
     def _process_batch(self, eventtime):
-        samples = self.ffreader.pull_samples()
+        samples, _ = self.ffreader.pull_samples()
         self._convert_samples(samples)
         if not samples:
             return {}
         return {
             "data": samples,
             "errors": self.last_error_count,
-            "overflows": self.ffreader.get_last_overflows(),
+            "overflows": self.ffreader.get_total_overflows(),
         }
 
 

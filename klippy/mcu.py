@@ -32,6 +32,22 @@ MAX_NOMINAL_DURATION = 3.0
 ######################################################################
 
 
+# Generate a dummy response to query commands when in debugging mode
+class DummyResponse:
+    def __init__(self, serial, name, oid=None):
+        params = {}
+        if oid is not None:
+            params["oid"] = oid
+        msgparser = serial.get_msgparser()
+        resp = msgparser.create_dummy_response(name, params)
+        resp["#sent_time"] = 0.0
+        resp["#receive_time"] = 0.0
+        self._response = resp
+
+    def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0, retry=True):
+        return dict(self._response)
+
+
 # Class to retry sending of a query command until a given response is received
 class RetryAsyncCommand:
     TIMEOUT_TIME = 5.0
@@ -77,22 +93,23 @@ class RetryAsyncCommand:
 class CommandQueryWrapper:
     def __init__(
         self,
-        serial,
+        conn_helper,
         msgformat,
         respformat,
         oid=None,
         cmd_queue=None,
         is_async=False,
-        error=serialhdl.error,
     ):
-        self._serial = serial
+        self._serial = serial = conn_helper.get_serial()
         self._cmd = serial.get_msgparser().lookup_command(msgformat)
         serial.get_msgparser().lookup_command(respformat)
         self._response = respformat.split()[0]
         self._oid = oid
-        self._error = error
+        self._error = conn_helper.get_mcu().get_printer().command_error
         self._xmit_helper = serialhdl.SerialRetryCommand
-        if is_async:
+        if conn_helper.get_mcu().is_fileoutput():
+            self._xmit_helper = DummyResponse
+        elif is_async:
             self._xmit_helper = RetryAsyncCommand
         if cmd_queue is None:
             cmd_queue = serial.get_default_command_queue()
@@ -128,25 +145,34 @@ class CommandQueryWrapper:
 
 # Wrapper around command sending
 class CommandWrapper:
-    def __init__(self, serial, msgformat, cmd_queue=None, debugoutput=False):
-        self._serial = serial
+    def __init__(self, conn_helper, msgformat, cmd_queue=None):
+        self._serial = serial = conn_helper.get_serial()
+        self._error = conn_helper.get_mcu().get_printer().command_error
         msgparser = serial.get_msgparser()
         self._cmd = msgparser.lookup_command(msgformat)
         if cmd_queue is None:
             cmd_queue = serial.get_default_command_queue()
         self._cmd_queue = cmd_queue
         self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
-        if debugoutput:
+        if conn_helper.get_mcu().is_fileoutput():
             # Can't use send_wait_ack when in debugging mode
             self.send_wait_ack = self.send
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
-        self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
+        try:
+            self._serial.raw_send_wait_ack(
+                cmd, minclock, reqclock, self._cmd_queue
+            )
+        except serialhdl.error as e:
+            raise self._error(str(e))
 
     def get_command_tag(self):
         return self._msgtag
@@ -1187,6 +1213,7 @@ class MCUConnectHelper:
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
+        self._serial.abort_wait_acks()
 
     def force_local_shutdown(self):
         self._is_shutdown = True
@@ -1596,8 +1623,8 @@ class MCU:
     def handle_non_critical_disconnect(self):
         if self.non_critical_disconnected or self._reconnecting:
             # motion_queuing.stats() keeps calling calibrate_clock() (and
-            # thus check_timeout()) while the mcu is disconnected or still
-            # reconnecting; only handle the first disconnect notification
+            # thus check_timeout()) while a reconnect attempt is running;
+            # only handle the first disconnect notification
             return
         self.non_critical_disconnected = True
         self._conn_helper.disconnect()
@@ -1722,21 +1749,13 @@ class MCU:
         return MAX_NOMINAL_DURATION
 
     def lookup_command(self, msgformat, cq=None):
-        return CommandWrapper(
-            self._serial, msgformat, cq, debugoutput=self.is_fileoutput()
-        )
+        return CommandWrapper(self._conn_helper, msgformat, cq)
 
     def lookup_query_command(
         self, msgformat, respformat, oid=None, cq=None, is_async=False
     ):
         return CommandQueryWrapper(
-            self._serial,
-            msgformat,
-            respformat,
-            oid,
-            cq,
-            is_async,
-            self._printer.command_error,
+            self._conn_helper, msgformat, respformat, oid, cq, is_async
         )
 
     def try_lookup_command(self, msgformat):

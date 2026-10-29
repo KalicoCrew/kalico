@@ -1201,6 +1201,16 @@ control:
 #   not recommended to set this unless there is an electrical
 #   requirement to switch the heater faster than 10 times a second.
 #   The default is 0.100 seconds.
+#hardware_pwm: False
+#   Enable this to use hardware PWM instead of software PWM for the heater.
+#   Generally speaking, the 10Hz is duty cycle acceptable for most scenarios,
+#   but there are cases where a higher frequency is desired. For example,
+#   a low PWM frequency can interfere with the load_cell_probe sensor
+#   readings when the load cell is close to the heater. In the case that
+#   a higher PWM frequency is required, it is recommended to use hardware PWM.
+#   When using hardware PWM the actual cycle time is constrained by the
+#   implementation and may be significantly different than the requested
+#   cycle_time. The default is False.
 #lost_update_tolerance: 2
 #   Maximum number of consecutive sensor lost samples that can be
 #   recovered from.
@@ -3467,6 +3477,7 @@ target temperature.
 #pid_Ki:
 #pid_Kd:
 #pwm_cycle_time:
+#hardware_pwm:
 #lost_update_tolerance:
 #min_temp:
 #max_temp:
@@ -4638,6 +4649,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc2208]
@@ -5020,6 +5034,9 @@ run_current:
 #   "sensorless homing". (Be sure to also set driver_SGT OR driver_SG4_THRS
 #   to an appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5160]
@@ -5174,6 +5191,9 @@ sense_resistor:
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
 #   sensorless homing.
+#   If no diag pin is specified, the virtual_endstop is still available
+#   and the micro-controller polls the stallguard flag over SPI instead.
+#   See the TMC_Drivers.md document for details.
 ```
 
 ### [tmc5262]
