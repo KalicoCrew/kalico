@@ -69,6 +69,9 @@ class _FakeConfig:
     def get_name(self):
         return "non_critical_endstop_disconnect_values"
 
+    def get_prefix_options(self, prefix):
+        return [o for o in self._options if o.startswith(prefix)]
+
     def get(self, option, default=None):
         return self._options.get(option, default)
 
@@ -97,17 +100,9 @@ def _run_connect(printer):
         cb()
 
 
-def _section_options(states):
-    # {"mmu_gear_0": "triggered"} -> {"triggered": "mmu_gear_0"}
-    options = {}
-    for name, state in states.items():
-        options[state] = ", ".join(filter(None, [options.get(state), name]))
-    return options
-
-
-def _make_printer_with_values(states=None, options=None):
-    if options is None:
-        options = _section_options(states)
+def _make_printer_with_values(options):
+    # Section options as the config parser returns them, for example
+    # {"mmu_gear_0": "triggered"} or {"open": "mmu:a, mmu:b"}
     printer = _FakePrinter()
     values = ncedv.NonCriticalEndstopDisconnectValues(
         _FakeConfig(printer, options)
@@ -142,7 +137,19 @@ def test_fallback_ignored_when_danger_option_disabled():
         endstop.query_endstop(0.0)
 
 
-@pytest.mark.parametrize("value,expected", [("open", 0), ("triggered", 1)])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("open", 0),
+        ("false", 0),
+        ("0", 0),
+        ("triggered", 1),
+        ("TRIGGERED", 1),
+        ("closed", 1),
+        ("true", 1),
+        ("1", 1),
+    ],
+)
 def test_fallback_value_returned(_danger_options, value, expected):
     _danger_options.ignore_non_critical_endstop_disconnect = True
     printer = _make_printer_with_values({"mmu_gear_0": value})
@@ -175,12 +182,35 @@ def test_reconnect_uses_real_state_again(_danger_options):
     assert endstop.query_endstop(0.0) == 0
 
 
+def test_invalid_value_is_config_error():
+    with pytest.raises(_ConfigError, match="Invalid value 'invalid'"):
+        _make_printer_with_values({"mmu_gear_0": "invalid"})
+
+
+@pytest.mark.parametrize(
+    "value,hint",
+    [
+        ("filament_tension: triggered", "'triggered: mmu:filament_tension'"),
+        ("filament_tension: TRUE", "'triggered: mmu:filament_tension'"),
+        ("mmu_shared_exit: open", "'open: mmu:mmu_shared_exit'"),
+    ],
+)
+def test_name_with_colon_as_option_explains_list_options(value, hint):
+    # "mmu:filament_tension: triggered" reaches us as option "mmu" with
+    # value "filament_tension: triggered"
+    with pytest.raises(_ConfigError) as excinfo:
+        _make_printer_with_values({"mmu": value})
+    msg = str(excinfo.value)
+    assert "names containing ':' must be listed" in msg
+    assert hint in msg
+
+
 def test_names_with_colon_and_upper_case(_danger_options):
     # Names as reported by QUERY_ENDSTOPS for Happy Hare sensors; neither
     # ':' nor upper case letters would survive as a config option name
     _danger_options.ignore_non_critical_endstop_disconnect = True
     printer = _make_printer_with_values(
-        options={
+        {
             "open": "mmu:mmu_shared_exit, mmu:filament_compression",
             "triggered": "mmu:filament_tension, Toolhead_Sensor",
         }
@@ -200,7 +230,7 @@ def test_names_with_colon_and_upper_case(_danger_options):
 
 def test_multiline_lists():
     printer = _make_printer_with_values(
-        options={
+        {
             "open": "\nmmu:gate_0,\n  mmu:gate_1\nmmu:gate_2,,",
             "triggered": "",
         }
@@ -210,7 +240,7 @@ def test_multiline_lists():
 
 
 def test_empty_section():
-    printer = _make_printer_with_values(options={})
+    printer = _make_printer_with_values({})
     values = printer.objects["non_critical_endstop_disconnect_values"]
     assert values.values == {}
     _run_connect(printer)
@@ -219,8 +249,32 @@ def test_empty_section():
 def test_name_in_both_lists_is_config_error():
     with pytest.raises(_ConfigError, match="both 'open' and 'triggered'"):
         _make_printer_with_values(
-            options={"open": "mmu:gate_0", "triggered": "x, mmu:gate_0"}
+            {"open": "mmu:gate_0", "triggered": "x, mmu:gate_0"}
         )
+
+
+def test_single_and_list_options_combined(_danger_options):
+    _danger_options.ignore_non_critical_endstop_disconnect = True
+    printer = _make_printer_with_values(
+        {
+            "x": "open",
+            "mmu_gear_0": "triggered",
+            "open": "mmu:mmu_shared_exit",
+            "triggered": "mmu:filament_tension, mmu_gear_0",
+        }
+    )
+    values = printer.objects["non_critical_endstop_disconnect_values"]
+    assert values.values == {
+        "x": 0,
+        "mmu_gear_0": 1,
+        "mmu:mmu_shared_exit": 0,
+        "mmu:filament_tension": 1,
+    }
+
+
+def test_single_and_list_option_conflict_is_config_error():
+    with pytest.raises(_ConfigError, match="both 'open' and 'triggered'"):
+        _make_printer_with_values({"x": "open", "triggered": "x"})
 
 
 def test_unknown_endstop_name_is_config_error():

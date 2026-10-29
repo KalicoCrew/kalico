@@ -182,21 +182,28 @@ homing on a disconnected mcu is always rejected.
 
 ```
 [non_critical_endstop_disconnect_values]
+#<endstop_name>: open
+#   The state an endstop reports while its mcu is disconnected, one of
+#   `open` (also `false` or `0`) or `triggered` (also `closed`, `true`
+#   or `1`). Use the name reported by QUERY_ENDSTOPS (for example `x`
+#   for the [stepper_x] endstop, or `mmu_gear_0`).
 #open:
-#   Endstops that report "open" while their mcu is disconnected.
 #triggered:
-#   Endstops that report "TRIGGERED" while their mcu is disconnected.
-#   Both options take a comma and/or newline separated list of endstop
-#   names exactly as reported by QUERY_ENDSTOPS (for example `x` for the
-#   [stepper_x] endstop, or `mmu:filament_tension`). Names are case
-#   sensitive. An unknown endstop name, or a name listed in both
-#   options, is a config error.
+#   Alternatively, list endstops by state: a comma and/or newline
+#   separated list of names exactly as reported by QUERY_ENDSTOPS. This
+#   form is required for names containing ':' (for example
+#   `mmu:filament_tension`) or upper case letters, since those cannot
+#   be used as option names. Both forms can be combined.
+#   An unknown endstop name, an invalid value, or an endstop configured
+#   as both open and triggered is a config error.
 ```
 
 For example:
 
 ```
 [non_critical_endstop_disconnect_values]
+x: open
+mmu_gear_0: triggered
 open: mmu:mmu_shared_exit, mmu:filament_compression
 triggered: mmu:filament_tension
 ```
