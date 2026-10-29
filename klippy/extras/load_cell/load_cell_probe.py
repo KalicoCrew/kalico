@@ -21,7 +21,12 @@ from .load_cell import (
     LoadCellSampleCollector,
     ZeroReference,
 )
-from .tap_analysis import TapAnalysisHelper, TapClassifierModule
+from .tap_analysis import (
+    TapAnalysis,
+    TapAnalysisHelper,
+    TapClassifierModule,
+    TapValidationError,
+)
 
 # constants for fixed point numbers
 Q2_INT_BITS = 2
@@ -835,7 +840,7 @@ class TappingMove:
         # check for data errors
         trigger_force = self._config_helper.get_trigger_force_grams(gcmd)
         # Analyze the tap data
-        tap_analysis = self._tap_analysis_helper.analyze(
+        tap_analysis: TapAnalysis = self._tap_analysis_helper.analyze(
             samples, trigger_force, collection_time, gcmd
         )
         self._last_analysis = tap_analysis
@@ -843,6 +848,14 @@ class TappingMove:
         # if the tap is valid, replace the z position with the calculated one
         if self._is_last_result_valid:
             epos[2] = tap_analysis.get_tap_pos()[2]
+        elif tap_analysis.get_validation_error() is not None:
+            error: TapValidationError = tap_analysis.get_validation_error()
+            error_msg = f"{error.error_code} - {error}"
+            if error.is_recoverable:
+                gcmd.respond_info(error_msg)
+            else:
+                raise gcmd.error(error_msg)
+
         return epos, self._is_last_result_valid
 
     def get_status(self, eventtime):
