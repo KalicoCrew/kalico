@@ -117,6 +117,11 @@ GCodeCommand for compatibility boundaries. Without a command, it uses
 GCodeContextLegacy as an escape hatch for callers that cannot practically
 obtain one; those callers cannot temporarily release the mutex.
 
+Interruptible waits enter through GCodeCommand.wait_while() and
+GCodeCommand.sleep(), or the corresponding InterruptToken methods for
+code without a command. Tokens are obtained from
+GCodeDispatch.get_interrupt_token().
+
 There are four threads in the Klippy host code. The main thread
 handles incoming gcode commands. A second thread (which resides
 entirely in the **klippy/chelper/serialqueue.c** C code) handles

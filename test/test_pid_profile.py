@@ -1,5 +1,4 @@
 import pathlib
-import threading
 import typing
 
 from klippy_testing import PrinterShim
@@ -42,7 +41,8 @@ def _gcmd(heater, params):
         params,
         False,
         klippy.gcode.GCodeContextScope(
-            klippy.gcode.GCodeContextRoot(threading.Lock())
+            klippy.gcode.GCodeContextRoot(heater.gcode.get_mutex()),
+            heater.gcode.get_interrupt_token(),
         ),
     )
 
@@ -119,10 +119,11 @@ class _FakeConfig:
         return Exception(msg)
 
 
-class _FakeGCode:
+class _FakeGCode(PrinterShim.GCode):
     error = Exception
 
     def __init__(self):
+        super().__init__()
         self.messages = []
 
     def respond_info(self, msg):

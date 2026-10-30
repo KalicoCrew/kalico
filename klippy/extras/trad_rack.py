@@ -1235,7 +1235,7 @@ class TradRack:
         if user_load:
             self.gcode.respond_info("Load complete")
 
-    def _wait_for_heater_temp(self, min_temp=0.0, exact_temp=0.0):
+    def _wait_for_heater_temp(self, gcmd, min_temp=0.0, exact_temp=0.0):
         # get current and target temps
         heater = self.toolhead.get_extruder().get_heater()
         smoothed_temp, target_temp = heater.get_temp(self.reactor.monotonic())
@@ -1264,7 +1264,7 @@ class TradRack:
                 else:
                     save_temp = None
             pheaters = self.printer.lookup_object("heaters")
-            pheaters.set_temperature(heater, temp, True)
+            pheaters.set_temperature(heater, temp, True, gcmd)
             return save_temp
         return target_temp
 
@@ -1343,7 +1343,7 @@ class TradRack:
             hotend_load_length = self.hotend_load_length
 
         # wait for heater temp if needed
-        save_temp = self._wait_for_heater_temp(min_temp, exact_temp)
+        save_temp = self._wait_for_heater_temp(gcmd, min_temp, exact_temp)
 
         # disable runout detection
         self.selector_sensor.set_active(False)
@@ -1802,7 +1802,7 @@ class TradRack:
         self.printer.send_event("trad_rack:unload_started")
 
         # wait for heater temp if needed
-        self._wait_for_heater_temp(min_temp, exact_temp)
+        self._wait_for_heater_temp(gcmd, min_temp, exact_temp)
 
         # sync filament driver to extruder for pre-unload custom gcode
         if sync:

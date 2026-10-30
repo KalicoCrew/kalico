@@ -14,6 +14,7 @@ import shlex
 from typing import TYPE_CHECKING, ContextManager, Iterator, Protocol
 
 from . import mathutil
+from .reactor import ReactorCompletion
 
 if TYPE_CHECKING:
     from .reactor import ReactorMutex
@@ -21,6 +22,49 @@ if TYPE_CHECKING:
 
 class CommandError(Exception):
     pass
+
+
+class WaitInterruption(CommandError):
+    pass
+
+
+class InterruptToken(ReactorCompletion):
+    def __init__(self, reactor, is_shutdown):
+        super().__init__(reactor)
+        self._is_shutdown = is_shutdown
+
+    def _check_shutdown(self):
+        if self._is_shutdown():
+            raise WaitInterruption("Printer is shutdown")
+
+    def interrupt(self, error=None):
+        if not self.test():
+            self.complete(True if error is None else error)
+
+    def wait_while(self, condition_cb, error_on_cancel=True, interval=1.0):
+        """Wait for a condition or interruption."""
+        while True:
+            self._check_shutdown()
+            if self.test():
+                result = self.wait()
+                if isinstance(result, Exception):
+                    raise result
+                if error_on_cancel:
+                    raise WaitInterruption("Command interrupted")
+                return
+            eventtime = self.reactor.monotonic()
+            waiting = condition_cb(eventtime)
+            self._check_shutdown()
+            if not waiting:
+                return
+            self.wait(eventtime + interval)
+
+    def sleep(self, duration, error_on_cancel=True):
+        """Sleep until the duration elapses or an interruption occurs."""
+        deadline = self.reactor.monotonic() + duration
+        return self.wait_while(
+            lambda eventtime: eventtime < deadline, error_on_cancel, duration
+        )
 
 
 Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
@@ -90,10 +134,14 @@ class GCodeContextRoot(GCodeContext):
 
 
 class GCodeContextScope(GCodeContext):
-    def __init__(self, context: GCodeContext):
+    def __init__(self, context: GCodeContext, interrupt_token: InterruptToken):
         self._context = context
         self._root = context.get_root()
+        self._interrupt_token = interrupt_token
         self._valid = True
+
+    def get_interrupt_token(self) -> InterruptToken:
+        return self._interrupt_token
 
     def get_root(self) -> GCodeContext:
         return self._root
@@ -161,6 +209,7 @@ class GCodeContextLegacy(GCodeContext):
 
 class GCodeCommand:
     error = CommandError
+    wait_interrupted = WaitInterruption
 
     def __init__(
         self,
@@ -200,7 +249,9 @@ class GCodeCommand:
     def run_script(self, script):
         """Run nested commands in a context wrapping this command's context."""
         self._context._check_valid()
-        context = GCodeContextScope(self._context)
+        context = GCodeContextScope(
+            self._context, self._gcode.get_interrupt_token()
+        )
         try:
             self._gcode._process_commands(
                 script.split("\n"),
@@ -218,6 +269,20 @@ class GCodeCommand:
         """Run a callback while this command's G-code mutex is released."""
         with self.without_lock():
             return callback(*args, **kwargs)
+
+    def get_interrupt_token(self):
+        self._context._check_valid()
+        return self._context.get_interrupt_token()
+
+    def wait_while(self, condition_cb, error_on_cancel=True, interval=1.0):
+        """Wait for a condition or interruption."""
+        return self.get_interrupt_token().wait_while(
+            condition_cb, error_on_cancel, interval
+        )
+
+    def sleep(self, duration, error_on_cancel=True):
+        """Sleep until interrupted or the duration elapses."""
+        return self.get_interrupt_token().sleep(duration, error_on_cancel)
 
     def get_command(self):
         return self._command
@@ -350,7 +415,9 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
-        self._interrupt_counter = 0
+        self._interrupt_token = InterruptToken(
+            printer.get_reactor(), printer.is_shutdown
+        )
         # Register commands needed before config file is loaded
         handlers = [
             "M110",
@@ -375,11 +442,15 @@ class GCodeDispatch:
                 lockfree=cmd in ("M112", "HEATER_INTERRUPT"),
             )
 
-    def get_interrupt_counter(self):
-        return self._interrupt_counter
+    def get_interrupt_token(self):
+        return self._interrupt_token
 
-    def increment_interrupt_counter(self):
-        self._interrupt_counter += 1
+    def interrupt(self, error=None):
+        token = self._interrupt_token
+        self._interrupt_token = InterruptToken(
+            self.printer.get_reactor(), self.printer.is_shutdown
+        )
+        token.interrupt(error)
 
     def is_traditional_gcode(self, cmd):
         # A "traditional" g-code command is a letter and followed by a number
@@ -471,6 +542,7 @@ class GCodeDispatch:
         self.output_callbacks.append(cb)
 
     def _handle_shutdown(self):
+        self.interrupt(WaitInterruption("Printer is shutdown"))
         if not self.is_printer_ready:
             return
         self.is_printer_ready = False
@@ -479,6 +551,7 @@ class GCodeDispatch:
         self._respond_state("Shutdown")
 
     def _handle_disconnect(self):
+        self.interrupt()
         self._respond_state("Disconnect")
 
     def _handle_ready(self):
@@ -518,7 +591,9 @@ class GCodeDispatch:
                         and not context.owns_mutex()
                     ):
                         context.acquire_mutex()
-                    scope = GCodeContextScope(context)
+                    scope = GCodeContextScope(
+                        context, self.get_interrupt_token()
+                    )
                     try:
                         gcmd = GCodeCommand(
                             self, cmd, origline, params, need_ack, scope
@@ -577,7 +652,9 @@ class GCodeDispatch:
         context: GCodeContextScope | None = None,
     ):
         if context is None:
-            context = GCodeContextScope(GCodeContextLegacy(self.mutex))
+            context = GCodeContextScope(
+                GCodeContextLegacy(self.mutex), self.get_interrupt_token()
+            )
         return GCodeCommand(
             self,
             command,
@@ -745,7 +822,7 @@ class GCodeDispatch:
         gcmd.respond_info("\n".join(cmdhelp), log=False)
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
-        self.increment_interrupt_counter()
+        self.interrupt()
 
     def cmd_LOG_ROLLOVER(self, gcmd):
         self.printer.bglogger.doRollover()

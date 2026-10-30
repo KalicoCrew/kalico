@@ -4,6 +4,7 @@ import typing
 import klippy.configfile
 import klippy.extras.danger_options
 import klippy.gcode
+import klippy.reactor
 
 
 class Restart(Exception): ...
@@ -16,6 +17,13 @@ class PrinterShim:
         def __init__(self):
             self.ready_gcode_handlers = {}
             self.mutex = threading.Lock()
+            self.reactor = klippy.reactor.Reactor()
+            self.interrupt_token = klippy.gcode.InterruptToken(
+                self.reactor, lambda: False
+            )
+
+        def get_interrupt_token(self):
+            return self.interrupt_token
 
         def get_mutex(self):
             return self.mutex
@@ -43,7 +51,8 @@ class PrinterShim:
                 params,
                 False,
                 klippy.gcode.GCodeContextScope(
-                    klippy.gcode.GCodeContextRoot(self.get_mutex())
+                    klippy.gcode.GCodeContextRoot(self.get_mutex()),
+                    self.get_interrupt_token(),
                 ),
             )
             print("Calling", func, "with", params)
@@ -61,7 +70,7 @@ class PrinterShim:
         return self
 
     def __exit__(self, *_):
-        pass
+        self.lookup_object("gcode").reactor.finalize()
 
     def get_start_args(self):
         return self.start_args

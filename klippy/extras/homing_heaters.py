@@ -56,6 +56,8 @@ class HomingHeaters:
         if not self.check_eligible(hmove.get_mcu_endstops()):
             return
         for heater_name in self.disable_heaters:
+            self.pheaters.lookup_heater(heater_name).check_not_calibrating()
+        for heater_name in self.disable_heaters:
             heater = self.pheaters.lookup_heater(heater_name)
             self.target_save[heater_name] = heater.get_temp(0)[1]
             heater.set_temp(0.0)

@@ -15,6 +15,7 @@ import typing
 import jinja2
 
 from klippy import configfile
+from klippy.gcode import WaitInterruption
 
 ######################################################################
 # Template handling
@@ -163,17 +164,21 @@ class TemplateWrapperPython:
             raise self.gcode.error(msg)
 
     def run_gcode(self, gcmd, context=None):
-        self._run_gcode(gcmd.run_script, context)
+        self._run_gcode(gcmd.run_script, gcmd.get_interrupt_token(), context)
 
-    def _run_gcode(self, run_script, context=None):
+    def _run_gcode(self, run_script, interrupt_token, context):
         helpers = {
             "printer": GetStatusWrapperPython(self.printer),
             "emit": run_script,
-            "wait_while": self._action_wait_while,
-            "wait_until": self._action_wait_until,
+            "wait_while": lambda check: interrupt_token.wait_while(
+                lambda eventtime: check()
+            ),
+            "wait_until": lambda check: interrupt_token.wait_while(
+                lambda eventtime: not check()
+            ),
             "wait_moves": self._action_wait_moves,
             "blocking": self._action_blocking,
-            "sleep": self._action_sleep,
+            "sleep": interrupt_token.sleep,
             "set_gcode_variable": self._action_set_gcode_variable,
             "emergency_stop": self.gcode_macro._action_emergency_stop,
             "respond_info": self.gcode_macro._action_respond_info,
@@ -201,6 +206,8 @@ class TemplateWrapperPython:
         exec_globals = dict(context | helpers)
         try:
             exec(self.func, exec_globals, {})
+        except WaitInterruption:
+            raise
         except Exception as e:
             msg = "Error evaluating '%s': %s" % (
                 self.name,
@@ -211,19 +218,11 @@ class TemplateWrapperPython:
 
     def run_gcode_from_command(self, context=None):
         # Compatibility entry point without an inherited execution context.
-        self._run_gcode(self.gcode.run_script_from_command, context)
-
-    def _action_wait_while(self, check):
-        def inner(eventtime):
-            return check()
-
-        self.printer.wait_while(check)
-
-    def _action_wait_until(self, check):
-        def inner(eventtime):
-            return not check()
-
-        self.printer.wait_while(inner)
+        self._run_gcode(
+            self.gcode.run_script_from_command,
+            self.gcode.get_interrupt_token(),
+            context,
+        )
 
     def _action_wait_moves(self):
         if self.toolhead is None:
@@ -247,15 +246,6 @@ class TemplateWrapperPython:
             raise ret
         else:
             return ret
-
-    def _action_sleep(self, timeout):
-        reactor = self.printer.get_reactor()
-        deadline = reactor.monotonic() + timeout
-
-        def check(event):
-            return deadline > reactor.monotonic()
-
-        self.printer.wait_while(check)
 
     def _action_set_gcode_variable(self, macro, variable, value):
         macro = self.printer.lookup_object(f"gcode_macro {macro}")

@@ -48,9 +48,11 @@ class HeatedFan:
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
     def cmd_SET_HEATED_FAN_TARGET(self, gcmd):
+        self.heater.check_not_calibrating()
         self.heater_temp = gcmd.get_float("TARGET", 0)
 
     def cmd_M106(self, gcmd):
+        self.heater.check_not_calibrating()
         self.set_speed = gcmd.get_float("S", 255.0, minval=0.0) / 255.0
         if not self.set_speed:
             return self.cmd_M107(gcmd)
@@ -65,6 +67,7 @@ class HeatedFan:
             self.heater.set_temp(self.heater_temp)
 
     def cmd_M107(self, gcmd):
+        self.heater.check_not_calibrating()
         self.set_speed = 0.0
         self.heater.set_temp(0)
         self.start_timeout_timer()

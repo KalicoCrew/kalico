@@ -18,6 +18,7 @@ def dispatch():
     reactor = Reactor()
     printer = SimpleNamespace(
         get_start_args=lambda: {},
+        is_shutdown=lambda: False,
         get_reactor=lambda: reactor,
         register_event_handler=lambda *args: None,
         lookup_object=lambda name, default=None: default,
@@ -105,6 +106,8 @@ def test_legacy_scripts_and_their_new_api_descendants_cannot_unlock(dispatch):
 
     def child(command):
         executed.append(command.get_command())
+        command.wait_while(lambda eventtime: False)
+        assert gcode.get_mutex().test()
         with pytest.raises(
             CommandError, match="dispatched handler|no longer valid"
         ):

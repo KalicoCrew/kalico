@@ -282,6 +282,11 @@ gcode:
 - call_remote_method / action_call_remote_method
 - math
 
+The Python helpers `wait_while(check)` and `wait_until(check)` call a
+function that takes no arguments until it returns `False` or `True`,
+respectively. `sleep(seconds)` waits for the specified duration.
+`HEATER_INTERRUPT` stops these waits and aborts the macro with an error.
+
 ## Actions
 
 There are some commands available that can alter the state of the
