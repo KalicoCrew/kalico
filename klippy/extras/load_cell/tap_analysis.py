@@ -64,6 +64,61 @@ class TrapezoidalMove:
         }
 
 
+class MoveQueueCapture:
+    def __init__(self, printer: Printer, start_time: float):
+        motion_report: PrinterMotionReport = printer.lookup_object(
+            "motion_report"
+        )
+        trapq: DumpTrapQ = motion_report.dtrapqs["toolhead"]
+        raw_moves, _ = trapq.extract_trapq(float(start_time))
+        self.moves: list[TrapezoidalMove] = []
+        for move in raw_moves:
+            self.moves.append(TrapezoidalMove(move, start_time))
+
+    def log_trapq(self):
+        logging.info("Trapezoidal Movement Queue contents:")
+        for i, move in enumerate(self.moves):
+            logging.info(f"Move {i}: {move.to_dict()}")
+
+    @staticmethod
+    def _move_dist(move: TrapezoidalMove, print_time: float):
+        move_t = move.move_t
+        move_time = max(0.0, min(move_t, print_time - move.print_time))
+        dist = (move.start_v + (0.5 * move.accel) * move_time) * move_time
+        return dist
+
+    @staticmethod
+    def _move_pos(move: TrapezoidalMove, dist: float):
+        return (
+            move.start_x + (move.x_r * dist),
+            move.start_y + (move.y_r * dist),
+            move.start_z + (move.z_r * dist),
+        )
+
+    # get an XYZ position from the toolhead position history
+    # positions before/after the captured history are assumed to be stationary
+    def get_toolhead_position(self, print_time):
+        for i, move in enumerate(self.moves):
+            start_time = move.print_time
+            # time before first move, assume printer was stationary
+            if i == 0 and print_time < start_time:
+                return self._move_pos(move, 0)
+            end_time = float("inf")
+            if i < (len(self.moves) - 1):
+                end_time = self.moves[i + 1].print_time
+            if start_time <= print_time < end_time:
+                # we have found the move
+                dist = self._move_dist(move, print_time)
+                pos = self._move_pos(move, dist)
+                return pos
+            else:
+                continue
+        # time is after last move, assume printer was stationary
+        move = self.moves[-1]
+        dist = self._move_dist(move, print_time)
+        return self._move_pos(move, dist)
+
+
 # point on a time/force graph
 class ForcePoint(object):
     time: float
@@ -369,6 +424,110 @@ PROBE_HALT = -4
 PULLBACK_START = -3
 PULLBACK_CRUISE = -2
 PULLBACK_END = -1
+
+
+# The named moves of a tap, extracted from the toolhead move queue. This is
+# the only place that interprets the raw list of TrapezoidalMoves.
+# Expected queue: [probe_start?, probe_cruise, halt, pullback x3]. probe_start
+# is optional because it may be deleted from the trapq on long probes.
+class ProbingMoves:
+    def __init__(self, capture: MoveQueueCapture):
+        self._moves: list[TrapezoidalMove] = capture.moves
+        self.probe_start: Optional[TrapezoidalMove] = None
+        self.probe_cruise: Optional[TrapezoidalMove] = None
+        self.halt: Optional[TrapezoidalMove] = None
+        self.pullback_start: Optional[TrapezoidalMove] = None
+        self.pullback_cruise: Optional[TrapezoidalMove] = None
+        self.pullback_end: Optional[TrapezoidalMove] = None
+        self.validation_error: Optional[TapValidationError] = self._validate()
+
+    def validate(self):
+        if self.validation_error is not None:
+            raise self.validation_error
+
+    # Build from time ordered moves, raises TapValidationError if the queue
+    # is not a recognizable tap
+    def _validate(self) -> Optional[TapValidationError]:
+        if len(self._moves) < -PROBE_CRUISE:
+            return TapValidationError(
+                "UNEXPECTED_ERROR",
+                "5 Probing moves expected but there were fewer",
+            )
+        probe_cruise = self._moves[PROBE_CRUISE]
+        # The probe must be coasting when it triggers. Deceleration in the
+        # last approach move means it slowed down (or sped up) before triggering
+        if probe_cruise.accel < 0.0:
+            return TapValidationError(
+                "INSUFFICIENT_Z_TRAVEL",
+                "Probe decelerated before triggering. Check that Z position_min"
+                " allows the probe to travel below Z=0.",
+            )
+            return
+        if probe_cruise.accel > 0.0:
+            return TapValidationError(
+                "UNEXPECTED_ERROR", "Probe cruise move is accelerating"
+            )
+        if probe_cruise.start_v == 0.0:
+            return TapValidationError(
+                "UNEXPECTED_ERROR", "Probe cruise move has velocity=0"
+            )
+        probe_halt = self._moves[PROBE_HALT]
+        if probe_halt.start_v != 0.0 or probe_halt.accel != 0.0:
+            return TapValidationError(
+                "UNEXPECTED_ERROR",
+                "Probe halting move has non-zero velocity/acceleration",
+            )
+        if len(self._moves) > -PROBE_START:
+            return TapValidationError(
+                "UNEXPECTED_ERROR",
+                "More than 6 probing moves were found during the tap",
+            )
+        # set cruise.move_t to match the time when the probe actually stopped
+        probe_cruise.move_t = abs(
+            (probe_halt.start_z - probe_cruise.start_z) / probe_cruise.start_v
+        )
+        probe_start = None
+        if len(self._moves) == -PROBE_START:
+            probe_start = self._moves[PROBE_START]
+        self.probe_start = probe_start
+        self.probe_cruise = probe_cruise
+        self.halt = probe_halt
+        self.pullback_start = self._moves[PULLBACK_START]
+        self.pullback_cruise = self._moves[PULLBACK_CRUISE]
+        self.pullback_end = self._moves[PULLBACK_END]
+        return None
+
+    # The time the probe reached the halt position, which is where the probe
+    # triggered. This is the end of the (truncated) cruise move.
+    @property
+    def home_end_time(self) -> Optional[float]:
+        if self.probe_cruise is not None:
+            return self.probe_cruise.print_time + self.probe_cruise.move_t
+        return None
+
+    @property
+    def pullback_start_time(self) -> Optional[float]:
+        if self.pullback_start is not None:
+            return self.pullback_start.print_time
+        return None
+
+    @property
+    def pullback_cruise_time(self) -> Optional[float]:
+        if self.pullback_cruise is not None:
+            return self.pullback_cruise.print_time
+        return None
+
+    @property
+    def pullback_end_time(self) -> Optional[float]:
+        if self.pullback_end is not None:
+            return self.pullback_end.print_time + self.pullback_end.move_t
+        return None
+
+    @property
+    def pullback_duration(self) -> Optional[float]:
+        if self.pullback_end_time is None or self.pullback_start_time is None:
+            return None
+        return self.pullback_end_time - self.pullback_start_time
 
 
 class TapAnalysis:
