@@ -1,7 +1,9 @@
 #Copied and stripped down from https://github.com/Snapmaker/u1-klipper/blob/93cb12faebf6e74c51bbc5f0be66e95124af14c8/klippy/extras/homing_precise_corexy.py
 
-import math, logging
+import logging
+import math
 import stepper
+
 from . import homing
 
 TRINAMIC_DRIVERS = ["tmc2130", "tmc2208", "tmc2209", "tmc2240", "tmc2660", "tmc5160"]
@@ -63,8 +65,8 @@ class HomingPreciseCorexy:
         corexy_rails = toolhead.get_kinematics().rails
         x_homing_info = corexy_rails[0].get_homing_info()
         y_homing_info = corexy_rails[1].get_homing_info()
-        start_park_position_x = x_homing_info.position_endstop + [1, -1][x_homing_info.positive_dir == True]*move_offset_x
-        start_park_position_y = y_homing_info.position_endstop + [1, -1][y_homing_info.positive_dir == True]*move_offset_y
+        start_park_position_x = x_homing_info.position_endstop + [1, -1][x_homing_info.positive_dir]*move_offset_x
+        start_park_position_y = y_homing_info.position_endstop + [1, -1][y_homing_info.positive_dir]*move_offset_y
         return start_park_position_x, start_park_position_y
 
     def calc_position(self, a_dist, b_dist):
@@ -78,8 +80,8 @@ class HomingPreciseCorexy:
         y_away_from_endstop_dir = not corexy_rails[1].get_homing_info().positive_dir
         x_stepper_dir_inverted = corexy_rails[0].get_steppers()[0].get_dir_inverted()[0]
         y_stepper_dir_inverted = corexy_rails[1].get_steppers()[0].get_dir_inverted()[0]
-        x_backoff_dir = [1, -1][x_away_from_endstop_dir == False] * [-1, 1][x_stepper_dir_inverted]
-        y_backoff_dir = [1, -1][y_away_from_endstop_dir == False] * [-1, 1][y_stepper_dir_inverted]
+        x_backoff_dir = [1, -1][not x_away_from_endstop_dir] * [-1, 1][x_stepper_dir_inverted]
+        y_backoff_dir = [1, -1][not y_away_from_endstop_dir] * [-1, 1][y_stepper_dir_inverted]
         # Calculate the step to be moved for tmc phase alignment
         x_backoff_step = (([1, -1][x_backoff_dir == 1]*self.x_tmc_module.query_phase()) % 1024) / (1024 / self.x_tmc_module.get_phase_offset()[1])
         y_backoff_step = (([1, -1][y_backoff_dir == 1]*self.y_tmc_module.query_phase()) % 1024) / (1024 / self.y_tmc_module.get_phase_offset()[1])
@@ -234,7 +236,7 @@ class HomingPreciseCorexy:
                 toolhead.set_accel(self.probe_accel)
 
             recv_steps, recv_dists, probe_success = self.perform_diagonal_probing(probe_start_x, probe_start_y)
-            if probe_success == True:
+            if probe_success:
                 c_dist_a, c_dist_b, c_a_raw, c_b_raw = self.cal_diagonal_dist(recv_steps)
                 self.c_a_full_phase = round(c_a_raw, 5)
                 self.c_b_full_phase = round(c_b_raw, 5)

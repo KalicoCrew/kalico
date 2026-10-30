@@ -1889,7 +1889,12 @@ gcode:
 Precise homing for CoreXY printers. Since both motors are used to 
 perform a move along either axis sensorless homing is not as accurate 
 as on kartesian printers. Using diagonal moves after regular homing
-the accuracy and repeatability is greatly improved.
+the accuracy and repeatability is greatly improved. You may want
+to add the HOMING_PRECISE_COREXY command to a homing_override after 
+a regular homing. 
+Performing this once is sufficient to get near perfect repeatability.
+However, like with Z_TILT or GQL the values will converge if done
+multiple times due to iterative improvement of the starting point.
 
 ```
 [homing_precise_corexy]
