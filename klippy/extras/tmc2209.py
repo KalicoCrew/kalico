@@ -65,6 +65,7 @@ class TMC2209:
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
+        self.query_phase = cmdhelper._query_phase
         # Setup basic register values
         self.fields.set_field("mstep_reg_select", True)
         tmc.TMCStealthchopHelper(config, self.mcu_tmc)

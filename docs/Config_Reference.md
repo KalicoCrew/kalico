@@ -1884,6 +1884,36 @@ gcode:
 #   axis. The default is to not force a position for an axis.
 ```
 
+### [homing_precise_corexy]
+
+Precise homing for CoreXY printers. Since both motors are used to 
+perform a move along either axis sensorless homing is not as accurate 
+as on kartesian printers. Using diagonal moves after regular homing
+the accuracy and repeatability is greatly improved.
+
+```
+[homing_precise_corexy]
+diagonal_probe_speed:
+#   Required - the probing speed for diagonal moves
+#diagonal_probe_retract_speed:
+#   The speed to move back to the diagonal homing start point.
+#   Defaults to diagonal_probe_speed
+#xy_back_offset: 5
+#   Distance to move the axes away from the limits.
+#   Default: 5
+#diagonal_probe_before_delay: 0.1
+#   Delay between consecutive probes. The TMC drivers need a short pause
+#   to reset their internal state.
+#   Default: 0.1
+#diagonal_probe_tolerance: 0.0
+#   Allowed tolerance during probing. If a high microstepping value is
+#   used, some tolerance may be required.
+#   Defaults: 0
+#diagonal_probe_tolerance_retries: 10
+#   How often to try to reach the desired tolerance
+#   Default: 10
+```
+
 ### [endstop_phase]
 
 Stepper phase adjusted endstops. To use this feature, define a config

@@ -35,6 +35,7 @@ class CoreXYKinematics:
         self.axes_min = toolhead.Coord(*[r[0] for r in ranges], e=0.0)
         self.axes_max = toolhead.Coord(*[r[1] for r in ranges], e=0.0)
         self.supports_dual_carriage = False
+        self.ignore_check_move_limit = False
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
@@ -85,20 +86,22 @@ class CoreXYKinematics:
                 raise move.move_error()
 
     def check_move(self, move):
-        limits = self.limits
-        xpos, ypos = move.end_pos[:2]
-        if (
-            xpos < limits[0][0]
-            or xpos > limits[0][1]
-            or ypos < limits[1][0]
-            or ypos > limits[1][1]
-        ):
-            self._check_endstops(move)
+        if not self.ignore_check_move_limit:
+            limits = self.limits
+            xpos, ypos = move.end_pos[:2]
+            if (
+                xpos < limits[0][0]
+                or xpos > limits[0][1]
+                or ypos < limits[1][0]
+                or ypos > limits[1][1]
+            ):
+              self._check_endstops(move)
         if not move.axes_d[2]:
             # Normal XY move - use defaults
             return
         # Move with Z - update velocity and accel for slower Z axis
-        self._check_endstops(move)
+        if not self.ignore_check_move_limit:
+            self._check_endstops(move)
         z_ratio = move.move_d / abs(move.axes_d[2])
         move.limit_speed(
             self.max_z_velocity * z_ratio, self.max_z_accel * z_ratio
@@ -112,6 +115,9 @@ class CoreXYKinematics:
             "axis_maximum": self.axes_max,
         }
 
+    def set_ignore_check_move_limit(self, enable):
+        # WARNING: Enabling this will disable the detection of XYZ movement coordinates. USE WITH CAUTION!!!
+        self.ignore_check_move_limit = not not enable
 
 def load_kinematics(toolhead, config):
     return CoreXYKinematics(toolhead, config)
