@@ -117,7 +117,7 @@ class CoreXYKinematics:
 
     def set_ignore_check_move_limit(self, enable):
         # WARNING: Enabling this will disable the detection of XYZ movement coordinates. USE WITH CAUTION!!!
-        self.ignore_check_move_limit = not not enable
+        self.ignore_check_move_limit = bool(enable)
 
 def load_kinematics(toolhead, config):
     return CoreXYKinematics(toolhead, config)

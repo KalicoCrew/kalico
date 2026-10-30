@@ -416,7 +416,7 @@ class TMC2240:
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
-        self.query_phase = cmdhelper._query_phase
+        self.query_phase = cmdhelper.query_phase
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
         self.fields.set_config_field(config, "offset_sin90", 0)

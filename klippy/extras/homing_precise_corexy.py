@@ -7,14 +7,14 @@ import stepper
 
 from . import homing
 
-TRINAMIC_DRIVERS = ["tmc2130", "tmc2208", "tmc2209", "tmc2240", "tmc2660", "tmc5160"]
+TRINAMIC_DRIVERS = ["tmc2130", "tmc2208", "tmc2209", "tmc2240", "tmc2660", "tmc5160", "tmc5262"]    #TODO: add way to discover attached TMC driver for a motor
 
 class HomingPreciseCorexy:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
-        if config.getsection('printer').get('kinematics') != 'corexy':
+        if config.getsection('printer').get('kinematics', note_valid=False) != 'corexy':
             raise config.error("homing_precise_corexy: kinematics must be corexy!")
         self.xy_back_offset = config.getfloat('xy_back_offset', 5., above=0.)
         self.probe_before_delay = config.getfloat('diagonal_probe_before_delay', 0.1, minval=0)
@@ -58,10 +58,10 @@ class HomingPreciseCorexy:
         toolhead = self.printer.lookup_object('toolhead')
         homed_axes = toolhead.get_kinematics().get_status(0)['homed_axes']
         if 'x' not in homed_axes or 'y' not in homed_axes:
-            error = '{"coded": "0002-0528-0000-0010", "msg":"%s", "action": "pause"}' % ("Corexy precise homing aborted: Must home x and y axis first")
+            error = "Corexy precise homing aborted: Must home x and y axis first"
             raise self.printer.command_error(error)
 
-    def cal_backoff_position(self, move_offset_x, move_offset_y):
+    def calc_backoff_position(self, move_offset_x, move_offset_y):
         toolhead = self.printer.lookup_object('toolhead')
         corexy_rails = toolhead.get_kinematics().rails
         x_homing_info = corexy_rails[0].get_homing_info()
@@ -188,8 +188,6 @@ class HomingPreciseCorexy:
                         recv_steps = self.round_steps_to_multiples(recv_steps)
                         break
             return recv_steps, recv_dists, probe_success
-        except Exception as e:
-            raise
         finally:
             kin.set_ignore_check_move_limit(False)
 
@@ -197,22 +195,20 @@ class HomingPreciseCorexy:
                                 probe_start_x, probe_start_y, recv_steps, recv_dists):
         x, y = self.calc_position(c_dist_a*self.x_phases*self.x_step_dist,
                                 c_dist_b*self.y_phases*self.y_step_dist)
-        cal_x_position, cal_y_position = self.cal_backoff_position(x, y)
+        calc_x_position, calc_y_position = self.calc_backoff_position(x, y)
         results = [
                 "%.5f" % probe_start_x, "%.5f" % probe_start_y,
-                "%.5f" % cal_x_position, "%.5f" % cal_y_position,
+                "%.5f" % calc_x_position, "%.5f" % calc_y_position,
                 str(recv_steps),
                 ]
         results.extend(["%.5f" % c_dist_raw_a, "%.5f" % c_dist_raw_b])
         results.extend([str(c_dist_a), str(c_dist_b)])
         data_line = ", ".join(results) + "\n"
         self.gcode.respond_info(data_line)
-        # self.save_calibration_data(data_line)
-        return cal_x_position, cal_y_position
+        return calc_x_position, calc_y_position
 
     def precise_corexy_coord(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
-        # homing_xyz_override = self.printer.lookup_object('homing_xyz_override', None)
         kin = toolhead.get_kinematics()
         cur_max_accel = None
         home_unstable = False
@@ -221,7 +217,7 @@ class HomingPreciseCorexy:
             self.check_xy_is_homed()
             corexy_rails = toolhead.get_kinematics().rails
             # Move to the specified position, manual_move detects if the target position is out of range
-            x_position, y_position = self.cal_backoff_position(self.xy_back_offset, self.xy_back_offset)
+            x_position, y_position = self.calc_backoff_position(self.xy_back_offset, self.xy_back_offset)
             toolhead.manual_move([x_position, y_position, None], self.probe_retract_speed)
             toolhead.wait_moves()
             self.c_a_full_phase = None
@@ -244,7 +240,7 @@ class HomingPreciseCorexy:
                 if self.is_point_unstable([c_dist_a, c_dist_b]):
                     home_unstable = True
                     if home_unstable:
-                        error = '{"coded": "0003-0530-0000-0027", "msg":"%s", "action": "cancel"}' % ("Corexy home is unstable")
+                        error = "Corexy home is unstable"
                         raise self.printer.command_error(error)
                     else:
                         self.gcode.respond_info("Corexy home point is unstable")
@@ -255,7 +251,7 @@ class HomingPreciseCorexy:
 
                 # Check if calculated data is reasonable
                 if abs(cal_x_position - probe_start_x) > self.x_step_dist*self.x_phases*2 or abs(cal_y_position - probe_start_y) > self.y_step_dist*self.y_phases*2:
-                    error = '{"coded": "0002-0528-0000-0011", "msg":"%s", "action": "pause"}' % ("Corexy precise homing computed coordinate anomaly")
+                    error = "Corexy precise homing computed coordinate anomaly"
                     logging.info(f"Corexy precise homing: cal_x: {cal_x_position}, cal_y: {cal_y_position}, probe_x: {probe_start_x}, probe_y: {probe_start_y}")
                     logging.info(f"x_step_dist: {self.x_step_dist}, x_phases: {self.x_phases}, y_step_dist: {self.y_step_dist}, y_phases: {self.y_phases}")
                     raise self.printer.command_error(error)
@@ -264,7 +260,7 @@ class HomingPreciseCorexy:
                 pos[0], pos[1] = cal_x_position, cal_y_position
                 toolhead.set_position(pos)
             else:
-                error = '{"coded": "0002-0528-0000-0012", "msg":"%s", "action": "pause"}' % ("Corexy precise homing failed")
+                error = "Corexy precise homing failed"
                 raise self.printer.command_error(error)
 
         except Exception as e:

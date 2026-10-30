@@ -564,7 +564,7 @@ class TMCCommandHelper:
     def get_phase_offset(self):
         return self.mcu_phase_offset, self._get_phases()
 
-    def _query_phase(self):
+    def query_phase(self):
         field_name = "mscnt"
         if self.fields.lookup_register(field_name, None) is None:
             # TMC2660 uses MSTEP
@@ -576,7 +576,7 @@ class TMCCommandHelper:
         if stepper.get_name() != self.stepper_name:
             return
         try:
-            driver_phase = self._query_phase()
+            driver_phase = self.query_phase()
         except self.printer.command_error as e:
             logging.info("Unable to obtain tmc %s phase", self.stepper_name)
             self.mcu_phase_offset = None
