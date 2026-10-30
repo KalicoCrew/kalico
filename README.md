@@ -74,6 +74,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [homing: min_home_dist](https://github.com/KalicoCrew/kalico/pull/90)
 
+- [homing: precise_corexy_homing](https://github.com/KalicoCrew/kalico/pull/1049)
+
 - [virtual_sdcard: scanning of subdirectories](https://github.com/KalicoCrew/kalico/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
 
 - [retraction: z_hop while retracting](https://github.com/KalicoCrew/kalico/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
