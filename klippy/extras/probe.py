@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import NamedTuple, Optional, Protocol, Union, cast
 
@@ -39,81 +40,91 @@ MAX_CIRCLE_RETRIES: int = 6 * 3
 RAPID_SCAN_WINDOW_SIZE: float = 2.0
 
 
+@dataclass(frozen=True)
 class RetryPolicy:
     retry_speed: float
     bad_probe_retries: int
     bad_probe_strategy: RetryStrategy
     pattern_spacing: float
+    scrubber: GcodeNozzleScrubber
 
+
+class RetryPolicyFactory:
     def __init__(self, config: ConfigWrapper):
         speed = config.getfloat("speed", 5.0, above=0.0)
-        self._cfg_retry_speed: float = config.getfloat(
-            "retry_speed", speed, above=0.0
-        )
-        # Probe retry configuration
-        self._cfg_bad_probe_strategy = config.getchoice(
+        retry_speed = config.getfloat("retry_speed", speed, above=0.0)
+        strategy = config.getchoice(
             "bad_probe_strategy",
             {strat.name.lower(): strat for strat in RetryStrategy},
             RetryStrategy.RETRY.name.lower(),
         )
         max_retries = None
-        if self._cfg_bad_probe_strategy is RetryStrategy.CIRCLE:
+        if strategy is RetryStrategy.CIRCLE:
             max_retries = MAX_CIRCLE_RETRIES
-        self._cfg_bad_probe_retries = config.getint(
-            "bad_probe_retries", 6, minval=0, maxval=max_retries
+        self._defaults = RetryPolicy(
+            retry_speed=retry_speed,
+            bad_probe_retries=config.getint(
+                "bad_probe_retries", 6, minval=0, maxval=max_retries
+            ),
+            bad_probe_strategy=strategy,
+            pattern_spacing=config.getfloat("pattern_spacing", 2.0, above=0.0),
+            scrubber=GcodeNozzleScrubber(config),
         )
-        self._cfg_pattern_spacing = config.getfloat(
-            "pattern_spacing", 2.0, above=0.0
-        )
-        # initialize values from config
-        self.retry_speed = self._cfg_retry_speed
-        self.bad_probe_strategy = self._cfg_bad_probe_strategy
-        self.bad_probe_retries = self._cfg_bad_probe_retries
-        self.pattern_spacing = self._cfg_pattern_spacing
 
-    # update the settings from a GCode Command instance
-    def customize(self, gcmd: GCodeCommand):
-        self.retry_speed = gcmd.get_float(
-            "RETRY_SPEED", self._cfg_retry_speed, above=0.0
-        )
-        strategy_name = gcmd.get(
-            "BAD_PROBE_STRATEGY", self._cfg_bad_probe_strategy.name
-        )
-        self.bad_probe_strategy = RetryStrategy[strategy_name.upper()]
+    def customize(
+        self,
+        gcmd: GCodeCommand,
+        strategy: Optional[RetryStrategy] = None,
+    ) -> RetryPolicy:
+        """Create a policy from the config values updated by a GCode command.
+        A strategy override takes precedence over BAD_PROBE_STRATEGY."""
+        defaults = self._defaults
+        if strategy is None:
+            strategy_name = gcmd.get(
+                "BAD_PROBE_STRATEGY", defaults.bad_probe_strategy.name
+            )
+            strategy = RetryStrategy[strategy_name.upper()]
         max_retries = None
-        if self.bad_probe_strategy is RetryStrategy.CIRCLE:
+        if strategy is RetryStrategy.CIRCLE:
             max_retries = MAX_CIRCLE_RETRIES
-        self.bad_probe_retries = gcmd.get_int(
-            "BAD_PROBE_RETRIES",
-            self._cfg_bad_probe_retries,
-            minval=0,
-            maxval=max_retries,
-        )
-        self.pattern_spacing = gcmd.get_float(
-            "PATTERN_SPACING", self._cfg_pattern_spacing, above=0.0
+        return RetryPolicy(
+            retry_speed=gcmd.get_float(
+                "RETRY_SPEED", defaults.retry_speed, above=0.0
+            ),
+            bad_probe_retries=gcmd.get_int(
+                "BAD_PROBE_RETRIES",
+                defaults.bad_probe_retries,
+                minval=0,
+                maxval=max_retries,
+            ),
+            bad_probe_strategy=strategy,
+            pattern_spacing=gcmd.get_float(
+                "PATTERN_SPACING", defaults.pattern_spacing, above=0.0
+            ),
+            scrubber=defaults.scrubber,
         )
 
 
 class GcodeNozzleScrubberConfig:
-    scrubbing_frequency: int = 0
-    template: Template
-
     def __init__(self, config: ConfigWrapper):
+        self.template: Template
         gcode_macro = config.get_printer().load_object(config, "gcode_macro")
         self.template = gcode_macro.load_template(
             config, "nozzle_scrubber_gcode", ""
         )
-        self.scrubbing_frequency = self._cfg_scrubbing_frequency = (
-            config.getint("scrubbing_frequency", 0, minval=0)
+        self._cfg_scrubbing_frequency = config.getint(
+            "scrubbing_frequency", 0, minval=0
         )
 
-    def customize(self, gcmd: GCodeCommand):
-        self.scrubbing_frequency = gcmd.get_int(
+    def get_scrubbing_frequency(self, gcmd: GCodeCommand) -> int:
+        return gcmd.get_int(
             "SCRUBBING_FREQUENCY", self._cfg_scrubbing_frequency, minval=0
         )
 
 
 class GcodeNozzleScrubber:
+    is_scrubbing: bool = False
+
     def __init__(
         self,
         config: ConfigWrapper,
@@ -122,27 +133,36 @@ class GcodeNozzleScrubber:
         self.config = GcodeNozzleScrubberConfig(config)
 
     def clean_nozzle(self, gcmd: GCodeCommand, attempt, retries):
-        self.config.customize(gcmd)
         if not self.config.template:
             return
-        if attempt == 0 or self.config.scrubbing_frequency <= 0:
+        scrubbing_frequency = self.config.get_scrubbing_frequency(gcmd)
+        if attempt == 0 or scrubbing_frequency <= 0:
             return
-        if attempt % self.config.scrubbing_frequency != 0:
+        if attempt % scrubbing_frequency != 0:
             return
-        toolhead = self._printer.lookup_object("toolhead")
-        start_pos = toolhead.get_position()
-        context = self.config.template.create_template_context()
-        context["params"] = {
-            "ATTEMPT": attempt,
-            "RETRIES": retries,
-        }
-        self.config.template.run_gcode_from_command(context)
-        end_pos = toolhead.get_position()
-        if not start_pos[:3] == end_pos[:3]:
-            self._printer.command_error(
-                "Nozzle Scrubber GCode did not return to the start position. "
-                "(Hint: Use RESTORE_GCODE_STATE MOVE=1)"
+        if GcodeNozzleScrubber.is_scrubbing:
+            raise gcmd.error(
+                "Nozzle Scrubber GCode called itself."
+                " (Hint: Use BAD_PROBE_STRATEGY=IGNORE or FAIL)"
             )
+        try:
+            GcodeNozzleScrubber.is_scrubbing = True
+            toolhead = self._printer.lookup_object("toolhead")
+            start_pos = toolhead.get_position()
+            context = self.config.template.create_template_context()
+            context["params"] = {
+                "ATTEMPT": attempt,
+                "RETRIES": retries,
+            }
+            self.config.template.run_gcode_from_command(context)
+            end_pos = toolhead.get_position()
+            if not start_pos[:3] == end_pos[:3]:
+                raise gcmd.error(
+                    "Nozzle Scrubber GCode did not return to the start position. "
+                    "(Hint: Use RESTORE_GCODE_STATE MOVE=1)"
+                )
+        finally:
+            GcodeNozzleScrubber.is_scrubbing = False
 
 
 class ProbeRetryState:
@@ -186,9 +206,6 @@ class ProbeRetryState:
     def has_retries_remaining(self) -> bool:
         return self._bad_probe_count <= self.retry_policy.bad_probe_retries
 
-    def reset(self):
-        self._bad_probe_count = 0
-
     def get_attempt(self):
         return self._bad_probe_count
 
@@ -231,26 +248,17 @@ class ProbeRetryState:
 
 
 class RetrySession:
-    def __init__(self, config: ConfigWrapper):
-        self.retry_policy = RetryPolicy(config)
-        self._scrubber: GcodeNozzleScrubber = GcodeNozzleScrubber(config)
+    def __init__(self, retry_policy: RetryPolicy, gcmd: GCodeCommand):
+        self.retry_policy = retry_policy
+        self._gcmd: GCodeCommand = gcmd
         self._point_lookup: dict[tuple[float, float], ProbeRetryState] = {}
         self._pos: Optional[tuple[float, float]] = None
         self._quantized_pos: Optional[tuple[float, float]] = None
-        self._gcmd: Optional[GCodeCommand] = None
         self._retry_state: Optional[ProbeRetryState] = None
 
     @staticmethod
     def _quantize_position(pos: tuple[float, float]) -> tuple[float, float]:
         return round(pos[0], 1), round(pos[1], 1)
-
-    def start(self, gcmd: GCodeCommand):
-        self.retry_policy.customize(gcmd)
-        self._gcmd = gcmd
-
-    def end(self):
-        self._gcmd = self._pos = self._quantized_pos = self._retry_state = None
-        self._point_lookup.clear()
 
     def set_position(self, pos: list[float]) -> None:
         """Set the current ideal position being probed"""
@@ -280,18 +288,11 @@ class RetrySession:
 
     def scrub_nozzle(self):
         """Scrub nozzle based on attempts at the current position"""
-        self._scrubber.clean_nozzle(
+        self.retry_policy.scrubber.clean_nozzle(
             self._gcmd,
             self._retry_state.get_attempt(),
             self.retry_policy.bad_probe_retries,
         )
-
-    def reset_all(self):
-        for pos in self._point_lookup.values():
-            pos.reset()
-
-    def set_retry_strategy(self, retry_strategy: RetryStrategy) -> None:
-        self.retry_policy.bad_probe_strategy = retry_strategy
 
 
 class ProbeDistanceResult(NamedTuple):
@@ -441,7 +442,7 @@ class PrinterProbe:
         self.last_z_result = 0.0
         self.was_last_result_good = False
         self.gcode_move = self.printer.load_object(config, "gcode_move")
-        self.retry_session = RetrySession(config)
+        self.retry_policy_factory = RetryPolicyFactory(config)
         # Infer Z position to move to during a probe
         if config.has_section("stepper_z"):
             zconfig = config.getsection("stepper_z")
@@ -699,17 +700,29 @@ class PrinterProbe:
             "SAMPLES_TOLERANCE_RETRIES", self.samples_retries, minval=0
         )
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
+        # Initialize probe retry state
+        local_retry_session: RetrySession
+        if retry_session is None:
+            local_retry_session = RetrySession(
+                self.retry_policy_factory.customize(gcmd), gcmd
+            )
+            toolhead = self.printer.lookup_object("toolhead")
+            local_retry_session.set_position(toolhead.get_position())
+        else:
+            local_retry_session = retry_session
+        strategy = local_retry_session.retry_policy.bad_probe_strategy
+        # only allow FAIL or IGNORE probe strategy inside while scrubbing
+        if GcodeNozzleScrubber.is_scrubbing and strategy not in (
+            RetryStrategy.FAIL,
+            RetryStrategy.IGNORE,
+        ):
+            raise gcmd.error(
+                "Probing from the Nozzle Scrubber Gcode cannot use retries."
+                " (Hint: Use BAD_PROBE_STRATEGY=IGNORE or FAIL)"
+            )
         must_notify_multi_probe = not self.multi_probe_pending
         if must_notify_multi_probe:
             self.multi_probe_begin(always_restore_toolhead=True)
-        # Initialize probe retry state
-        if retry_session is None:
-            local_retry_session = self.retry_session
-            self.retry_session.start(gcmd)
-            toolhead = self.printer.lookup_object("toolhead")
-            self.retry_session.set_position(toolhead.get_position())
-        else:
-            local_retry_session: RetrySession = retry_session
         # save X and Y position
         toolhead = self.printer.lookup_object("toolhead")
         request_pos = toolhead.get_position()[:2]
@@ -733,8 +746,6 @@ class PrinterProbe:
                 self._retract(gcmd)
         if must_notify_multi_probe:
             self.multi_probe_end()
-        if retry_session is None:
-            self.retry_session.end()
         # Calculate and return result
         if samples_result == "median":
             return self._calc_median(positions)
@@ -798,20 +809,20 @@ class PrinterProbe:
         # Probe bed sample_count times
         self.multi_probe_begin(always_restore_toolhead=True)
         # Initialize probe retry state
-        self.retry_session.start(gcmd)
         # force FAIL behavior for PROBE_ACCURACY, never accept bad probes
-        self.retry_session.set_retry_strategy(RetryStrategy.FAIL)
-        self.retry_session.set_position(toolhead.get_position())
+        retry_session = RetrySession(
+            self.retry_policy_factory.customize(gcmd, RetryStrategy.FAIL), gcmd
+        )
+        retry_session.set_position(toolhead.get_position())
         positions = []
-        self._discard_first_result(speed, self.retry_session, gcmd)
+        self._discard_first_result(speed, retry_session, gcmd)
         while len(positions) < sample_count:
             # Probe position
-            pos = self._run_probe_with_retries(speed, self.retry_session, gcmd)
+            pos = self._run_probe_with_retries(speed, retry_session, gcmd)
             positions.append(pos)
             # Retract
             self._retract(gcmd)
         self.multi_probe_end()
-        self.retry_session.end()
         # Calculate maximum, minimum and average values
         max_value = max([p[2] for p in positions])
         min_value = min([p[2] for p in positions])
@@ -1029,7 +1040,8 @@ class ProbePointsHelper:
         self.enforce_lift_speed = config.getboolean("enforce_lift_speed", False)
 
         # Probe retry configuration
-        self.retry_session = RetrySession(config)
+        self.retry_policy_factory = RetryPolicyFactory(config)
+        self._active_retry_session: Optional[RetrySession] = None
         # Internal probing state
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
@@ -1087,8 +1099,8 @@ class ProbePointsHelper:
         if self.use_offsets:
             nextpos[0] -= self.probe_offsets[0]
             nextpos[1] -= self.probe_offsets[1]
-        self.retry_session.set_position(nextpos)
-        return self.retry_session.get_probe_position()
+        self._active_retry_session.set_position(nextpos)
+        return self._active_retry_session.get_probe_position()
 
     def _move_next(self):
         toolhead = self.printer.lookup_object("toolhead")
@@ -1124,8 +1136,9 @@ class ProbePointsHelper:
         return False
 
     def start_probe(self, gcmd: GCodeCommand):
-        self.retry_session.start(gcmd)
-        self.retry_session.reset_all()
+        self._active_retry_session = RetrySession(
+            self.retry_policy_factory.customize(gcmd), gcmd
+        )
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
         plist = ProbeList.get_list(self.printer)
@@ -1183,11 +1196,10 @@ class ProbePointsHelper:
             done = self._move_next()
             if done:
                 break
-            pos = probe.run_probe(gcmd, self.retry_session)
+            pos = probe.run_probe(gcmd, self._active_retry_session)
             logging.info(f"Probe pos:{pos}")
             self._store_probe_result(pos)
         probe.multi_probe_end()
-        self.retry_session.end()
 
     def _start_rapid_scan(self, gcmd: GCodeCommand, probe: PrinterProbe):
         toolhead: ToolHead = self.printer.lookup_object("toolhead")
@@ -1325,7 +1337,6 @@ class ProbePointsHelper:
                 )
 
         probe.multi_probe_end()
-        self.retry_session.end()
 
     def _generate_rapid_path(self) -> list[tuple[tuple[float, float], bool]]:
         # TODO: When changing direction, add an arc where the points don't capture
