@@ -123,6 +123,13 @@ A collection of Kalico-specific system options
 #endstop_sample_count: 4
 #   How many times we should check the endstop state when homing
 #   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
+#ignore_non_critical_endstop_disconnect: False
+#   When set to True, endstops on a disconnected `is_non_critical` mcu that
+#   are listed in a [non_critical_endstop_disconnect_values] section report
+#   their configured synthetic state when queried (QUERY_ENDSTOPS, M119,
+#   filament sensors built on endstops, etc.) instead of raising an error.
+#   Homing with such an endstop always raises an error. Endstops that are
+#   not listed keep raising an error. The default is False.
 
 # Extruder safety limit overrides:
 #override_pressure_advance_smooth_time_max: 0.200
@@ -161,6 +168,44 @@ A collection of Kalico-specific system options
 #log_serial_reader_warnings: True
 #log_startup_info: True
 #log_webhook_method_register_messages: False
+```
+
+### ⚠️ [non_critical_endstop_disconnect_values]
+
+Synthetic endstop states used while the mcu providing an endstop is a
+disconnected `is_non_critical` mcu. Only used when
+`ignore_non_critical_endstop_disconnect` is enabled in
+[danger_options](#danger-options). Only endstops explicitly listed here
+receive a fallback state; every other endstop on a disconnected mcu
+still raises an error. The fallback only applies to endstop queries -
+homing on a disconnected mcu is always rejected.
+
+```
+[non_critical_endstop_disconnect_values]
+#<endstop_name>: open
+#   The state an endstop reports while its mcu is disconnected, one of
+#   `open` (also `false` or `0`) or `triggered` (also `closed`, `true`
+#   or `1`). Use the name reported by QUERY_ENDSTOPS (for example `x`
+#   for the [stepper_x] endstop, or `mmu_gear_0`).
+#open:
+#triggered:
+#   Alternatively, list endstops by state: a comma and/or newline
+#   separated list of names exactly as reported by QUERY_ENDSTOPS. This
+#   form is required for names containing ':' (for example
+#   `mmu:filament_tension`) or upper case letters, since those cannot
+#   be used as option names. Both forms can be combined.
+#   An unknown endstop name, an invalid value, or an endstop configured
+#   as both open and triggered is a config error.
+```
+
+For example:
+
+```
+[non_critical_endstop_disconnect_values]
+x: open
+mmu_gear_0: triggered
+open: mmu:mmu_shared_exit, mmu:filament_compression
+triggered: mmu:filament_tension
 ```
 
 ## ⚠️ Configuration references
