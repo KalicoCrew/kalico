@@ -382,9 +382,8 @@ When a bad quality tap is detected a specific error code is logged. Most of thes
 | `TAP_BREAK_CONTACT_TOO_EARLY` | Break-contact detected too early in the pullback move                      | The `pullback_distance` is too long.                                                                                |
 | `TAP_BREAK_CONTACT_TOO_LATE`  | Break-contact is detected too late in the pullback move                    | The `pullback_distance` is too short.                                                                               |
 | `TAP_PULLBACK_TOO_SHORT`      | The nozzle never broke contact with the bed during the pullback move       | The `pullback_distance` is too short.                                                                               |
-| `COASTING_MOVE_ACCELERATION`  | The probing move started to decelerate before the probe triggered          | Z is not configured with a negative `min_position` to allow the probe to move below z=0. e.g.: `position_min: -5`.  |
-| `TOO_FEW_PROBING_MOVES`       | Fewer trapezoidal moves than expected                                      | This is uncommon                                                                                                    |
-| `TOO_MANY_PROBING_MOVES`      | More trapezoidal moves than expected                                       | This is uncommon                                                                                                    |
+| `INSUFFICIENT_Z_TRAVEL`       | The probe decelerated before it triggered                                  | Z is not configured with a negative `position_min` to allow the probe to move below z=0. e.g.: `position_min: -5`.  |
+| `UNEXPECTED_ERROR`            | The probing moves were not what the tap analysis expected. The error message says which part was unexpected. | This is uncommon. Please report it with the `Bad tap detected` and `Trapezoidal Movement Queue` lines from `klippy.log`.  |
 
 #### Tap Quality
 
