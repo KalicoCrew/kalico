@@ -214,12 +214,12 @@ class BLTouchEndstopWrapper:
             self.gcode.respond_info(msg + "; retrying.")
             self.send_cmd("reset", duration=RETRY_RESET_TIME)
 
-    def multi_probe_begin(self):
+    def multi_probe_begin(self, context):
         if self.stow_on_each_sample:
             return
         self.multi = "FIRST"
 
-    def multi_probe_end(self):
+    def multi_probe_end(self, context):
         if self.stow_on_each_sample:
             return
         self.sync_print_time()
