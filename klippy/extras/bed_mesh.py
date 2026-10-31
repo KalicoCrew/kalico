@@ -30,6 +30,95 @@ class BedMeshError(Exception):
     pass
 
 
+def verify_mesh_algorithm(params, error, algorithms=("lagrange", "bicubic")):
+    """Validate interpolation settings, updating the selected algorithm in place.
+
+    Geometry bounds are not needed, so calibration can use this before it has
+    probe results. Callers loading saved meshes may also allow 'direct'.
+    """
+    x_pps = params["mesh_x_pps"]
+    y_pps = params["mesh_y_pps"]
+    if params["algo"] not in algorithms:
+        raise error("bed_mesh: Unknown algorithm <%s>" % (params["algo"]))
+    # Check the algorithm against the current configuration
+    max_probe_cnt = max(params["x_count"], params["y_count"])
+    min_probe_cnt = min(params["x_count"], params["y_count"])
+    if max(x_pps, y_pps) == 0:
+        # Interpolation disabled
+        params["algo"] = "direct"
+    elif params["algo"] == "lagrange" and max_probe_cnt > 6:
+        # Lagrange interpolation tends to oscillate when using more
+        # than 6 samples
+        raise error(
+            "bed_mesh: cannot exceed a probe_count of 6 when using "
+            "lagrange interpolation. Configured Probe Count: %d, %d"
+            % (params["x_count"], params["y_count"])
+        )
+    elif params["algo"] == "bicubic" and min_probe_cnt < 4:
+        if max_probe_cnt > 6:
+            raise error(
+                "bed_mesh: invalid probe_count option when using bicubic "
+                "interpolation.  Combination of 3 points on one axis with "
+                "more than 6 on another is not permitted. "
+                "Configured Probe Count: %d, %d"
+                % (params["x_count"], params["y_count"])
+            )
+        else:
+            logging.info(
+                "bed_mesh: bicubic interpolation with a probe_count of "
+                "less than 4 points detected.  Forcing lagrange "
+                "interpolation. Configured Probe Count: %d, %d"
+                % (params["x_count"], params["y_count"])
+            )
+            params["algo"] = "lagrange"
+
+
+def verify_mesh_params(params, error):
+    """Validate a complete ZMesh parameter set, including saved mesh geometry."""
+    if not all(
+        math.isfinite(v) for v in params.values() if isinstance(v, (int, float))
+    ):
+        raise error("Mesh parameters must be finite")
+    minimum_count = 2 if params["algo"] == "direct" else 3
+    if (
+        params["max_x"] <= params["min_x"]
+        or params["max_y"] <= params["min_y"]
+        or min(params["x_count"], params["y_count"]) < minimum_count
+        or min(params["mesh_x_pps"], params["mesh_y_pps"]) < 0
+        or not 0.0 <= params["tension"] <= 2.0
+    ):
+        raise error("Invalid mesh parameters")
+    if (
+        params["algo"] == "direct"
+        and max(params["mesh_x_pps"], params["mesh_y_pps"]) != 0
+    ):
+        raise error("Direct meshes require mesh_pps: 0")
+    verify_mesh_algorithm(params, error, ("lagrange", "bicubic", "direct"))
+
+
+def pad_round_mesh(probed_matrix, x_count, error):
+    """Pad centered circular mesh rows in place by repeating their edge samples.
+
+    Each row must contain an odd number of samples. The caller validates the
+    final matrix dimensions before building a ZMesh.
+    """
+    for row in probed_matrix:
+        row_size = len(row)
+        if not row_size & 1:
+            # an even number of points in a row shouldn't be possible
+            msg = "bed_mesh: incorrect number of points sampled on X\n"
+            msg += "Probed Table:\n"
+            msg += str(probed_matrix)
+            raise error(msg)
+        buf_cnt = (x_count - row_size) // 2
+        if buf_cnt == 0:
+            continue
+        left_buffer = [row[0]] * buf_cnt
+        right_buffer = [row[row_size - 1]] * buf_cnt
+        row[0:0] = left_buffer
+        row.extend(right_buffer)
+
+
 # PEP 485 isclose()
 def isclose(a, b, rel_tol=1e-09, abs_tol=0.0):
     return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
@@ -741,44 +830,7 @@ class BedMeshCalibrate:
         self._verify_algorithm(config.error)
 
     def _verify_algorithm(self, error):
-        params = self.mesh_config
-        x_pps = params["mesh_x_pps"]
-        y_pps = params["mesh_y_pps"]
-        if params["algo"] not in self.ALGOS:
-            raise error(
-                "bed_mesh: Unknown algorithm <%s>" % (self.mesh_config["algo"])
-            )
-        # Check the algorithm against the current configuration
-        max_probe_cnt = max(params["x_count"], params["y_count"])
-        min_probe_cnt = min(params["x_count"], params["y_count"])
-        if max(x_pps, y_pps) == 0:
-            # Interpolation disabled
-            self.mesh_config["algo"] = "direct"
-        elif params["algo"] == "lagrange" and max_probe_cnt > 6:
-            # Lagrange interpolation tends to oscillate when using more
-            # than 6 samples
-            raise error(
-                "bed_mesh: cannot exceed a probe_count of 6 when using "
-                "lagrange interpolation. Configured Probe Count: %d, %d"
-                % (self.mesh_config["x_count"], self.mesh_config["y_count"])
-            )
-        elif params["algo"] == "bicubic" and min_probe_cnt < 4:
-            if max_probe_cnt > 6:
-                raise error(
-                    "bed_mesh: invalid probe_count option when using bicubic "
-                    "interpolation.  Combination of 3 points on one axis with "
-                    "more than 6 on another is not permitted. "
-                    "Configured Probe Count: %d, %d"
-                    % (self.mesh_config["x_count"], self.mesh_config["y_count"])
-                )
-            else:
-                logging.info(
-                    "bed_mesh: bicubic interpolation with a probe_count of "
-                    "less than 4 points detected.  Forcing lagrange "
-                    "interpolation. Configured Probe Count: %d, %d"
-                    % (self.mesh_config["x_count"], self.mesh_config["y_count"])
-                )
-                params["algo"] = "lagrange"
+        verify_mesh_algorithm(self.mesh_config, error, self.ALGOS)
 
     def set_adaptive_mesh(self, gcmd):
         if not gcmd.get_int("ADAPTIVE", 0):
@@ -1104,21 +1156,7 @@ class BedMeshCalibrate:
 
         if self.radius is not None:
             # round bed, extrapolate probed values to create a square mesh
-            for row in probed_matrix:
-                row_size = len(row)
-                if not row_size & 1:
-                    # an even number of points in a row shouldn't be possible
-                    msg = "bed_mesh: incorrect number of points sampled on X\n"
-                    msg += "Probed Table:\n"
-                    msg += str(probed_matrix)
-                    raise self.gcode.error(msg)
-                buf_cnt = (x_cnt - row_size) // 2
-                if buf_cnt == 0:
-                    continue
-                left_buffer = [row[0]] * buf_cnt
-                right_buffer = [row[row_size - 1]] * buf_cnt
-                row[0:0] = left_buffer
-                row.extend(right_buffer)
+            pad_round_mesh(probed_matrix, x_cnt, self.gcode.error)
 
         #  make sure that the x-axis is the correct length
         for row in probed_matrix:

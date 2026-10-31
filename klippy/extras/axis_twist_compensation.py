@@ -1,413 +1,602 @@
-# Axis Twist Compensation
+# Map-based probe location bias compensation
 #
-# Copyright (C) 2022  Jeremy Tan <jeremytkw98@gmail.com>
+# Copyright (C) 2022 Jeremy Tan <jeremytkw98@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import math
 
-from klippy.extras.probe import ProbeList
+from . import bed_mesh
+from . import probe as probe_module
 
-from . import bed_mesh, manual_probe
+MESH_VERSION = 1
 
-DEFAULT_SAMPLE_COUNT = 3
-DEFAULT_SPEED = 50.0
-DEFAULT_HORIZONTAL_MOVE_Z = 5.0
+
+class CompensationMesh:
+    """Calibration layout and interpolation, independent of bed leveling."""
+
+    def __init__(self, config):
+        self.radius = config.getfloat("mesh_radius", None, above=0.0)
+        if self.radius is None:
+            minimum = config.getfloatlist("mesh_min", count=2)
+            maximum = config.getfloatlist("mesh_max", count=2)
+            x_count, y_count = bed_mesh.parse_config_pair(
+                config, "probe_count", 3, minval=3
+            )
+            origin = (0.0, 0.0)
+        else:
+            self.radius = math.floor(self.radius * 10) / 10
+            origin = config.getfloatlist("mesh_origin", (0.0, 0.0), count=2)
+            x_count = y_count = config.getint("round_probe_count", 5, minval=3)
+            if not x_count & 1:
+                raise config.error("round_probe_count must be odd")
+            minimum = (-self.radius, -self.radius)
+            maximum = (self.radius, self.radius)
+        if any(b <= a for a, b in zip(minimum, maximum)):
+            raise config.error("Invalid compensation mesh bounds")
+        dx = math.floor((maximum[0] - minimum[0]) / (x_count - 1) * 100) / 100
+        dy = math.floor((maximum[1] - minimum[1]) / (y_count - 1) * 100) / 100
+        if min(dx, dy) < 1.0:
+            raise config.error(
+                "Compensation mesh points must be at least 1mm apart"
+            )
+        if self.radius is not None:
+            dy = dx
+            radius = (x_count // 2) * dx
+            minimum = (-radius, -radius)
+        min_x, min_y = (a + b for a, b in zip(minimum, origin))
+        pps = bed_mesh.parse_config_pair(config, "mesh_pps", 2, minval=0)
+        self.params = {
+            "min_x": min_x,
+            "max_x": min_x + (x_count - 1) * dx,
+            "min_y": min_y,
+            "max_y": min_y + (y_count - 1) * dy,
+            "x_count": x_count,
+            "y_count": y_count,
+            "mesh_x_pps": pps[0],
+            "mesh_y_pps": pps[1],
+            "algo": config.get("algorithm", "lagrange").strip().lower(),
+            "tension": config.getfloat(
+                "bicubic_tension", 0.2, minval=0.0, maxval=2.0
+            ),
+        }
+        bed_mesh.verify_mesh_params(self.params, config.error)
+        self.settings = {
+            "mesh_pps": pps,
+            "algorithm": config.get("algorithm", "lagrange").strip().lower(),
+            "bicubic_tension": self.params["tension"],
+        }
+        if self.radius is None:
+            self.settings.update(
+                mesh_min=minimum,
+                mesh_max=maximum,
+                probe_count=(x_count, y_count),
+            )
+        else:
+            self.settings.update(
+                mesh_radius=self.radius,
+                mesh_origin=origin,
+                round_probe_count=x_count,
+            )
+        self.points = []
+        self.indices = []
+        for y in range(y_count):
+            columns = range(x_count) if not y % 2 else reversed(range(x_count))
+            for x in columns:
+                px, py = min_x + x * dx, min_y + y * dy
+                if (
+                    self.radius is not None
+                    and math.hypot(minimum[0] + x * dx, minimum[1] + y * dy)
+                    > self.radius + 1.0e-9
+                ):
+                    continue
+                self.points.append((px, py))
+                self.indices.append((y, x))
+
+    @staticmethod
+    def build(params, points, name, error):
+        if (
+            len(points) != params["y_count"]
+            or any(len(row) != params["x_count"] for row in points)
+            or any(not math.isfinite(z) for row in points for z in row)
+        ):
+            raise error("Invalid compensation mesh points")
+        mesh = bed_mesh.ZMesh(dict(params), name)
+        try:
+            mesh.build_mesh(points)
+        except bed_mesh.BedMeshError as e:
+            raise error(str(e))
+        return mesh
+
+    def build_difference(self, target, reference, name, error):
+        if len(target) != len(self.points) or len(reference) != len(
+            self.points
+        ):
+            raise error("Incomplete compensation calibration")
+        differences = [r - t for t, r in zip(target, reference)]
+        mean = sum(differences) / len(differences)
+        rows = [
+            [None] * self.params["x_count"]
+            for _ in range(self.params["y_count"])
+        ]
+        for (y, x), value in zip(self.indices, differences):
+            rows[y][x] = value - mean
+        if self.radius is not None:
+            rows = [
+                [value for value in row if value is not None] for row in rows
+            ]
+            bed_mesh.pad_round_mesh(rows, self.params["x_count"], error)
+        return self.build(self.params, rows, name, error)
+
+
+class _CalibrationConfig:
+    """Read target-specific settings with base-section defaults."""
+
+    def __init__(self, config, base):
+        self.config = config
+        self.base = base
+
+    def __getattr__(self, name):
+        option_getters = (
+            "get",
+            "getint",
+            "getfloat",
+            "getboolean",
+            "getchoice",
+            "getlist",
+            "getlists",
+            "getintlist",
+            "getfloatlist",
+        )
+        if name not in option_getters:
+            return getattr(self.config, name)
+
+        def get(option, *args, **kwargs):
+            source = self.config
+            # Explicit rectangular bounds replace a base circular layout.
+            rectangular = option == "mesh_radius" and any(
+                self.config.get(key, None) is not None
+                for key in ("mesh_min", "mesh_max")
+            )
+            if not rectangular and self.config.get(option, None) is None:
+                source = self.base
+            return getattr(source, name)(option, *args, **kwargs)
+
+        return get
+
+
+_MOVEMENT_OPTIONS = (
+    "speed",
+    "horizontal_move_z",
+    "horizontal_z_clearance",
+    "adaptive_horizontal_move_z",
+    "min_horizontal_move_z",
+    "alternate_probe_direction",
+    "start_reverse",
+)
+_SHARED_OPTIONS = (
+    "reference_probe",
+    "mesh_min",
+    "mesh_max",
+    "probe_count",
+    "mesh_radius",
+    "mesh_origin",
+    "round_probe_count",
+    "mesh_pps",
+    "algorithm",
+    "bicubic_tension",
+    "use_probe_xy_offsets",
+    *_MOVEMENT_OPTIONS,
+)
+
+
+_LEGACY_OPTIONS = (
+    "z_compensations",
+    "compensation_start_x",
+    "compensation_end_x",
+    "zy_compensations",
+    "compensation_start_y",
+    "compensation_end_y",
+    "calibrate_start_x",
+    "calibrate_end_x",
+    "calibrate_y",
+    "calibrate_start_y",
+    "calibrate_end_y",
+    "calibrate_x",
+)
+
+
+def _import_legacy_mesh(config, selected_probe):
+    curves = []
+    for axis, option in (("x", "z_compensations"), ("y", "zy_compensations")):
+        values = config.getlists(option, [], parser=float)
+        if not values:
+            curves.append(None)
+            continue
+        start = config.getfloat("compensation_start_" + axis, None)
+        end = config.getfloat("compensation_end_" + axis, None)
+        if start is None or end is None:
+            raise config.error(
+                option
+                + " requires compensation_start_"
+                + axis
+                + " and compensation_end_"
+                + axis
+            )
+        if (
+            len(values) < 2
+            or start == end
+            or not all(math.isfinite(v) for v in [start, end, *values])
+        ):
+            raise config.error("Invalid " + option)
+        if end < start:
+            start, end, values = end, start, values[::-1]
+        curves.append((start, (end - start) / (len(values) - 1), values))
+    if not any(curves):
+        return None
+    printer = config.get_printer()
+    toolhead = printer.lookup_object("toolhead")
+    status = toolhead.get_kinematics().get_status(
+        printer.get_reactor().monotonic()
+    )
+    minimum, maximum = status["axis_minimum"], status["axis_maximum"]
+    coordinates, corrections = [], []
+    for axis, curve in enumerate(curves):
+        low, high = minimum[axis], maximum[axis]
+        if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+            raise config.error(
+                "Legacy compensation requires finite XY work-area bounds"
+            )
+        if curve is None:
+            coordinates.append([low, high])
+            corrections.append([0.0, 0.0])
+            continue
+        start, spacing, values = curve
+        first = math.floor((low - start) / spacing)
+        last = math.ceil((high - start) / spacing)
+        coordinates.append(
+            [start + index * spacing for index in range(first, last + 1)]
+        )
+        # Preserve the old sample lattice, including linear edge extension.
+        axis_values = []
+        for index in range(first, last + 1):
+            edge = max(0, min(index, len(values) - 2))
+            axis_values.append(
+                values[edge]
+                + (index - edge) * (values[edge + 1] - values[edge])
+            )
+        corrections.append(axis_values)
+    offsets = selected_probe.get_offsets()
+    params = {
+        "min_x": coordinates[0][0] + offsets[0],
+        "max_x": coordinates[0][-1] + offsets[0],
+        "min_y": coordinates[1][0] + offsets[1],
+        "max_y": coordinates[1][-1] + offsets[1],
+        "x_count": len(coordinates[0]),
+        "y_count": len(coordinates[1]),
+        "mesh_x_pps": 0,
+        "mesh_y_pps": 0,
+        "algo": "direct",
+        "tension": 0.2,
+    }
+    bed_mesh.verify_mesh_params(params, config.error)
+    return CompensationMesh.build(
+        params,
+        [[x + y for x in corrections[0]] for y in corrections[1]],
+        "axis_twist_compensation " + selected_probe.probe_name,
+        config.error,
+    )
+
+
+class Calibration:
+    def __init__(self, config, compensation):
+        self.compensation = compensation
+        self.printer = compensation.printer
+        self.layout = CompensationMesh(config)
+        # Saved 'points' are a Z matrix, not an override for the generated XY list.
+        if config.get("calibration_points", None) is not None:
+            raise config.error(
+                "Calibration points are generated from mesh settings"
+            )
+        self.config = config
+        self.helper = self.create_helper(self.layout.points)
+        self.completion = None
+        self.previous_mesh = None
+        for event in (
+            "gcode:command_error",
+            "klippy:shutdown",
+            "klippy:disconnect",
+        ):
+            self.printer.register_event_handler(event, self.cancel)
+
+    def create_helper(self, points, completion=None):
+        helper = probe_module.ProbePointsHelper(
+            self.config,
+            default_points=points,
+            option_name="calibration_points",
+            use_offsets=True,
+            enable_horizontal_z_clearance=True,
+            completion=completion,
+        )
+        helper.use_xy_offsets(True)
+        return helper
+
+    def is_calibrating(self):
+        return self.completion is not None and not self.completion.test()
+
+    def start(self, gcmd, reference_probe):
+        if self.is_calibrating():
+            raise gcmd.error("An axis twist calibration is already in progress")
+        layout = self.layout
+        self.printer.lookup_object("manual_probe").verify_no_manual_probe()
+        self.gcmd = gcmd
+        self.completion = completion = self.printer.get_reactor().completion()
+        self.previous_mesh = self.compensation.mesh
+        self.compensation.mesh = None
+        try:
+            target = self.measure_mesh(gcmd, self.compensation.probe, layout)
+            if completion.test() or target is None:
+                raise gcmd.error("Axis twist compensation calibration aborted")
+            target = self.get_values(gcmd, target, layout)
+            reference = self.measure_mesh(gcmd, reference_probe, layout)
+            self.finish(gcmd, target, reference, completion, reference_probe)
+        except Exception:
+            self.cancel()
+            raise
+
+    def measure_mesh(self, gcmd, selected_probe, layout):
+        """Measure one complete mesh using the selected probe."""
+        params = dict(gcmd.get_command_parameters())
+        probe_name = selected_probe.probe_name
+        params["METHOD"] = "automatic"
+        params["PROBE"] = probe_name
+        command = gcmd.create_subcommand(
+            gcmd.get_command(),
+            gcmd.get_commandline(),
+            params,
+        )
+        gcmd.respond_info(
+            "Axis twist compensation: measuring %s mesh" % probe_name
+        )
+        completion = self.printer.get_reactor().completion()
+        self.helper = self.create_helper(layout.points, completion)
+        self.helper.start_probe(command)
+        if completion.test():
+            result = completion.wait()
+        else:
+            result = gcmd.run_without_gcode_lock(completion.wait)
+        if result is None:
+            raise gcmd.error("Probe calibration aborted")
+        return result
+
+    def get_values(self, gcmd, result, layout):
+        offsets, positions = result
+        if len(positions) != len(layout.points):
+            raise gcmd.error("Incomplete compensation calibration")
+        values = []
+        for expected, measured in zip(layout.points, positions):
+            if any(
+                abs(expected[i] - measured[i] - offsets[i]) > 0.1
+                for i in (0, 1)
+            ):
+                raise gcmd.error("Compensation calibration point mismatch")
+            value = measured[2] - offsets[2]
+            if not math.isfinite(value):
+                raise gcmd.error("Non-finite compensation calibration result")
+            values.append(value)
+        return values
+
+    def finish(self, gcmd, target, reference, completion, reference_probe):
+        layout = self.layout
+        if (
+            self.completion is not completion
+            or completion.test()
+            or reference is None
+        ):
+            raise gcmd.error("Axis twist compensation calibration aborted")
+        mesh = layout.build_difference(
+            target,
+            self.get_values(gcmd, reference, layout),
+            self.compensation.name,
+            gcmd.error,
+        )
+        self.compensation.save(mesh, reference_probe.probe_name, layout)
+        self.compensation.mesh_reference_name = reference_probe.probe_name
+        self.compensation.mesh = mesh
+        self.previous_mesh = None
+        completion.complete(mesh)
+        gcmd.respond_info(
+            "Axis twist compensation calibration complete. "
+            "The map is active; run SAVE_CONFIG to persist it."
+        )
+
+    def cancel(self):
+        if self.is_calibrating():
+            self.compensation.mesh = self.previous_mesh
+            self.previous_mesh = None
+            self.completion.complete(None)
+            self.helper.cancel()
+            self.gcmd.respond_info(
+                "Axis twist compensation calibration aborted"
+            )
 
 
 class AxisTwistCompensation:
     def __init__(self, config):
-        # get printer
         self.printer = config.get_printer()
-        self.gcode = self.printer.lookup_object("gcode")
-
-        # get values from [axis_twist_compensation] section in printer .cfg
-        self.horizontal_move_z = config.getfloat(
-            "horizontal_move_z", DEFAULT_HORIZONTAL_MOVE_Z
-        )
-        self.speed = config.getfloat("speed", DEFAULT_SPEED)
-        self.calibrate_start_x = config.getfloat("calibrate_start_x")
-        self.calibrate_end_x = config.getfloat("calibrate_end_x")
-        self.calibrate_y = config.getfloat("calibrate_y")
-        self.z_compensations = config.getlists(
-            "z_compensations", default=[], parser=float
-        )
-        self.compensation_start_x = config.getfloat(
-            "compensation_start_x", default=None
-        )
-        self.compensation_end_x = config.getfloat(
-            "compensation_end_x", default=None
-        )
-
-        self.calibrate_start_y = config.getfloat(
-            "calibrate_start_y", default=None
-        )
-        self.calibrate_end_y = config.getfloat("calibrate_end_y", default=None)
-        self.calibrate_x = config.getfloat("calibrate_x", default=None)
-        self.compensation_start_y = config.getfloat(
-            "compensation_start_y", default=None
-        )
-        self.compensation_end_y = config.getfloat(
-            "compensation_end_y", default=None
-        )
-        self.zy_compensations = config.getlists(
-            "zy_compensations", default=[], parser=float
-        )
-
-        # validate that compensation values have required start/end points
-        if self.z_compensations:
-            if (
-                self.compensation_start_x is None
-                or self.compensation_end_x is None
-            ):
-                raise config.error(
-                    "z_compensations requires compensation_start_x and "
-                    "compensation_end_x to be set"
-                )
-        if self.zy_compensations:
-            if (
-                self.compensation_start_y is None
-                or self.compensation_end_y is None
-            ):
-                raise config.error(
-                    "zy_compensations requires compensation_start_y and "
-                    "compensation_end_y to be set"
-                )
-
-        # setup calibrater
-        self.calibrater = Calibrater(self, config)
-
-    def get_z_compensation_value(self, pos):
-        total_interpolated_z_compensation = 0
-
-        if self.z_compensations:
-            total_interpolated_z_compensation += (
-                self._get_interpolated_z_compensation(
-                    pos[0],
-                    self.z_compensations,
-                    self.compensation_start_x,
-                    self.compensation_end_x,
-                )
-            )
-
-        if self.zy_compensations:
-            total_interpolated_z_compensation += (
-                self._get_interpolated_z_compensation(
-                    pos[1],
-                    self.zy_compensations,
-                    self.compensation_start_y,
-                    self.compensation_end_y,
-                )
-            )
-
-        return total_interpolated_z_compensation
-
-    def _get_interpolated_z_compensation(
-        self, coord, z_compensations, comp_start, comp_end
-    ):
-        sample_count = len(z_compensations)
-        spacing = (comp_end - comp_start) / (sample_count - 1)
-        interpolate_t = (coord - comp_start) / spacing
-        interpolate_i = int(math.floor(interpolate_t))
-        interpolate_i = bed_mesh.constrain(interpolate_i, 0, sample_count - 2)
-        interpolate_t -= interpolate_i
-        interpolated_z_compensation = bed_mesh.lerp(
-            interpolate_t,
-            z_compensations[interpolate_i],
-            z_compensations[interpolate_i + 1],
-        )
-        return interpolated_z_compensation
-
-    def clear_compensations(self, axis=None):
-        if axis is None:
-            self.z_compensations = []
-            self.zy_compensations = []
-        elif axis == "X":
-            self.z_compensations = []
-        elif axis == "Y":
-            self.zy_compensations = []
-
-
-class Calibrater:
-    def __init__(self, compensation, config):
-        # setup self attributes
-        self.compensation = compensation
-        self.printer = compensation.printer
-        self.gcode = self.printer.lookup_object("gcode")
-        self.probe = None
-        # probe settings are set to none, until they are available
-        self.lift_speed, self.probe_x_offset, self.probe_y_offset, _ = (
-            None,
-            None,
-            None,
-            None,
-        )
-        self.speed = compensation.speed
-        self.horizontal_move_z = compensation.horizontal_move_z
-        self.x_start_point = (
-            compensation.calibrate_start_x,
-            compensation.calibrate_y,
-        )
-        self.x_end_point = (
-            compensation.calibrate_end_x,
-            compensation.calibrate_y,
-        )
-        self.y_start_point = (
-            compensation.calibrate_x,
-            compensation.calibrate_start_y,
-        )
-        self.y_end_point = (
-            compensation.calibrate_x,
-            compensation.calibrate_end_y,
-        )
-        self.results = None
-        self.current_point_index = None
-        self.gcmd = None
-        self.configname = config.get_name()
-
-        # register gcode handlers
-        self._register_gcode_handlers()
-
-    def _register_gcode_handlers(self):
-        # register gcode handlers
-        self.gcode = self.printer.lookup_object("gcode")
-        self.gcode.register_command(
+        self.config = config
+        self.probe_list = self.printer.lookup_object("probe_list")
+        self.maps = {}
+        for option in (*_SHARED_OPTIONS, *_LEGACY_OPTIONS):
+            config.get(option, None)
+        self.printer.lookup_object("gcode").register_command(
             "AXIS_TWIST_COMPENSATION_CALIBRATE",
-            self.cmd_AXIS_TWIST_COMPENSATION_CALIBRATE,
-            desc=self.cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_help,
+            self.cmd_CALIBRATE,
+            desc="Calibrate a probe compensation mesh against a reference mesh",
+        )
+        self.printer.register_event_handler(
+            "klippy:connect", self._handle_connect
         )
 
-    cmd_AXIS_TWIST_COMPENSATION_CALIBRATE_help = """
-    Performs the x twist calibration wizard
-    Measure z probe offset at n points along the x axis,
-    and calculate x twist compensation
-    """
+    def _handle_connect(self):
+        for compensation in self.maps.values():
+            compensation.handle_connect()
+        selected = self.probe_list.get_default_probe()
+        if selected is None:
+            return
+        compensation = self.maps.get(selected.probe_name)
+        if compensation is not None and compensation.mesh is not None:
+            return
+        mesh = _import_legacy_mesh(self.config, selected)
+        if mesh is not None:
+            if compensation is None:
+                compensation = self._create_compensation(selected)
+            compensation.mesh = mesh
 
-    def cmd_AXIS_TWIST_COMPENSATION_CALIBRATE(self, gcmd):
-        self.probe = ProbeList.get_list(self.printer).get_command_probe(gcmd)
-        self.lift_speed = self.probe.get_lift_speed()
-        self.probe_x_offset, self.probe_y_offset, _ = self.probe.get_offsets()
-
-        self.gcmd = gcmd
-        sample_count = gcmd.get_int("SAMPLE_COUNT", DEFAULT_SAMPLE_COUNT)
-        axis = gcmd.get("AXIS", "X")
-        axis = axis.upper()
-
-        # check for valid sample_count
-        if sample_count < 2:
-            raise gcmd.error("SAMPLE_COUNT to probe must be at least 2")
-
-        # calculate the points to put the probe at, returned as a list of tuples
-        nozzle_points = []
-
-        if axis == "X":
-            self.compensation.clear_compensations("X")
-
-            if (
-                self.x_start_point[0] is None
-                or self.x_end_point[0] is None
-                or self.x_start_point[1] is None
-            ):
-                raise gcmd.error(
-                    """AXIS_TWIST_COMPENSATION for X axis requires
-                    calibrate_start_x, calibrate_end_x and calibrate_y
-                    to be defined
-                    """
-                )
-
-            start_point = self.x_start_point
-            end_point = self.x_end_point
-
-            x_axis_range = end_point[0] - start_point[0]
-            interval_dist = x_axis_range / (sample_count - 1)
-
-            for i in range(sample_count):
-                x = start_point[0] + i * interval_dist
-                y = start_point[1]
-                nozzle_points.append((x, y))
-
-        elif axis == "Y":
-            self.compensation.clear_compensations("Y")
-
-            if (
-                self.y_start_point[0] is None
-                or self.y_end_point[0] is None
-                or self.y_start_point[1] is None
-            ):
-                raise gcmd.error(
-                    """AXIS_TWIST_COMPENSATION for Y axis requires
-                    calibrate_start_y, calibrate_end_y and calibrate_x
-                    to be defined
-                    """
-                )
-
-            start_point = self.y_start_point
-            end_point = self.y_end_point
-
-            y_axis_range = end_point[1] - start_point[1]
-            interval_dist = y_axis_range / (sample_count - 1)
-
-            for i in range(sample_count):
-                x = start_point[0]
-                y = start_point[1] + i * interval_dist
-                nozzle_points.append((x, y))
-
-        else:
-            raise gcmd.error("AXIS_TWIST_COMPENSATION_CALIBRATE: Invalid axis.")
-
-        probe_points = self._calculate_probe_points(
-            nozzle_points, self.probe_x_offset, self.probe_y_offset
+    def _create_compensation(self, selected):
+        config = self.config.getsection(
+            "axis_twist_compensation " + selected.probe_name
         )
+        compensation = ProbeCompensation(config, self)
+        compensation.handle_connect()
+        self.printer.add_object(compensation.name, compensation)
+        return compensation
 
-        # verify no other manual probe is in progress
-        manual_probe.verify_no_manual_probe(self.printer)
+    def get_compensation(self, selected_probe):
+        compensation = self.maps.get(selected_probe.probe_name)
+        if compensation is not None and compensation.probe is selected_probe:
+            return compensation
+        return None
 
-        # begin calibration
-        self.current_point_index = 0
-        self.results = []
-        self.current_axis = axis
-        self._calibration(gcmd, probe_points, nozzle_points, interval_dist)
+    def get_z_compensation_value(self, pos, probe=None):
+        if probe is None:
+            probe = self.probe_list.get_default_probe()
+        if probe is None:
+            return 0.0
+        compensation = self.get_compensation(probe)
+        if compensation is None or compensation.mesh is None:
+            return 0.0
+        x_offset, y_offset, _ = probe.get_offsets()
+        return compensation.mesh.calc_z(pos[0] + x_offset, pos[1] + y_offset)
 
-    def _calculate_probe_points(
-        self, nozzle_points, probe_x_offset, probe_y_offset
-    ):
-        # calculate the points to put the nozzle at
-        # returned as a list of tuples
-        probe_points = []
-        for point in nozzle_points:
-            x = point[0] - probe_x_offset
-            y = point[1] - probe_y_offset
-            probe_points.append((x, y))
-        return probe_points
-
-    def _move_helper(self, target_coordinates, override_speed=None):
-        # pad target coordinates
-        target_coordinates = (
-            (target_coordinates[0], target_coordinates[1], None)
-            if len(target_coordinates) == 2
-            else target_coordinates
-        )
-        toolhead = self.printer.lookup_object("toolhead")
-        speed = self.speed if target_coordinates[2] is None else self.lift_speed
-        speed = override_speed if override_speed is not None else speed
-        toolhead.manual_move(target_coordinates, speed)
-
-    def _calibration(self, gcmd, probe_points, nozzle_points, interval):
-        # begin the calibration process
-        gcmd.respond_info(
-            "AXIS_TWIST_COMPENSATION_CALIBRATE: "
-            "Probing point %d of %d"
-            % (self.current_point_index + 1, len(probe_points))
-        )
-
-        # horizontal_move_z (to prevent probe trigger or hitting bed)
-        self._move_helper((None, None, self.horizontal_move_z))
-
-        # move to point to probe
-        self._move_helper(
-            (
-                probe_points[self.current_point_index][0],
-                probe_points[self.current_point_index][1],
-                None,
+    def cmd_CALIBRATE(self, gcmd):
+        if any(
+            key in gcmd.get_command_parameters()
+            for key in ("AXIS", "SAMPLE_COUNT")
+        ):
+            raise gcmd.error(
+                "AXIS and SAMPLE_COUNT are no longer supported; configure a full mesh"
             )
-        )
-
-        # probe the point
-        pos = self.probe.run_probe(gcmd)
-        self.current_measured_z = pos[2]
-
-        # horizontal_move_z (to prevent probe trigger or hitting bed)
-        self._move_helper((None, None, self.horizontal_move_z))
-
-        # move the nozzle over the probe point
-        self._move_helper((nozzle_points[self.current_point_index]))
-
-        # start the manual (nozzle) probe
-        manual_probe.ManualProbeHelper(
-            self.printer,
+        selected = self.probe_list.get_command_probe(gcmd)
+        compensation = self.maps.get(selected.probe_name)
+        if compensation is None:
+            compensation = self._create_compensation(selected)
+        reference = self.probe_list.get_command_probe(
             gcmd,
-            self._manual_probe_callback_factory(
-                gcmd, probe_points, nozzle_points, interval
+            default_probe_name=compensation.config.get(
+                "reference_probe", "manual"
             ),
-            True,
+            param_name="REFERENCE_PROBE",
         )
+        if reference is selected:
+            raise gcmd.error("Compensation probe cannot reference itself")
+        compensation.calibration.start(gcmd, reference)
 
-    def _manual_probe_callback_factory(
-        self, orig_gcmd, probe_points, nozzle_points, interval
-    ):
-        # returns a callback function for the manual probe
-        is_end = self.current_point_index == len(probe_points) - 1
 
-        def callback(kin_pos, new_gcmd):
-            gcmd = orig_gcmd.with_new_context(new_gcmd)
-            if kin_pos is None:
-                # probe was cancelled
-                gcmd.respond_info(
-                    "AXIS_TWIST_COMPENSATION_CALIBRATE: Probe cancelled, "
-                    "calibration aborted"
+class ProbeCompensation:
+    def __init__(self, config, manager):
+        self.printer = config.get_printer()
+        self.manager = manager
+        self.name = config.get_name()
+        self.probe_name = self.name.split(" ", 1)[1]
+        self.config = _CalibrationConfig(config, manager.config)
+        self.probe = None
+        self.mesh = None
+        self.mesh_reference_name = self.config.get("reference_probe", "manual")
+        self._calibration = None
+        points = config.getlists("points", [], seps=(",", "\n"), parser=float)
+        version = config.getint("version", None)
+        if points:
+            if version != MESH_VERSION:
+                raise config.error(
+                    "Unsupported axis twist compensation mesh version"
                 )
-                return
-            z_offset = self.current_measured_z - kin_pos[2]
-            self.results.append(z_offset)
-            if is_end:
-                # end of calibration
-                self._finalize_calibration(gcmd)
-            else:
-                # move to next point
-                self.current_point_index += 1
-                self._calibration(gcmd, probe_points, nozzle_points, interval)
+            params = {}
+            for key, parser in bed_mesh.PROFILE_OPTIONS.items():
+                getter = {
+                    int: config.getint,
+                    float: config.getfloat,
+                    str: config.get,
+                }[parser]
+                params[key] = getter(key)
+            bed_mesh.verify_mesh_params(params, config.error)
+            self.mesh = CompensationMesh.build(
+                params, points, self.name, config.error
+            )
+        elif version is not None:
+            raise config.error("Saved compensation mesh has no points")
+        if (
+            self.config.get("mesh_min", None) is not None
+            or self.config.get("mesh_radius", None) is not None
+        ):
+            self._calibration = Calibration(self.config, self)
+        manager.maps[self.probe_name] = self
 
-        return callback
+    @property
+    def calibration(self):
+        if self._calibration is None:
+            self._calibration = Calibration(self.config, self)
+        return self._calibration
 
-    def _finalize_calibration(self, gcmd):
-        # finalize the calibration process
-        # calculate average of results
-        avg = sum(self.results) / len(self.results)
-        # subtract average from each result
-        # so that they are independent of z_offset
-        self.results = [avg - x for x in self.results]
-        # save the config
+    def handle_connect(self):
+        self.probe = self.manager.probe_list.get_probe(self.probe_name)
+        if self.probe is None:
+            raise self.printer.config_error(
+                "Unknown compensation probe: %s" % self.probe_name
+            )
+
+    def save(self, mesh, reference_name, layout):
         configfile = self.printer.lookup_object("configfile")
-        values_as_str = ", ".join(["{:.6f}".format(x) for x in self.results])
-
-        if self.current_axis == "X":
-            configfile.set(self.configname, "z_compensations", values_as_str)
-            configfile.set(
-                self.configname, "compensation_start_x", self.x_start_point[0]
-            )
-            configfile.set(
-                self.configname, "compensation_end_x", self.x_end_point[0]
-            )
-
-            self.compensation.z_compensations = self.results
-            self.compensation.compensation_start_x = self.x_start_point[0]
-            self.compensation.compensation_end_x = self.x_end_point[0]
-
-        elif self.current_axis == "Y":
-            configfile.set(self.configname, "zy_compensations", values_as_str)
-            configfile.set(
-                self.configname, "compensation_start_y", self.y_start_point[1]
-            )
-            configfile.set(
-                self.configname, "compensation_end_y", self.y_end_point[1]
-            )
-
-            self.compensation.zy_compensations = self.results
-            self.compensation.compensation_start_y = self.y_start_point[1]
-            self.compensation.compensation_end_y = self.y_end_point[1]
-
-        self.gcode.respond_info(
-            "AXIS_TWIST_COMPENSATION state has been saved "
-            "for the current session.  The SAVE_CONFIG command will "
-            "update the printer config file and restart the printer."
+        configfile.set(self.name, "reference_probe", reference_name)
+        configfile.set(self.name, "version", MESH_VERSION)
+        configfile.set(
+            self.name,
+            "points",
+            "\n"
+            + "\n".join(
+                "  " + ", ".join("%.6f" % z for z in row)
+                for row in mesh.get_probed_matrix()
+            ),
         )
-        # output result
-        gcmd.respond_info(
-            "AXIS_TWIST_COMPENSATION_CALIBRATE: Calibration complete, "
-            "offsets: %s, mean z_offset: %f" % (self.results, avg)
-        )
+        settings = {**mesh.get_mesh_params(), **layout.settings}
+        for option in _MOVEMENT_OPTIONS:
+            value = self.config.get(option, None)
+            if value is not None:
+                settings[option] = value
+        for key, value in settings.items():
+            if isinstance(value, (tuple, list)):
+                value = ", ".join(str(v) for v in value)
+            configfile.set(self.name, key, value)
+
+    def get_status(self, eventtime):
+        return {
+            "probe": self.probe_name,
+            "reference_probe": self.mesh_reference_name,
+            "calibrating": self._calibration is not None
+            and self._calibration.is_calibrating(),
+            "mesh_matrix": self.mesh.get_mesh_matrix() if self.mesh else [],
+            "mesh_params": dict(self.mesh.get_mesh_params())
+            if self.mesh
+            else {},
+        }
 
 
-# klipper's entry point using [axis_twist_compensation] section in printer.cfg
 def load_config(config):
     return AxisTwistCompensation(config)
+
+
+def load_config_prefix(config):
+    manager = config.get_printer().load_object(
+        config, "axis_twist_compensation"
+    )
+    return ProbeCompensation(config, manager)

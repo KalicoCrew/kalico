@@ -164,17 +164,24 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=<name>] [AXIS=<X|Y>]
-[SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
+`AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=<name>]
+[REFERENCE_PROBE=<name>] [<probe_parameter>=<value>]`:
 
-Calibrates axis twist compensation by specifying the target axis or
-enabling automatic calibration.
+Measure a complete mesh with the target probe, followed by a complete mesh
+with the reference probe. Omitted `PROBE` selects the default probe.
+`REFERENCE_PROBE` overrides the target's configured `reference_probe`, which
+otherwise inherits from the base section and defaults to `manual`.
 
-- **SAMPLE_COUNT:** Number of points tested during the calibration.
-If not specified, it defaults to 3.
+Mesh settings come from `[axis_twist_compensation]`, with overrides from
+`[axis_twist_compensation <target>]` when present. A target does not need an
+existing named section. The resulting reference-minus-target mesh has its
+mean removed and becomes active immediately. Run `SAVE_CONFIG` to store the
+mesh, its layout, and selected reference under the target's named section.
 
-- **AXIS:** Define the axis (`X` or `Y`) for which the twist compensation
-will be calibrated. If not specified, the axis defaults to `'X'`.
+During a manual pass, use `TESTZ` and `ACCEPT` at each point, or `ABORT` to
+cancel. Cancellation or probing errors restore the previous map. A calling
+macro waits for calibration to finish before continuing; cancellation or an
+error stops it. `AXIS` and `SAMPLE_COUNT` are no longer supported.
 
 ### [bed_mesh]
 

@@ -407,9 +407,13 @@ class ProbeList:
         default=sentinel,
         no_default_error="No default probe registered, explicitly select probe by passing `PROBE=`",
         default_probe_name=None,
+        param_name="PROBE",
     ) -> PrinterProbe:
-        requested_probe = gcmd.get("PROBE", default_probe_name)
-        if gcmd.get("METHOD", "automatic").lower() == "manual":
+        requested_probe = gcmd.get(param_name, default_probe_name)
+        if (
+            param_name == "PROBE"
+            and gcmd.get("METHOD", "automatic").lower() == "manual"
+        ):
             requested_probe = "manual"
         if requested_probe is not None:
             if requested_probe in self.probes:
@@ -681,7 +685,7 @@ class PrinterProbe:
         z_compensation = 0
         if axis_twist_compensation is not None:
             z_compensation = axis_twist_compensation.get_z_compensation_value(
-                pos
+                pos, self
             )
         # add z compensation to probe position
         epos[2] += z_compensation
@@ -1410,7 +1414,7 @@ class ProbePointsHelper:
                         z = scan_height - distance + self.probe_offsets[2]
                         if axis_twist_compensation is not None:
                             z += axis_twist_compensation.get_z_compensation_value(
-                                (point[0], point[1], scan_height)
+                                (point[0], point[1], scan_height), probe
                             )
                         self._store_probe_result((point[0], point[1], z))
 
