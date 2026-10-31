@@ -3557,6 +3557,49 @@ sensor_pin:
 #   name in the above list.
 ```
 
+### MAX31865 with thermistor
+
+MAX31865 configured to read an NTC thermistor instead of a platinum
+sensor (e.g. PT1000). The thermistor should be connected the same way
+as a PT1000, but with an additional resistor in parallel with the
+thermistor. The value of this additional resistor should be the same
+as or slightly below the reference resistor connected to the MAX31865
+(typically 4.3 kΩ).
+
+```
+sensor_type: MAX31865Thermistor
+sensor_pin:
+#   The chip select line for the sensor chip. This parameter must be
+#   provided.
+thermistor_type:
+#   The name of the thermistor profile to use for resistance-to-temperature
+#   conversion. This must match the name of a [thermistor] section (e.g.
+#   "Generic 3950") or a built-in thermistor type. This parameter must be
+#   provided.
+#rtd_reference_r: 4300
+#   The resistance (in ohms) of the reference resistor on the MAX31865
+#   board. The default is 4300.
+#parallel_r: 4300
+#   The resistance (in ohms) of the resistor placed in parallel with the
+#   thermistor in the measurement circuit. The default is 4300.
+#rtd_num_of_wires: 2
+#   The number of wires used for the thermistor connection (2 or 3). Use 3
+#   for a 3-wire configuration which enables the MAX31865 lead resistance
+#   compensation. The default is 2.
+#rtd_use_50Hz_filter: False
+#   If True, the MAX31865 50Hz noise filter is enabled instead of the
+#   default 60Hz filter. The default is False.
+#spi_speed: 4000000
+#   The SPI speed (in hz) to use when communicating with the chip.
+#   The default is 4000000.
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+```
+
 ### BMP180/BMP280/BME280/BMP388/BME680 temperature sensor
 
 BMP180/BMP280/BME280/BMP388/BME680 two wire interface (I2C) environmental sensors.
