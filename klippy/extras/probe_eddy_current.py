@@ -8,7 +8,7 @@ import math
 
 from klippy import gcode, mcu
 
-from . import manual_probe, probe
+from . import probe
 
 
 # Tool for calibrating the sensor Z detection and applying that calibration
@@ -206,10 +206,16 @@ class EddyCalibration:
 
     def cmd_EDDY_CALIBRATE(self, gcmd):
         self.probe_speed = gcmd.get_float("PROBE_SPEED", 5.0, above=0.0)
-        # Start manual probe
-        manual_probe.ManualProbeHelper(
-            self.printer, gcmd, self.post_manual_probe
+        self.printer.lookup_object("manual_probe").verify_no_manual_probe()
+        reference = probe.ProbeList.get_list(self.printer).get_command_probe(
+            gcmd, default_probe_name="manual"
         )
+        offsets = reference.get_offsets()
+        position = list(reference.run_probe(gcmd))
+        position[0] += offsets[0]
+        position[1] += offsets[1]
+        position[2] -= offsets[2]
+        self.post_manual_probe(position)
 
 
 class EddyDistanceCollector(probe.ProbeDistanceCollector):

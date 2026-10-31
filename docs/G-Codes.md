@@ -1257,14 +1257,17 @@ corresponding settings from the
 
 ### [manual_probe]
 
-The manual_probe module is automatically loaded.
+The manual_probe module is automatically loaded and registers a probe named
+`manual`. It becomes the default probe when no other default probe is selected.
+Use `PROBE=manual` to select it for probing operations. `METHOD=manual` remains
+supported by calibration commands such as `BED_MESH_CALIBRATE`.
 
 #### MANUAL_PROBE
-`MANUAL_PROBE [SPEED=<speed>]`: Run a helper script useful for
+`MANUAL_PROBE [PROBE=<name>] [SPEED=<speed>]`: Run a helper script useful for
 measuring the height of the nozzle at a given location. If SPEED is
 specified, it sets the speed of TESTZ commands (the default is
-5mm/s). During a manual probe, the following additional commands are
-available:
+5mm/s). The probe defaults to `manual`; use `PROBE` to select another probe.
+During a manual probe, the following additional commands are available:
 - `ACCEPT`: This command accepts the current Z position and concludes
   the manual probing tool.
 - `ABORT`: This command terminates the manual probing tool.
@@ -1274,11 +1277,16 @@ available:
   .1mm. The value may also be `+`, `-`, `++`, or `--` to move the
   nozzle up or down an amount relative to previous attempts.
 
+Manual probing waits until each point is accepted or probing is aborted before
+the calling command or macro continues. Send `TESTZ`, `ACCEPT`, and `ABORT`
+through the API (for example, a printer web interface). Commands in the same
+pseudo-TTY stream remain queued behind the waiting command.
+
 #### Z_ENDSTOP_CALIBRATE
-`Z_ENDSTOP_CALIBRATE [SPEED=<speed>]`: Run a helper script useful for
-calibrating a Z position_endstop config setting. See the MANUAL_PROBE
-command for details on the parameters and the additional commands
-available while the tool is active.
+`Z_ENDSTOP_CALIBRATE [PROBE=<name>] [SPEED=<speed>]`: Calibrate a Z
+position_endstop config setting. The probe defaults to `manual`; use `PROBE`
+to select another probe. See the MANUAL_PROBE command for details on the
+parameters and the additional commands available while the tool is active.
 
 #### Z_OFFSET_APPLY_ENDSTOP
 `Z_OFFSET_APPLY_ENDSTOP`: Take the current Z Gcode offset (aka,
@@ -1616,9 +1624,10 @@ median, and standard deviation of multiple probe samples. By default,
 their equivalent setting in the probe config section.
 
 #### PROBE_CALIBRATE
-`PROBE_CALIBRATE [PROBE=<name>] [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
-helper script useful for calibrating the probe's z_offset. See the
-PROBE command for details on the optional probe parameters. See the
+`PROBE_CALIBRATE [PROBE=<name>] [REFERENCE_PROBE=<name>]
+[SPEED=<speed>] [<probe_parameter>=<value>]`: Run a helper script useful
+for calibrating the probe's z_offset. `REFERENCE_PROBE` selects the
+reference probe, which defaults to `manual`. See the PROBE command for details on the optional probe parameters. See the
 MANUAL_PROBE command for details on the SPEED parameter and the
 additional commands available while the tool is active. Please note,
 the PROBE_CALIBRATE command uses the speed variable to move in XY
@@ -1658,11 +1667,12 @@ The following commands are available when a
 is enabled.
 
 #### PROBE_EDDY_CURRENT_CALIBRATE
-`PROBE_EDDY_CURRENT_CALIBRATE CHIP=<config_name>`: This starts a tool
-that calibrates the sensor resonance frequencies to corresponding Z
+`PROBE_EDDY_CURRENT_CALIBRATE CHIP=<config_name> [PROBE=<name>]`:
+This starts a tool that calibrates the sensor resonance frequencies to corresponding Z
 heights. The tool will take a couple of minutes to complete. After
 completion, use the SAVE_CONFIG command to store the results in the
-printer.cfg file.
+printer.cfg file. The reference probe defaults to `manual`; use `PROBE` to
+select another probe.
 
 #### LDC_CALIBRATE_DRIVE_CURRENT
 `LDC_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` This tool will

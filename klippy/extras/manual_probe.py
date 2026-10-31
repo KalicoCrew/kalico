@@ -5,10 +5,19 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import bisect
 
+from .probe import PrinterProbe, ProbeList
+
 
 class ManualProbe:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self._helper = None
+        for event in (
+            "gcode:command_error",
+            "klippy:shutdown",
+            "klippy:disconnect",
+        ):
+            self.printer.register_event_handler(event, self.cancel_probe)
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode_move = self.printer.load_object(config, "gcode_move")
@@ -56,6 +65,52 @@ class ManualProbe:
                 desc=self.cmd_Z_OFFSET_APPLY_ENDSTOP_help,
             )
         self.reset_status()
+        self.probe = PrinterProbe(
+            config,
+            self,
+            default_z_offset=0.0,
+            probe_name="manual",
+            register_as_probe=False,
+        )
+
+    def verify_no_manual_probe(self):
+        verify_no_manual_probe(self.printer)
+
+    def multi_probe_begin(self, context):
+        self.verify_no_manual_probe()
+
+    def multi_probe_end(self, context):
+        pass
+
+    def run_probe(self, gcmd, retry_session=None):
+        self.verify_no_manual_probe()
+        selected = ProbeList.get_list(self.printer).get_command_probe(
+            gcmd, default_probe_name="manual"
+        )
+        return selected.run_probe(gcmd, retry_session)
+
+    def probing_move(self, pos, speed, gcmd):
+        self.verify_no_manual_probe()
+        completion = self.printer.get_reactor().completion()
+        helper = ManualProbeHelper(self.printer, gcmd, completion.complete)
+        self._helper = helper
+        try:
+            position = gcmd.run_without_gcode_lock(completion.wait)
+        finally:
+            self._helper = None
+            if not completion.test():
+                helper.finalize(False)
+        if position is None:
+            raise gcmd.error("Manual probe aborted")
+        return list(position[:3])
+
+    def query_endstop(self, print_time):
+        raise self.printer.command_error("Manual probe has no endstop state")
+
+    def cancel_probe(self):
+        helper = self._helper
+        if helper is not None:
+            helper.finalize(False)
 
     def manual_probe_finalize(self, kin_pos):
         if kin_pos is not None:
@@ -75,7 +130,7 @@ class ManualProbe:
     cmd_MANUAL_PROBE_help = "Start manual probe helper script"
 
     def cmd_MANUAL_PROBE(self, gcmd):
-        ManualProbeHelper(self.printer, gcmd, self.manual_probe_finalize)
+        self.manual_probe_finalize(self.run_probe(gcmd))
 
     def z_endstop_finalize(self, kin_pos):
         if kin_pos is None:
@@ -92,7 +147,13 @@ class ManualProbe:
     cmd_Z_ENDSTOP_CALIBRATE_help = "Calibrate a Z endstop"
 
     def cmd_Z_ENDSTOP_CALIBRATE(self, gcmd):
-        ManualProbeHelper(self.printer, gcmd, self.z_endstop_finalize)
+        self.verify_no_manual_probe()
+        selected = ProbeList.get_list(self.printer).get_command_probe(
+            gcmd, default_probe_name="manual"
+        )
+        position = list(selected.run_probe(gcmd))
+        position[2] -= selected.get_offsets()[2]
+        self.z_endstop_finalize(position)
 
     def cmd_Z_OFFSET_APPLY_ENDSTOP(self, gcmd):
         offset = self.gcode_move.get_status()["homing_origin"].z
@@ -143,6 +204,9 @@ class ManualProbe:
 # Verify that a manual probe isn't already in progress
 def verify_no_manual_probe(printer):
     gcode = printer.lookup_object("gcode")
+    manual_probe = printer.lookup_object("manual_probe", None)
+    if manual_probe is not None and manual_probe._helper is not None:
+        raise gcode.error("Already in a manual Z probe. Use ABORT to abort it.")
     try:
         gcode.register_command("ACCEPT", "dummy")
     except printer.config_error as e:
@@ -294,7 +358,9 @@ class ManualProbeHelper:
         self.move_z(next_z_pos, gcmd)
         self.report_z_status(next_z_pos != z_pos, z_pos)
 
-    def finalize(self, success, gcmd):
+    def finalize(self, success, gcmd=None):
+        if self.finalize_callback is None:
+            return
         self.manual_probe.reset_status()
         self.gcode.register_command("ACCEPT", None)
         self.gcode.register_command("NEXT", None)
@@ -303,10 +369,12 @@ class ManualProbeHelper:
         kin_pos = None
         if success:
             kin_pos = self.get_kinematics_pos()
+        finalize_callback = self.finalize_callback
+        self.finalize_callback = None
         if self.pass_gcmd:
-            self.finalize_callback(kin_pos, gcmd)
+            finalize_callback(kin_pos, gcmd)
         else:
-            self.finalize_callback(kin_pos)
+            finalize_callback(kin_pos)
 
 
 def load_config(config):

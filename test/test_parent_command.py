@@ -23,7 +23,9 @@ from klippy.reactor import Reactor
 @pytest.fixture
 def context():
     reactor = Reactor()
-    objects = {}
+    objects = {
+        "manual_probe": SimpleNamespace(verify_no_manual_probe=lambda: None)
+    }
     handlers = {}
 
     def send_event(event, *args):
