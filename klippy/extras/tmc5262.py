@@ -556,6 +556,7 @@ class TMC5262:
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.clear_mcu_phase_offset = cmdhelper.clear_mcu_phase_offset
         self.get_status = cmdhelper.get_status
+        self.query_phase = cmdhelper.query_phase
 
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
         self.fields.set_config_field(config, "offset_sin90", 0)

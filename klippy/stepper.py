@@ -6,7 +6,7 @@
 import collections
 import math
 
-from . import chelper
+from klippy import chelper
 
 
 class error(Exception):
