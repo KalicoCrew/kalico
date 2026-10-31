@@ -2338,6 +2338,52 @@ the config.
 homing (for use in e.g. non-standard homing routines) - will be reset
 automatically upon homing.
 
+#### Z_THERMAL_ADJUST_CALIBRATE
+`Z_THERMAL_ADJUST_CALIBRATE CALIBRATION=NOZZLE HEATER=<heater>
+ [COMPONENT=name] [PROBE=<probe>] [MIN_TEMP=<value>] [MAX_TEMP=<value>]
+ [MEASUREMENTS=<count>] [SOAK_TIME=<seconds>]
+ [Z_LIFT=<mm>] [Z_LIFT_SPEED=<mm/s>]`: Measures the
+thermal expansion of the nozzle and calculates the `temp_coeff` for the
+`[z_thermal_adjust]` section. The printer must be homed and the nozzle must be
+positioned over a clean spot on the bed where probing is possible.
+The command heats the nozzle from `MIN_TEMP` up to `MAX_TEMP`, and then back
+down to `MIN_TEMP` for a complete thermal cycle. It splits the temperature range
+into `MEASUREMENTS` steps. Each step starts with a pause for `SOAK_TIME`, probes
+to measure the nozzle and lifts the toolhead by `Z_LIFT` to resume heating. The
+heater is turned off when the command finishes or fails.
+A linear regression of the probe results against temperature gives the coefficient,
+which is reported and stored as the section's `temp_coeff`. Run `SAVE_CONFIG`
+to write it to the config file and restart. See also
+[Nozzle Temperature Compensation](Load_Cell.md#nozzle-temperature-compensation).
+
+- `CALIBRATION`: The type of calibration routine to run. Required. Only `NOZZLE` is currently
+supported; `FRAME` is reserved for future use.
+- `HEATER`: The name of the heater to calibrate with, typically `extruder`. Required.
+- `COMPONENT`: if multiple thermal adjustment are defined use `COMPONENT` to
+specify which one to calibrate.
+- `PROBE`: The probe to measure with, if more than one probe is configured.
+- `MIN_TEMP`: The lowest temperature to measure at. The default is 140.
+- `MAX_TEMP`: The highest temperature to measure at. It must be greater than
+`MIN_TEMP`. The default is 250.
+- `MEASUREMENTS`: The number of distinct temperatures to measure
+at between `MIN_TEMP` and `MAX_TEMP`, inclusive. The minimum is 2 and the
+default is 10. Each temperature is measured twice, once while heating and 
+once while cooling.
+- `SOAK_TIME`: Seconds to wait after the heater reaches each temperature, to
+let the nozzle and heatbreak reach thermal equilibrium. The default is 20.
+- `Z_LIFT`: Distance in mm to raise the toolhead after each probe. The default
+is 10.
+- `Z_LIFT_SPEED`: Speed in mm/s of the lift move. The default is 5.
+
+When the calculation completes the command reports the total elongation and
+temperature range measured and the resulting temperature coefficient. It also
+saves a plot of the measurements and fitted line as
+`nozzle_elongation_YYYY-MM-DD_HH-MM-SS.png` in the same directory as the
+Klipper log file, and prints a link to it (the link assumes
+[Moonraker](https://github.com/Arksine/moonraker) serves the `logs` root).
+Plotting requires `matplotlib` and a configured log file; if there is no log
+file the plot is skipped.
+
 ### ⚠️ [z_calibration]
 
 The following commands are available when a

@@ -269,6 +269,18 @@ temp_coeff = (z_average_hot - z_average_cold) / (temp_hot - temp_cold)
 
 Example: `temp_coeff = -0.05 / (290 - 180) = -0.00045455`
 
+Alternatively, let Klipper measure it for you with
+[Z_THERMAL_ADJUST_CALIBRATE](G-Codes.md#z_thermal_adjust_calibrate). Home, move
+the nozzle over a clean spot on the bed and run:
+
+```
+Z_THERMAL_ADJUST_CALIBRATE CALIBRATION=NOZZLE HEATER=extruder COMPONENT=nozzle
+```
+
+The command probes at a series of temperatures while heating and cooling,
+fits a line through the results, saves a plot of the fit to the logs directory
+and stores the coefficient. Run `SAVE_CONFIG` to keep it.
+
 Expect a negative value (`z_thermal_adjust` will move the nozzle away from bed with negative values and towards it with positive values).
 
 Example configuration:
