@@ -8,6 +8,9 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+import numpy as np
+
+from klippy import Printer
 from klippy.configfile import ConfigWrapper, PrinterConfig
 from klippy.extras.load_cell.tap_analysis import (
     ForcePoint,
@@ -102,7 +105,9 @@ class TapQualityClassifierConfig:
         )
         self._save_config("min_tap_quality", self.minimum_tap_quality)
 
-    def set_decompression_angle(self, decompression_angle: float):
+    def set_decompression_angle(
+        self, decompression_angle: float, save: bool = False
+    ):
         decompression_angle = round(float(decompression_angle), 1)
         if not (0.0 < decompression_angle < 90.0):
             raise self._printer.config_error(
@@ -111,7 +116,8 @@ class TapQualityClassifierConfig:
         self._cfg_decompression_angle = self.decompression_angle = (
             decompression_angle
         )
-        self._save_config("decompression_angle", self.decompression_angle)
+        if save:
+            self._save_config("decompression_angle", self.decompression_angle)
 
 
 # Simple tap classifier rules:
@@ -119,7 +125,10 @@ class TapQualityClassifierConfig:
 # 2) Tap quality metric must be more than the minimum_tap_quality
 class TapQualityClassifier(TapClassifierModule):
     def __init__(self, config: ConfigWrapper):
-        self.printer = config.get_printer()
+        self.printer: Printer = config.get_printer()
+        self.bed_mesh_config = None
+        if config.has_section("bed_mesh"):
+            self.bed_mesh_config = config.getsection("bed_mesh")
         self.config: TapQualityClassifierConfig = TapQualityClassifierConfig(
             config
         )
@@ -127,8 +136,74 @@ class TapQualityClassifier(TapClassifierModule):
     def set_minimum_tap_quality(self, minimum_tap_quality: float):
         self.config.set_minimum_tap_quality(minimum_tap_quality)
 
-    def set_decompression_angle(self, decompression_angle: float):
-        self.config.set_decompression_angle(decompression_angle)
+    def _calculate_mean_decompression_angle(
+        self, taps: list[TapAnalysis]
+    ) -> float:
+        angles = []
+        for tap_analysis in taps:
+            if not tap_analysis.is_valid():
+                continue
+            lines = tap_analysis.get_tap_lines()
+            decompression_line = lines[3]
+            angle = abs(self._slope_to_degrees(decompression_line.slope))
+            angles.append(angle)
+        return float(np.mean(angles))
+
+    def _recalculate_tap_qualities(
+        self,
+        taps: list[TapAnalysis],
+        decompression_angle: float,
+        gcmd: GCodeCommand,
+    ) -> list[float]:
+        reset_value: Optional[float] = self.config.decompression_angle
+        self.config.set_decompression_angle(decompression_angle, False)
+        qualities: list[float] = []
+        for tap_analysis in taps:
+            quality = self.calculate_tap_quality(tap_analysis)
+            qualities.append(quality)
+        failing: int = len(taps) - len(qualities)
+        if failing == 0:
+            return qualities
+        self.config.set_decompression_angle(reset_value, False)
+        raise gcmd.error(
+            f"{failing} taps failed the quality check after calibration!"
+        )
+
+    def _finalize_callback(self, probe_offsets, results):
+        pass
+
+    def calibrate(self, taps: list[TapAnalysis], gcmd: GCodeCommand):
+        if taps is None or len(taps) == 0:
+            raise gcmd.error("No taps were collected!")
+        gcmd.respond_info(f"Collected {len(taps)} taps")
+        for tap in taps:
+            if not tap.is_valid():
+                raise gcmd.error(
+                    "Some taps failed! Make sure the nozzle is clean and free of ooze."
+                )
+
+        # calculate average decompression angle
+        mean_angle = self._calculate_mean_decompression_angle(taps)
+
+        # re-calculate the tap quality for every tap using the new angle
+        qualities: list[float] = self._recalculate_tap_qualities(
+            taps, mean_angle, gcmd
+        )
+
+        mean_quality = float(np.mean(qualities))
+        std_quality = float(np.std(qualities))
+        gcmd.respond_info(
+            "Tap quality calibration successful:"
+            f"Tap Quality average: {mean_quality:.1f}%, "
+            f"min: {min(qualities):.1f}%, max: {max(qualities):.1f}% "
+            f"std dev: {std_quality:.1f}%"
+        )
+        gcmd.respond_info(
+            f"\nMean Decompression Angle: {mean_angle:.1f} degrees"
+            f"\ndecompression_angle={mean_angle:.1f}\n This has been saved "
+            f"for the current session.\nThe SAVE_CONFIG command will "
+            f"update the printer config file and restart the printer."
+        )
 
     @staticmethod
     def _slope_to_degrees(slope: float, time_scale=0.1, gram_scale=25):
@@ -154,15 +229,7 @@ class TapQualityClassifier(TapClassifierModule):
             max_force = max(max_force, force)
         return max_force - min_force
 
-    def classify(self, tap_analysis: TapAnalysis, gcmd: GCodeCommand):
-        # This module cant rescue bad data
-        if not tap_analysis.is_valid():
-            return
-
-        # if the user does not configure an angle, don't classify the tap
-        if self.config.decompression_angle is None:
-            return
-
+    def calculate_tap_quality(self, tap_analysis: TapAnalysis) -> float:
         # unpack tap points with names
         tap_points = tap_analysis.get_tap_points()
         approach_start_point = tap_points[0]
@@ -176,17 +243,6 @@ class TapQualityClassifier(TapClassifierModule):
         compression_force = abs(
             compression_end_point.force - compression_start_point.force
         )
-
-        # compression check: did we meet the minimum force requirement?
-        if compression_force < tap_analysis.get_trigger_force():
-            raise TapValidationError(
-                "LOW_COMPRESSION_FORCE",
-                f"Compression force, {compression_force}g, was less than the "
-                f"trigger force ({tap_analysis.get_trigger_force()}g)",
-            )
-
-        if gcmd is not None:
-            self.config.customize(gcmd)
 
         # These 2 metrics are expected to approach 0.0 in an ideal tap. If
         # they are large that usually indicates the tap is fouled.
@@ -241,6 +297,43 @@ class TapQualityClassifier(TapClassifierModule):
             * (1.0 - dwell_force_drop_pct)
             * (1.0 - normalized_decompression_angle)
         )
+
+        return tap_quality
+
+    def classify(self, tap_analysis: TapAnalysis, gcmd: GCodeCommand):
+        # This module cant rescue bad data
+        if not tap_analysis.is_valid():
+            return
+
+        # if the user has not configured an angle, don't classify the tap
+        if self.config.decompression_angle is None:
+            return
+
+        # unpack tap points with names
+        tap_points = tap_analysis.get_tap_points()
+        compression_start_point = tap_points[1]
+        compression_end_point = tap_points[2]
+
+        # only the compression force in the compression line
+        compression_force = abs(
+            compression_end_point.force - compression_start_point.force
+        )
+
+        # compression check: did we meet the minimum force requirement?
+        if compression_force < tap_analysis.get_trigger_force():
+            raise TapValidationError(
+                "LOW_COMPRESSION_FORCE",
+                f"Compression force, {compression_force}g, was less than the "
+                f"trigger force ({tap_analysis.get_trigger_force()}g)",
+            )
+
+        if gcmd is not None:
+            self.config.customize(gcmd)
+
+        tap_quality = self.calculate_tap_quality(tap_analysis)
+
+        lines = tap_analysis.get_tap_lines()
+        decompression_line = lines[3]
 
         # TODO: should this be a debugging option? logged?
         # log info to console for now...
