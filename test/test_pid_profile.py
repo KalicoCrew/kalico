@@ -1,4 +1,5 @@
 import pathlib
+import threading
 import typing
 
 from klippy_testing import PrinterShim
@@ -35,7 +36,14 @@ def _make_pmgr(heater):
 
 def _gcmd(heater, params):
     return klippy.gcode.GCodeCommand(
-        heater.gcode, "PID_PROFILE", "PID_PROFILE", params, False
+        heater.gcode,
+        "PID_PROFILE",
+        "PID_PROFILE",
+        params,
+        False,
+        klippy.gcode.GCodeContextScope(
+            klippy.gcode.GCodeContextRoot(threading.Lock())
+        ),
     )
 
 

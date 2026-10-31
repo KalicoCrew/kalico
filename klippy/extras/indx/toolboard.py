@@ -1,4 +1,4 @@
-from ..homing import Homing
+from . import compat
 from .compat import ConfigWrapper
 from .heater import IndxToolboardHeater
 
@@ -166,7 +166,7 @@ class IndxDockMeasurement:
             )
         retreat_speed = gcmd.get_float("RETREAT_SPEED", 10.0, above=0.0)
         try:
-            measurement = self.measure(axes, retreat, retreat_speed)
+            measurement = self.measure(axes, retreat, retreat_speed, gcmd)
         except self.printer.command_error:
             self.printer.lookup_object("stepper_enable").motor_off()
             raise
@@ -196,7 +196,7 @@ class IndxDockMeasurement:
         }
         return kin.calc_position(stepper_positions)
 
-    def measure(self, axes, retreat, retreat_speed):
+    def measure(self, axes, retreat, retreat_speed, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         kin = toolhead.get_kinematics()
         self._enable_motors(toolhead, kin)
@@ -213,7 +213,7 @@ class IndxDockMeasurement:
         start_position = [0.0, 0.0]
 
         for axis in axes:
-            homing_state = Homing(self.printer)
+            homing_state = compat.create_homing(self.printer, gcmd)
             homing_state.set_axes([axis])
             kin.home(homing_state)
             final_position = toolhead.get_position()

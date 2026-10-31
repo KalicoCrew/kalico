@@ -90,7 +90,7 @@ class SmartEffectorEndstopWrapper:
 
     def probing_move(self, pos, speed, gcmd):
         phoming = self.printer.lookup_object("homing")
-        return phoming.probing_move(self, pos, speed)
+        return phoming.probing_move(self, pos, speed, gcmd)
 
     def probe_prepare(self, hmove):
         toolhead = self.printer.lookup_object("toolhead")
@@ -99,17 +99,13 @@ class SmartEffectorEndstopWrapper:
             systime = self.printer.get_reactor().monotonic()
             toolhead_info = toolhead.get_status(systime)
             self.old_max_accel = toolhead_info["max_accel"]
-            self.gcode.run_script_from_command(
-                "M204 S%.3f" % (self.probe_accel,)
-            )
+            hmove.gcmd.run_script("M204 S%.3f" % (self.probe_accel,))
         if self.recovery_time:
             toolhead.dwell(self.recovery_time)
 
     def probe_finish(self, hmove):
         if self.probe_accel:
-            self.gcode.run_script_from_command(
-                "M204 S%.3f" % (self.old_max_accel,)
-            )
+            hmove.gcmd.run_script("M204 S%.3f" % (self.old_max_accel,))
         self.probe_wrapper.probe_finish(hmove)
 
     def _send_command(self, buf):

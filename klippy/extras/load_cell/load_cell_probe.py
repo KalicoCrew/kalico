@@ -715,7 +715,9 @@ class LoadCellPrimitives:
         # do homing move
         printer_homing: PrinterHoming = self._printer.lookup_object("homing")
         try:
-            return printer_homing.probing_move(mcu_probe, pos, speed), collector
+            return printer_homing.probing_move(
+                mcu_probe, pos, speed, gcmd
+            ), collector
         except self._printer.command_error:
             collector.stop_collecting()
             raise
@@ -903,39 +905,39 @@ class ProbeActivationHelper:
 
     def multi_probe_begin(self, context):
         self._is_multi = True
-        self.activate_probe()
+        self.activate_probe(context.gcmd)
 
     def multi_probe_end(self, context):
         self._is_multi = False
-        self.deactivate_probe()
+        self.deactivate_probe(context.gcmd)
 
     def probe_prepare(self, hmove):
-        self.activate_probe()
+        self.activate_probe(hmove.gcmd)
 
     def probe_finish(self, hmove):
         # only deactivate on probe if not doing a multi-probe
         if not self._is_multi:
-            self.deactivate_probe()
+            self.deactivate_probe(hmove.gcmd)
 
-    def activate_probe(self):
+    def activate_probe(self, gcmd):
         if self._is_active:
             return
         self._is_active = True
         toolhead = self._printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self._activate_gcode.run_gcode_from_command()
+        self._activate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self._printer.command_error(
                 "Toolhead moved during probe activate_gcode script"
             )
 
-    def deactivate_probe(self):
+    def deactivate_probe(self, gcmd):
         if not self._is_active:
             return
         self._is_active = False
         toolhead = self._printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self._deactivate_gcode.run_gcode_from_command()
+        self._deactivate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self._printer.command_error(
                 "Toolhead moved during probe deactivate_gcode script"

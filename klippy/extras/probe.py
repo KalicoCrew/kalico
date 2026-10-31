@@ -28,6 +28,7 @@ can travel further (the Z minimum position can be negative).
 
 
 class ProbingContext(NamedTuple):
+    gcmd: GCodeCommand
     always_restore_toolhead: bool = False
 
 
@@ -45,7 +46,7 @@ def _call_multi_probe(method, context):
 
 
 @contextlib.contextmanager
-def multi_probe_session(probe, context=ProbingContext()):
+def multi_probe_session(probe, context):
     """Pair a probe session's begin and end, including on failure."""
     try:
         _call_multi_probe(probe.multi_probe_begin, context)
@@ -171,7 +172,7 @@ class GcodeNozzleScrubber:
             "ATTEMPT": attempt,
             "RETRIES": retries,
         }
-        self.config.template.run_gcode_from_command(context)
+        self.config.template.run_gcode(gcmd, context)
         end_pos = toolhead.get_position()
         if not start_pos[:3] == end_pos[:3]:
             self._printer.command_error(
@@ -573,12 +574,20 @@ class PrinterProbe:
     def _handle_home_rails_begin(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
         if self.mcu_probe in endstops:
-            self.multi_probe_begin(ProbingContext(always_restore_toolhead=True))
+            self.multi_probe_begin(
+                ProbingContext(
+                    always_restore_toolhead=True, gcmd=homing_state.gcmd
+                )
+            )
 
     def _handle_home_rails_end(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
         if self.mcu_probe in endstops:
-            self.multi_probe_end(ProbingContext(always_restore_toolhead=True))
+            self.multi_probe_end(
+                ProbingContext(
+                    always_restore_toolhead=True, gcmd=homing_state.gcmd
+                )
+            )
 
     def multi_probe_begin(self, context):
         self.multi_probe_count += 1
@@ -726,7 +735,7 @@ class PrinterProbe:
         )
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
         with multi_probe_session(
-            self, ProbingContext(always_restore_toolhead=True)
+            self, ProbingContext(always_restore_toolhead=True, gcmd=gcmd)
         ):
             # Initialize probe retry state
             if retry_session is None:
@@ -827,7 +836,7 @@ class PrinterProbe:
         )
         # Probe bed sample_count times
         with multi_probe_session(
-            self, ProbingContext(always_restore_toolhead=True)
+            self, ProbingContext(always_restore_toolhead=True, gcmd=gcmd)
         ):
             # Initialize probe retry state
             self.retry_session.start(gcmd)
@@ -961,19 +970,19 @@ class ProbeEndstopWrapper:
             if stepper.is_active_axis("z"):
                 self.add_stepper(stepper)
 
-    def _raise_probe(self):
+    def _raise_probe(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self.deactivate_gcode.run_gcode_from_command()
+        self.deactivate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
                 "Toolhead moved during probe deactivate_gcode script"
             )
 
-    def _lower_probe(self):
+    def _lower_probe(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self.activate_gcode.run_gcode_from_command()
+        self.activate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
                 "Toolhead moved during probe activate_gcode script"
@@ -987,24 +996,24 @@ class ProbeEndstopWrapper:
     def multi_probe_end(self, context):
         if self.stow_on_each_sample:
             return
-        self._raise_probe()
+        self._raise_probe(context.gcmd)
         self.multi = "OFF"
 
     def probing_move(
         self, pos, speed, gcmd: GCodeCommand
     ) -> Union[list[float], tuple[list[float], bool]]:
         phoming = self.printer.lookup_object("homing")
-        return phoming.probing_move(self, pos, speed)
+        return phoming.probing_move(self, pos, speed, gcmd)
 
     def probe_prepare(self, hmove):
         if self.multi == "OFF" or self.multi == "FIRST":
-            self._lower_probe()
+            self._lower_probe(hmove.gcmd)
             if self.multi == "FIRST":
                 self.multi = "ON"
 
     def probe_finish(self, hmove):
         if self.multi == "OFF":
-            self._raise_probe()
+            self._raise_probe(hmove.gcmd)
 
     def get_position_endstop(self):
         return self.position_endstop
@@ -1202,7 +1211,7 @@ class ProbePointsHelper:
             # Manual probe
             self.lift_speed = self.speed
             self.probe_offsets = (0.0, 0.0, 0.0)
-            self._manual_probe_start()
+            self._manual_probe_start(gcmd)
             return
         # Perform automatic probing
         self.lift_speed = probe.get_lift_speed(gcmd)
@@ -1211,7 +1220,7 @@ class ProbePointsHelper:
             raise gcmd.error(
                 "horizontal_move_z can't be less than probe's z_offset"
             )
-        with multi_probe_session(probe, ProbingContext()):
+        with multi_probe_session(probe, ProbingContext(gcmd=gcmd)):
             while True:
                 done = self._move_next()
                 if done:
@@ -1246,7 +1255,7 @@ class ProbePointsHelper:
             "axis_twist_compensation", None
         )
 
-        with multi_probe_session(probe, ProbingContext()):
+        with multi_probe_session(probe, ProbingContext(gcmd=gcmd)):
             done = False
             while not done:
                 # If needed, raise up so we can move down to pull out backlash
@@ -1381,19 +1390,18 @@ class ProbePointsHelper:
             points.append(((x, y), True))
         return points
 
-    def _manual_probe_start(self):
+    def _manual_probe_start(self, gcmd):
         done = self._move_next()
         if not done:
-            gcmd = self.gcode.create_gcode_command("", "", {})
             manual_probe.ManualProbeHelper(
-                self.printer, gcmd, self._manual_probe_finalize
+                self.printer, gcmd, self._manual_probe_finalize, pass_gcmd=True
             )
 
-    def _manual_probe_finalize(self, kin_pos):
+    def _manual_probe_finalize(self, kin_pos, gcmd):
         if kin_pos is None:
             return
         self._store_probe_result(kin_pos)
-        self._manual_probe_start()
+        self._manual_probe_start(gcmd)
 
 
 def load_config(config):

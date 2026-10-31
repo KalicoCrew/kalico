@@ -329,15 +329,17 @@ class Calibrater:
             self._manual_probe_callback_factory(
                 gcmd, probe_points, nozzle_points, interval
             ),
+            True,
         )
 
     def _manual_probe_callback_factory(
-        self, gcmd, probe_points, nozzle_points, interval
+        self, orig_gcmd, probe_points, nozzle_points, interval
     ):
         # returns a callback function for the manual probe
         is_end = self.current_point_index == len(probe_points) - 1
 
-        def callback(kin_pos):
+        def callback(kin_pos, new_gcmd):
+            gcmd = orig_gcmd.with_new_context(new_gcmd)
             if kin_pos is None:
                 # probe was cancelled
                 gcmd.respond_info(

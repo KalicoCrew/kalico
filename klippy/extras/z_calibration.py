@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from klippy.extras.probe import ProbeList, multi_probe_session
+from klippy.extras.probe import ProbeList, ProbingContext, multi_probe_session
 from klippy.mcu import MCU_endstop
 
 
@@ -247,7 +247,9 @@ class ZCalibrationHelper:
         positions = []
         while len(positions) < sample_count:
             # Probe position
-            pos = self._probe(self.z_endstop, self.position_min, speed)
+            pos = self._probe(
+                self.z_endstop, self.position_min, speed, gcmd=gcmd
+            )
             positions.append(pos)
             # Retract
             liftpos = [None, None, pos[2] + sample_retract_dist]
@@ -328,13 +330,13 @@ class ZCalibrationHelper:
                 "Unable to parse %s in %s" % (name, self.config.get_name())
             )
 
-    def _probe(self, mcu_endstop, z_position, speed, wiggle=False):
+    def _probe(self, mcu_endstop, z_position, speed, wiggle=False, *, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
         pos[2] = z_position
         # probe
         phoming = self.printer.lookup_object("homing")
-        curpos = phoming.probing_move(mcu_endstop, pos, speed)
+        curpos = phoming.probing_move(mcu_endstop, pos, speed, gcmd)
         # retract
         self._move([None, None, curpos[2] + self.retract_dist], self.lift_speed)
         if wiggle and self.wiggle_offsets is not None:
@@ -465,6 +467,7 @@ class CalibrationState:
                 self.helper.position_min,
                 self.helper.probing_speed,
                 wiggle=wiggle,
+                gcmd=self.gcmd,
             )
         retries = 0
         positions = []
@@ -475,13 +478,14 @@ class CalibrationState:
                 self.helper.position_min,
                 self.helper.second_speed,
                 wiggle=wiggle,
+                gcmd=self.gcmd,
             )
             positions.append(curpos[:3])
             # check tolerance
             z_positions = [p[2] for p in positions]
             if max(z_positions) - min(z_positions) > self.helper.tolerance:
                 if retries >= self.helper.retries:
-                    self.helper.end_gcode.run_gcode_from_command()
+                    self.helper.end_gcode.run_gcode(self.gcmd)
                     raise self.gcmd.error("Probe samples exceed tolerance")
                 self.gcmd.respond_info(
                     "Probe samples exceed tolerance. Retrying..."
@@ -502,19 +506,12 @@ class CalibrationState:
         return probe_site
 
     def _set_new_gcode_offset(self, offset):
-        # reset gcode z offset to 0
-        gcmd_offset = self.gcode.create_gcode_command(
-            "SET_GCODE_OFFSET", "SET_GCODE_OFFSET", {"Z": 0.0}
+        self.gcmd.run_script(
+            "SET_GCODE_OFFSET Z=0\nSET_GCODE_OFFSET Z_ADJUST=%.9f" % offset
         )
-        self.gcode_move.cmd_SET_GCODE_OFFSET(gcmd_offset)
-        # set new gcode z offset
-        gcmd_offset = self.gcode.create_gcode_command(
-            "SET_GCODE_OFFSET", "SET_GCODE_OFFSET", {"Z_ADJUST": offset}
-        )
-        self.gcode_move.cmd_SET_GCODE_OFFSET(gcmd_offset)
 
     def calibrate_z(self):
-        self.helper.start_gcode.run_gcode_from_command()
+        self.helper.start_gcode.run_gcode(self.gcmd)
         # probe the nozzle
         nozzle_zero = self._probe_on_site(
             self.z_endstop,
@@ -524,8 +521,8 @@ class CalibrationState:
             wiggle=True,
         )
         # probe the probe-switch
-        self.helper.switch_gcode.run_gcode_from_command()
-        with multi_probe_session(self.probe):
+        self.helper.switch_gcode.run_gcode(self.gcmd)
+        with multi_probe_session(self.probe, ProbingContext(gcmd=self.gcmd)):
             # probe the body of the switch
             switch_zero = self._probe_on_site(
                 self.z_endstop, self.helper.switch_site, check_probe=True
@@ -566,14 +563,14 @@ class CalibrationState:
             self.max_deviation is not None  # deprecated
             and abs(offset) > self.max_deviation
         ):
-            self.helper.end_gcode.run_gcode_from_command()
+            self.helper.end_gcode.run_gcode(self.gcmd)
             raise self.helper.printer.command_error(
                 "Offset is greater than"
                 " allowed: offset=%.3f"
                 " > max_deviation=%.3f" % (offset, self.max_deviation)
             )
         elif offset < self.offset_margins[0] or offset > self.offset_margins[1]:
-            self.helper.end_gcode.run_gcode_from_command()
+            self.helper.end_gcode.run_gcode(self.gcmd)
             raise self.helper.printer.command_error(
                 "Offset %.3f is outside"
                 " the configured range of"
@@ -585,7 +582,7 @@ class CalibrationState:
         # set states
         self.helper.last_state = True
         self.helper.last_z_offset = offset
-        self.helper.end_gcode.run_gcode_from_command()
+        self.helper.end_gcode.run_gcode(self.gcmd)
 
 
 def load_config(config):

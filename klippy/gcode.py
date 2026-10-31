@@ -3,13 +3,20 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import collections
+import contextlib
 import logging
 import os
 import re
 import shlex
+from typing import TYPE_CHECKING, ContextManager, Iterator, Protocol
 
 from . import mathutil
+
+if TYPE_CHECKING:
+    from .reactor import ReactorMutex
 
 
 class CommandError(Exception):
@@ -19,17 +26,198 @@ class CommandError(Exception):
 Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
 
 
+class GCodeContext(Protocol):
+    def get_root(self) -> GCodeContext: ...
+
+    def is_nested(self) -> bool:
+        return self.get_root() is not self
+
+    def get_mutex(self) -> ReactorMutex: ...
+    def owns_mutex(self) -> bool: ...
+    def acquire_mutex(self) -> None: ...
+    def release_mutex(self) -> None: ...
+
+    def release(self) -> ContextManager[None]:
+        return self.get_root().release()
+
+    @contextlib.contextmanager
+    def manage(self) -> Iterator[GCodeContext]:
+        release_on_exit = not self.owns_mutex()
+        try:
+            yield self
+        finally:
+            if release_on_exit and self.owns_mutex():
+                self.release_mutex()
+
+
+class GCodeContextRoot(GCodeContext):
+    def __init__(self, mutex: ReactorMutex):
+        self._mutex = mutex
+        self._owns_mutex = False
+
+    def get_root(self) -> GCodeContext:
+        return self
+
+    def get_mutex(self) -> ReactorMutex:
+        return self._mutex
+
+    def owns_mutex(self) -> bool:
+        return self._owns_mutex
+
+    def acquire_mutex(self) -> None:
+        if not self._owns_mutex:
+            self._mutex.__enter__()
+            self._owns_mutex = True
+
+    def release_mutex(self) -> None:
+        mutex = self._mutex
+        if not self._owns_mutex:
+            raise CommandError("This G-code context does not own the mutex")
+        self._owns_mutex = False
+        mutex.__exit__(None, None, None)
+
+    @contextlib.contextmanager
+    def release(self) -> Iterator[None]:
+        if not self._owns_mutex:
+            raise CommandError(
+                "G-code lock can only be released by its dispatched handler"
+            )
+        self.release_mutex()
+        try:
+            yield
+        finally:
+            self.acquire_mutex()
+
+
+class GCodeContextScope(GCodeContext):
+    def __init__(self, context: GCodeContext):
+        self._context = context
+        self._root = context.get_root()
+        self._valid = True
+
+    def get_root(self) -> GCodeContext:
+        return self._root
+
+    def is_nested(self) -> bool:
+        parent = self._context
+        return parent is not self._root or parent.is_nested()
+
+    def get_mutex(self) -> ReactorMutex:
+        return self._root.get_mutex()
+
+    def _check_valid(self) -> None:
+        if not self._valid:
+            raise CommandError("This G-code command context is no longer valid")
+
+    def owns_mutex(self) -> bool:
+        self._check_valid()
+        return self._root.owns_mutex()
+
+    def acquire_mutex(self) -> None:
+        self._check_valid()
+        self._root.acquire_mutex()
+
+    def release_mutex(self) -> None:
+        self._check_valid()
+        self._root.release_mutex()
+
+    @contextlib.contextmanager
+    def release(self) -> Iterator[None]:
+        self._check_valid()
+        with self._root.release():
+            yield
+
+    def invalidate(self) -> None:
+        self._valid = False
+
+
+class GCodeContextLegacy(GCodeContext):
+    def __init__(self, mutex: ReactorMutex):
+        self._mutex = mutex
+
+    def get_root(self) -> GCodeContext:
+        return self
+
+    def is_nested(self) -> bool:
+        return True
+
+    def get_mutex(self) -> ReactorMutex:
+        return self._mutex
+
+    def owns_mutex(self) -> bool:
+        return self._mutex.test()
+
+    def acquire_mutex(self) -> None:
+        raise CommandError("A legacy G-code context cannot acquire the mutex")
+
+    def release_mutex(self) -> None:
+        raise CommandError("A legacy G-code context cannot release the mutex")
+
+    def release(self) -> ContextManager[None]:
+        raise CommandError(
+            "G-code lock can only be released by its dispatched handler"
+        )
+
+
 class GCodeCommand:
     error = CommandError
 
-    def __init__(self, gcode, command, commandline, params, need_ack):
+    def __init__(
+        self,
+        gcode,
+        command,
+        commandline,
+        params,
+        need_ack,
+        context: GCodeContextScope,
+    ):
+        self._gcode = gcode
         self._command = command
         self._commandline = commandline
         self._params = params
         self._need_ack = need_ack
+        self._context = context
         # Method wrappers
         self.respond_info = gcode.respond_info
         self.respond_raw = gcode.respond_raw
+
+    def create_subcommand(self, command, commandline, params):
+        """Create a command sharing this handler's execution scope."""
+        self._context._check_valid()
+        return self._gcode.create_gcode_command(
+            command,
+            commandline,
+            params,
+            context=self._context,
+        )
+
+    def with_new_context(self, gcmd):
+        """Copy this command using another command's execution scope."""
+        return gcmd.create_subcommand(
+            self._command, self._commandline, self._params.copy()
+        )
+
+    def run_script(self, script):
+        """Run nested commands in a context wrapping this command's context."""
+        self._context._check_valid()
+        context = GCodeContextScope(self._context)
+        try:
+            self._gcode._process_commands(
+                script.split("\n"),
+                need_ack=False,
+                context=context,
+            )
+        finally:
+            context.invalidate()
+
+    def without_lock(self) -> ContextManager[None]:
+        """Release the shared G-code mutex until the context exits."""
+        return self._context.release()
+
+    def run_without_gcode_lock(self, callback, *args, **kwargs):
+        """Run a callback while this command's G-code mutex is released."""
+        with self.without_lock():
+            return callback(*args, **kwargs)
 
     def get_command(self):
         return self._command
@@ -158,11 +346,11 @@ class GCodeDispatch:
         self.output_callbacks = []
         self.base_gcode_handlers = self.gcode_handlers = {}
         self.ready_gcode_handlers = {}
+        self.gcode_lockfree = {}
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
         self._interrupt_counter = 0
-        self._script_context = 0
         # Register commands needed before config file is loaded
         handlers = [
             "M110",
@@ -179,7 +367,13 @@ class GCodeDispatch:
         for cmd in handlers:
             func = getattr(self, "cmd_" + cmd)
             desc = getattr(self, "cmd_" + cmd + "_help", None)
-            self.register_command(cmd, func, True, desc)
+            self.register_command(
+                cmd,
+                func,
+                True,
+                desc,
+                lockfree=cmd in ("M112", "HEATER_INTERRUPT"),
+            )
 
     def get_interrupt_counter(self):
         return self._interrupt_counter
@@ -196,9 +390,12 @@ class GCodeDispatch:
         except:
             return False
 
-    def register_command(self, cmd, func, when_not_ready=False, desc=None):
+    def register_command(
+        self, cmd, func, when_not_ready=False, desc=None, lockfree=False
+    ):
         if func is None:
             old_cmd = self.ready_gcode_handlers.get(cmd)
+            self.gcode_lockfree.pop(cmd, None)
             if cmd in self.ready_gcode_handlers:
                 del self.ready_gcode_handlers[cmd]
             if cmd in self.base_gcode_handlers:
@@ -227,6 +424,8 @@ class GCodeDispatch:
                 return origfunc(self._get_extended_params(params))
 
         self.ready_gcode_handlers[cmd] = func
+        if lockfree:
+            self.gcode_lockfree[cmd] = True
         if when_not_ready:
             self.base_gcode_handlers[cmd] = func
         if desc is not None:
@@ -291,64 +490,102 @@ class GCodeDispatch:
     # Parse input into commands
     args_r = re.compile("([A-Z_]+|[A-Z*])")
 
-    def _process_commands(self, commands, need_ack=True):
-        for line in commands:
-            # Ignore comments and leading/trailing spaces
-            line = origline = line.strip()
-            cpos = line.find(";")
-            if cpos >= 0:
-                line = line[:cpos]
-            # Break line into parts and determine command
-            parts = self.args_r.split(line.upper())
-            if "".join(parts[:2]) == "N":
-                # Skip line number at start of command
-                cmd = "".join(parts[3:5]).strip()
-            else:
-                cmd = "".join(parts[:3]).strip()
-            # Build gcode "params" dictionary
-            params = {
-                parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
-            }
-            gcmd = GCodeCommand(self, cmd, origline, params, need_ack)
-            # Invoke handler for command
-            if self._script_context > 0 and cmd == "RETURN":
-                return
-            handler = self.gcode_handlers.get(cmd, self.cmd_default)
-            try:
-                handler(gcmd)
-            except self.error as e:
-                self._respond_error(str(e))
-                self.printer.send_event("gcode:command_error")
-                if not need_ack:
-                    raise
-            except:
-                msg = 'Internal error on command:"%s"' % (cmd,)
-                logging.exception(msg)
-                self.printer.invoke_shutdown(msg)
-                self._respond_error(msg)
-                if not need_ack:
-                    raise
-            gcmd.ack()
+    def _process_commands(self, commands, need_ack, context: GCodeContext):
+        with context.manage():
+            for line in commands:
+                # Ignore comments and leading/trailing spaces
+                line = origline = line.strip()
+                cpos = line.find(";")
+                if cpos >= 0:
+                    line = line[:cpos]
+                # Break line into parts and determine command
+                parts = self.args_r.split(line.upper())
+                if "".join(parts[:2]) == "N":
+                    # Skip line number at start of command
+                    cmd = "".join(parts[3:5]).strip()
+                else:
+                    cmd = "".join(parts[:3]).strip()
+                if cmd == "RETURN" and context.is_nested():
+                    return
+                params = {
+                    parts[i]: parts[i + 1].strip()
+                    for i in range(1, len(parts), 2)
+                }
+                gcmd = None
+                try:
+                    if (
+                        cmd not in self.gcode_lockfree
+                        and not context.owns_mutex()
+                    ):
+                        context.acquire_mutex()
+                    scope = GCodeContextScope(context)
+                    try:
+                        gcmd = GCodeCommand(
+                            self, cmd, origline, params, need_ack, scope
+                        )
+                        handler = self.gcode_handlers.get(cmd, self.cmd_default)
+                        handler(gcmd)
+                    finally:
+                        scope.invalidate()
+                except self.error as e:
+                    self._respond_error(str(e))
+                    self.printer.send_event("gcode:command_error")
+                    if not need_ack:
+                        raise
+                except:
+                    msg = 'Internal error on command:"%s"' % (cmd,)
+                    logging.exception(msg)
+                    self.printer.invoke_shutdown(msg)
+                    self._respond_error(msg)
+                    if not need_ack:
+                        raise
+                if gcmd is not None:
+                    gcmd.ack()
+                elif need_ack:
+                    self.respond_raw("ok")
 
-    def run_script_from_command(self, script):
-        self._script_context += 1
-        try:
-            self._process_commands(script.split("\n"), need_ack=False)
-        finally:
-            self._script_context -= 1
+    def run_script_from_command(self, script, gcmd=None):
+        """Use the command context, or the legacy escape hatch when omitted."""
+        if gcmd is not None:
+            return gcmd.run_script(script)
+        if not self.mutex.test():
+            raise self.error(
+                "run_script_from_command requires the G-code mutex"
+            )
+        self._process_commands(
+            script.split("\n"),
+            need_ack=False,
+            context=GCodeContextLegacy(self.mutex),
+        )
 
     def run_script(self, script):
-        if "INTERRUPT" in script:
-            self._process_commands(script.split("\n"), need_ack=False)
-        else:
-            with self.mutex:
-                self._process_commands(script.split("\n"), need_ack=False)
+        self._process_commands(
+            script.split("\n"),
+            need_ack=False,
+            context=GCodeContextRoot(self.mutex),
+        )
 
     def get_mutex(self):
         return self.mutex
 
-    def create_gcode_command(self, command, commandline, params):
-        return GCodeCommand(self, command, commandline, params, False)
+    def create_gcode_command(
+        self,
+        command,
+        commandline,
+        params,
+        *,
+        context: GCodeContextScope | None = None,
+    ):
+        if context is None:
+            context = GCodeContextScope(GCodeContextLegacy(self.mutex))
+        return GCodeCommand(
+            self,
+            command,
+            commandline,
+            params,
+            False,
+            context,
+        )
 
     # Response handling
     def respond_raw(self, msg):
@@ -604,8 +841,11 @@ class GCodeIO:
         self.is_processing_data = True
         while pending_commands:
             self.pending_commands = []
-            with self.gcode_mutex:
-                self.gcode._process_commands(pending_commands)
+            self.gcode._process_commands(
+                pending_commands,
+                need_ack=True,
+                context=GCodeContextRoot(self.gcode_mutex),
+            )
             pending_commands = self.pending_commands
         self.is_processing_data = False
         if self.fd_handle is None:

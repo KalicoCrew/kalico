@@ -244,7 +244,7 @@ class ToolsCalibrate:
                 x=self.last_result.x, y=self.last_result.y, z=self.last_result.z
             )
 
-            self.gcode.run_script_from_command(
+            gcmd.run_script(
                 f'SET_GCODE_VARIABLE MACRO="{macro_name}" VARIABLE="{variable_name}" VALUE="{value}"'
             )
 
@@ -314,11 +314,11 @@ class PrinterProbeMultiAxis:
             return gcmd.get_float("LIFT_SPEED", self.lift_speed, above=0.0)
         return self.lift_speed
 
-    def _probe(self, speed, axis, sense, max_distance):
+    def _probe(self, speed, axis, sense, max_distance, gcmd):
         phoming = self.printer.lookup_object("homing")
         pos = self._get_target_position(axis, sense, max_distance)
         try:
-            epos = phoming.probing_move(self.mcu_probe[axis], pos, speed)
+            epos = phoming.probing_move(self.mcu_probe[axis], pos, speed, gcmd)
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -410,7 +410,7 @@ class PrinterProbeMultiAxis:
         positions = []
         while len(positions) < sample_count:
             # Probe position
-            pos = self._probe(speed, axis, sense, max_distance)
+            pos = self._probe(speed, axis, sense, max_distance, gcmd)
             logging.info(
                 f"tools_calibrate: run_probe result {probe_start=} {pos=}"
             )

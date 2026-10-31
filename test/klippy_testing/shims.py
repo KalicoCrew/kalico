@@ -1,3 +1,4 @@
+import threading
 import typing
 
 import klippy.configfile
@@ -14,6 +15,10 @@ class PrinterShim:
 
         def __init__(self):
             self.ready_gcode_handlers = {}
+            self.mutex = threading.Lock()
+
+        def get_mutex(self):
+            return self.mutex
 
         def register_command(self, cmd, func, *_, **__):
             self.ready_gcode_handlers[cmd.upper()] = func
@@ -32,7 +37,14 @@ class PrinterShim:
             func = self.ready_gcode_handlers[command.upper()]
             params = dict(param.split("=", 1) for param in paramlist)
             gcmd = klippy.gcode.GCodeCommand(
-                self, command, cmdline, params, False
+                self,
+                command,
+                cmdline,
+                params,
+                False,
+                klippy.gcode.GCodeContextScope(
+                    klippy.gcode.GCodeContextRoot(self.get_mutex())
+                ),
             )
             print("Calling", func, "with", params)
             func(gcmd)

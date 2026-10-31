@@ -66,13 +66,17 @@ class SafeZHoming:
                 axis_order = "xy"
             for axis in axis_order:
                 if axis == "x" and need_x:
-                    g28_gcmd = self.gcode.create_gcode_command(
-                        "G28", "G28", {"X": "0"}
+                    g28_gcmd = gcmd.create_subcommand(
+                        "G28",
+                        "G28",
+                        {"X": "0"},
                     )
                     self.prev_G28(g28_gcmd)
                 elif axis == "y" and need_y:
-                    g28_gcmd = self.gcode.create_gcode_command(
-                        "G28", "G28", {"Y": "0"}
+                    g28_gcmd = gcmd.create_subcommand(
+                        "G28",
+                        "G28",
+                        {"Y": "0"},
                     )
                     self.prev_G28(g28_gcmd)
 
@@ -90,14 +94,14 @@ class SafeZHoming:
             # Do we need to detach the probe?
             dockable = self.printer.lookup_object("dockable_probe", None)
             if dockable is not None and dockable.detach_dockable_before_z_home:
-                dockable.detach_probe()
+                dockable.detach_probe(gcmd=gcmd)
 
             # Move to safe XY homing position
             prevpos = toolhead.get_position()
             toolhead.manual_move([self.home_x_pos, self.home_y_pos], self.speed)
 
             # Home Z
-            g28_gcmd = self.gcode.create_gcode_command("G28", "G28", {"Z": "0"})
+            g28_gcmd = gcmd.create_subcommand("G28", "G28", {"Z": "0"})
             self.prev_G28(g28_gcmd)
 
             # Perform Z Hop again for pressure-based probes
