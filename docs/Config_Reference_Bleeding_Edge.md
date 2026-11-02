@@ -55,13 +55,17 @@ smoother_freq_x: 0
 #  A frequency (in Hz) of the smooth input shaper for X axis.
 smoother_freq_y: 0
 #  A frequency (in Hz) of the smooth input shaper for Y axis.
+#  shaper_freq_x and shaper_freq_y are accepted as aliases. If both names
+#  are set for an axis, smoother_freq takes precedence for smoother types
+#  and shaper_freq takes precedence for shaper types.
 #damping_ratio_x: 0.1
 #damping_ratio_y: 0.1
 #   Damping ratios of vibrations of X and Y axes used by input shapers
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
 #   parameter requires no tuning and should not be changed.
-#   Note: Damping ratios are not currently supported for input smoothers.
+#   Note: Smoother types only use this value to fit the extruder pressure
+#   advance smoother. It does not change the smoother applied to the axes.
 ```
 
 ## Test print utilities

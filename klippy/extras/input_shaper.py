@@ -44,8 +44,13 @@ class TypedInputShaperParams:
                 minval=0.0,
                 maxval=1.0,
             )
+            # Accept smoother_freq_* as an alias: a saved calibration may
+            # leave it in the config after switching from a smoother type
+            smoother_freq = config.getfloat(
+                "smoother_freq_" + axis, self.shaper_freq, minval=0.0
+            )
             self.shaper_freq = config.getfloat(
-                "shaper_freq_" + axis, self.shaper_freq, minval=0.0
+                "shaper_freq_" + axis, smoother_freq, minval=0.0
             )
 
     def get_type(self):
