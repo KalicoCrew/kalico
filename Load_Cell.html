@@ -4102,19 +4102,14 @@ A Jupyter notebook is provided in <a href="https://github.com/KalicoCrew/kalico/
 <td>The <code>pullback_distance</code> is too short.</td>
 </tr>
 <tr>
-<td><code>COASTING_MOVE_ACCELERATION</code></td>
-<td>The probing move started to decelerate before the probe triggered</td>
-<td>Z is not configured with a negative <code>min_position</code> to allow the probe to move below z=0. e.g.: <code>position_min: -5</code>.</td>
+<td><code>INSUFFICIENT_Z_TRAVEL</code></td>
+<td>The probe decelerated before it triggered</td>
+<td>Z is not configured with a negative <code>position_min</code> to allow the probe to move below z=0. e.g.: <code>position_min: -5</code>.</td>
 </tr>
 <tr>
-<td><code>TOO_FEW_PROBING_MOVES</code></td>
-<td>Fewer trapezoidal moves than expected</td>
-<td>This is uncommon</td>
-</tr>
-<tr>
-<td><code>TOO_MANY_PROBING_MOVES</code></td>
-<td>More trapezoidal moves than expected</td>
-<td>This is uncommon</td>
+<td><code>UNEXPECTED_ERROR</code></td>
+<td>The probing moves were not what the tap analysis expected. The error message says which part was unexpected.</td>
+<td>This is uncommon. Please report it with the <code>Bad tap detected</code> and <code>Trapezoidal Movement Queue</code> lines from <code>klippy.log</code>.</td>
 </tr>
 </tbody>
 </table>
