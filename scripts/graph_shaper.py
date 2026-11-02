@@ -57,7 +57,9 @@ def bisect(func, left, right):
 
 def find_shaper_plot_range(estimate_shaper, shaper_freq, vib_tol):
     def eval_shaper(freq):
-        return estimate_shaper(freq) - vib_tol
+        # [0]: single-element array to scalar (implicit conversion was
+        # removed in numpy 2.0)
+        return estimate_shaper(freq)[0] - vib_tol
 
     if not PLOT_FREQ_RANGE:
         left = bisect(eval_shaper, 0.1 * shaper_freq, shaper_freq)
