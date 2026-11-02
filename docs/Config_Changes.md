@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261102: Python 3.9 is no longer tested. It remains installable on a
+best-effort basis and no action is needed for existing installs, but
+problems specific to it may go unnoticed. Hosts on Python 3.9, such as
+Debian 11 "Bullseye", should consider upgrading.
+
 20261021: The temporary acceleration and velocity limits applied during
 `TEST_RESONANCES` and `SHAPER_CALIBRATE` are now derived from the actual
 test sequence instead of only the configured `accel_per_hz`. Previously an
