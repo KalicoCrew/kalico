@@ -32,8 +32,9 @@ Kalico supports the following standard G-Code commands:
 - Set bed temperature and wait: `M190 S<temperature>`
   - Note: M190 always waits for temperature to settle at requested
     value
-- Set fan speed: `M106 S<value>`
-- Turn fan off: `M107`
+- Set fan speed: `M106 [P<index>] S<value>` (`P` needs a
+  [fan index](Config_Reference.md#fan-my_fan))
+- Turn fan off: `M107 [P<index>]`
 - Emergency stop: `M112`
 - Get current position: `M114`
 - Get firmware version: `M115`
@@ -621,6 +622,21 @@ enabled.
 setting in the [heated_fan config section](Config_Reference.md#heated_fan)
 until Kalico is restarted. Useful for slicers to set different heated fan
 temperatures at different layers.
+
+### ⚠️ [fan my_fan]
+
+The following commands are available when a
+[fan my_fan config section](Config_Reference.md#fan-my_fan) is enabled.
+
+#### ACTIVATE_FAN
+`ACTIVATE_FAN FAN=<name>[,<name>...]`: Select the named fans that `M106`
+and `M107` without `P` control. Newly selected fans take over the requested
+speed and fans that are no longer selected stop. At startup, the fans
+without an `index` or with `index: 0` are selected.
+
+#### SET_FAN_SPEED
+`SET_FAN_SPEED FAN=<name> SPEED=<speed>`: Set the speed of one named fan,
+from 0.0 to 1.0, whether it's selected or not.
 
 ### [fan_generic]
 

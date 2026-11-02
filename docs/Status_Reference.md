@@ -202,6 +202,12 @@ objects:
 deprecated objects (for UI compatibility only):
 - `speed`: The fan speed as a float between 0.0 and `max_power`.
 
+`fan my_fan` objects report the same values, plus:
+- `active`: True if `M106` and `M107` without `P` control this fan.
+
+With `[fan my_fan]` sections, the `fan` object reports the values of the
+first active fan.
+
 ## filament_switch_sensor
 
 The following information is available in

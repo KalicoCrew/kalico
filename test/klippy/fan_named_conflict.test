@@ -1,0 +1,4 @@
+# [fan] and [fan <name>] can't be used together
+DICTIONARY atmega2560.dict
+CONFIG fan_named_conflict.cfg
+SHOULD_FAIL

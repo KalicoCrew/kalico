@@ -1,0 +1,56 @@
+# Test [fan <name>] sections and the internal "fan" object
+DICTIONARY atmega2560.dict
+CONFIG fan_named.cfg
+
+G28
+
+# M106 and M107 drive every named fan by default
+M106 S255
+FLUSH_FANS
+ASSERT TEST='{printer["fan part_a"].value == 1.0}'
+ASSERT TEST='{printer["fan part_b"].value == 1.0}'
+ASSERT TEST='{printer["fan part_a"].active and printer["fan part_b"].active}'
+ASSERT TEST='{printer.fan.speed == 1.0}'
+
+# Selecting a fan hands over the speed and stops the others
+ACTIVATE_FAN FAN=part_b
+FLUSH_FANS
+ASSERT TEST='{printer["fan part_a"].value == 0.0}'
+ASSERT TEST='{printer["fan part_b"].value == 1.0}'
+ASSERT TEST='{not printer["fan part_a"].active}'
+
+# Only the active fan follows M106
+M107
+FLUSH_FANS
+ASSERT TEST='{printer["fan part_b"].value == 0.0}'
+M106 S255
+FLUSH_FANS
+ASSERT TEST='{printer["fan part_a"].value == 0.0}'
+ASSERT TEST='{printer["fan part_b"].value == 1.0}'
+
+# Several fans can be active
+ACTIVATE_FAN FAN=part_a,part_b
+FLUSH_FANS
+ASSERT TEST='{printer["fan part_a"].value == 1.0}'
+M107
+FLUSH_FANS
+ASSERT TEST='{printer.fan.value == 0.0}'
+ASSERT TEST='{printer["fan part_b"].value == 0.0}'
+
+# Fans with an index above 0 only follow P and SET_FAN_SPEED
+M106 P2 S255
+M106 S0
+FLUSH_FANS
+ASSERT TEST='{printer["fan aux"].value == 1.0}'
+ASSERT TEST='{printer["fan part_a"].value == 0.0}'
+ASSERT TEST='{not printer["fan aux"].active}'
+ACTIVATE_FAN FAN=part_b
+FLUSH_FANS
+ASSERT TEST='{printer["fan aux"].value == 1.0}'
+M107 P2
+M106 P3 S255
+SET_FAN_SPEED FAN=part_a SPEED=1
+FLUSH_FANS
+ASSERT TEST='{printer["fan aux"].value == 0.0}'
+ASSERT TEST='{printer["fan part_a"].value == 1.0}'
+ASSERT TEST='{printer["fan part_b"].value == 0.0}'
