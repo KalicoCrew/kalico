@@ -4362,6 +4362,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#z_thermal_adjust_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Z_THERMAL_ADJUST_CALIBRATE
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -9688,6 +9699,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#z_thermal_adjust_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Z_THERMAL_ADJUST_CALIBRATE
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -11836,6 +11858,51 @@ the config.</li>
 homing (for use in e.g. non-standard homing routines) - will be reset
 automatically upon homing.</li>
 </ul>
+<h4 id="z_thermal_adjust_calibrate">Z_THERMAL_ADJUST_CALIBRATE<a class="headerlink" href="#z_thermal_adjust_calibrate" title="Permanent link">&para;</a></h4>
+<p><code>Z_THERMAL_ADJUST_CALIBRATE CALIBRATION=NOZZLE HEATER=&lt;heater&gt;
+ [COMPONENT=name] [PROBE=&lt;probe&gt;] [MIN_TEMP=&lt;value&gt;] [MAX_TEMP=&lt;value&gt;]
+ [MEASUREMENTS=&lt;count&gt;] [SOAK_TIME=&lt;seconds&gt;]
+ [Z_LIFT=&lt;mm&gt;] [Z_LIFT_SPEED=&lt;mm/s&gt;]</code>: Measures the
+thermal expansion of the nozzle and calculates the <code>temp_coeff</code> for the
+<code>[z_thermal_adjust]</code> section. The printer must be homed and the nozzle must be
+positioned over a clean spot on the bed where probing is possible.
+The command heats the nozzle from <code>MIN_TEMP</code> up to <code>MAX_TEMP</code>, and then back
+down to <code>MIN_TEMP</code> for a complete thermal cycle. It splits the temperature range
+into <code>MEASUREMENTS</code> steps. Each step starts with a pause for <code>SOAK_TIME</code>, probes
+to measure the nozzle and lifts the toolhead by <code>Z_LIFT</code> to resume heating. The
+heater is turned off when the command finishes or fails.
+A linear regression of the probe results against temperature gives the coefficient,
+which is reported and stored as the section's <code>temp_coeff</code>. Run <code>SAVE_CONFIG</code>
+to write it to the config file and restart. See also
+<a href="Load_Cell.html#nozzle-temperature-compensation">Nozzle Temperature Compensation</a>.</p>
+<ul>
+<li><code>CALIBRATION</code>: The type of calibration routine to run. Required. Only <code>NOZZLE</code> is currently
+supported; <code>FRAME</code> is reserved for future use.</li>
+<li><code>HEATER</code>: The name of the heater to calibrate with, typically <code>extruder</code>. Required.</li>
+<li><code>COMPONENT</code>: if multiple thermal adjustment are defined use <code>COMPONENT</code> to
+specify which one to calibrate.</li>
+<li><code>PROBE</code>: The probe to measure with, if more than one probe is configured.</li>
+<li><code>MIN_TEMP</code>: The lowest temperature to measure at. The default is 140.</li>
+<li><code>MAX_TEMP</code>: The highest temperature to measure at. It must be greater than
+<code>MIN_TEMP</code>. The default is 250.</li>
+<li><code>MEASUREMENTS</code>: The number of distinct temperatures to measure
+at between <code>MIN_TEMP</code> and <code>MAX_TEMP</code>, inclusive. The minimum is 2 and the
+default is 10. Each temperature is measured twice, once while heating and 
+once while cooling.</li>
+<li><code>SOAK_TIME</code>: Seconds to wait after the heater reaches each temperature, to
+let the nozzle and heatbreak reach thermal equilibrium. The default is 20.</li>
+<li><code>Z_LIFT</code>: Distance in mm to raise the toolhead after each probe. The default
+is 10.</li>
+<li><code>Z_LIFT_SPEED</code>: Speed in mm/s of the lift move. The default is 5.</li>
+</ul>
+<p>When the calculation completes the command reports the total elongation and
+temperature range measured and the resulting temperature coefficient. It also
+saves a plot of the measurements and fitted line as
+<code>nozzle_elongation_YYYY-MM-DD_HH-MM-SS.png</code> in the same directory as the
+Klipper log file, and prints a link to it (the link assumes
+<a href="https://github.com/Arksine/moonraker">Moonraker</a> serves the <code>logs</code> root).
+Plotting requires <code>matplotlib</code> and a configured log file; if there is no log
+file the plot is skipped.</p>
 <h3 id="z_calibration">⚠️ [z_calibration]<a class="headerlink" href="#z_calibration" title="Permanent link">&para;</a></h3>
 <p>The following commands are available when a
 <a href="Config_Reference.html#z_calibration">z_calibration config section</a> is enabled

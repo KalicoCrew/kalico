@@ -4156,6 +4156,15 @@ If the calibration fails, look at the bowden tube motion during the calibration.
 </code></pre></div>
 
 <p>Example: <code>temp_coeff = -0.05 / (290 - 180) = -0.00045455</code></p>
+<p>Alternatively, let Klipper measure it for you with
+<a href="G-Codes.html#z_thermal_adjust_calibrate">Z_THERMAL_ADJUST_CALIBRATE</a>. Home, move
+the nozzle over a clean spot on the bed and run:</p>
+<div class="highlight"><pre><span></span><code>Z_THERMAL_ADJUST_CALIBRATE CALIBRATION=NOZZLE HEATER=extruder COMPONENT=nozzle
+</code></pre></div>
+
+<p>The command probes at a series of temperatures while heating and cooling,
+fits a line through the results, saves a plot of the fit to the logs directory
+and stores the coefficient. Run <code>SAVE_CONFIG</code> to keep it.</p>
 <p>Expect a negative value (<code>z_thermal_adjust</code> will move the nozzle away from bed with negative values and towards it with positive values).</p>
 <p>Example configuration:</p>
 <div class="highlight"><pre><span></span><code><span class="k">[z_thermal_adjust nozzle]</span>
