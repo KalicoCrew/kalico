@@ -3916,7 +3916,7 @@ Fans without an `index` follow `M106` and `M107` until
 `printer.fan` status and any option that refers to `fan` keep working and
 use the first active fan. A heater with
 [MPC](MPC.md) on a multi-fan printer should set `cooling_fan: fan my_fan`
-to model its own fan.
+to model its own fan, or [list several](MPC.md#multiple-cooling-fans).
 
 ```
 [fan my_fan]
