@@ -40,7 +40,7 @@ def _gcmd(heater, params):
         "PID_PROFILE",
         "PID_PROFILE",
         params,
-        False,
+        None,
         klippy.gcode.GCodeContextScope(
             klippy.gcode.GCodeContextRoot(threading.Lock())
         ),

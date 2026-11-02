@@ -1,6 +1,7 @@
 # Test case for probe:z_virtual_endstop support
 CONFIG z_virtual_endstop.cfg
 DICTIONARY atmega2560.dict
+INTERACTIVE
 
 # Start by homing the printer.
 G28

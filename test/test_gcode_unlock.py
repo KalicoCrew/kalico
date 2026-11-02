@@ -222,7 +222,7 @@ def test_lockfree_command_runs_while_another_invocation_holds_mutex(dispatch):
     assert not mutex.test()
 
 
-def test_serial_error_keeps_the_mutex_until_the_batch_finishes(dispatch):
+def test_script_error_releases_mutex_and_stops_the_script(dispatch):
     gcode, _ = dispatch
     mutex = record_mutex(gcode)
     seen = []
@@ -246,13 +246,14 @@ def test_serial_error_keeps_the_mutex_until_the_batch_finishes(dispatch):
 
     gcode.register_command("FAIL_TEST", fail)
     gcode.register_command("AFTER_TEST", after)
-    gcode._process_commands(
-        ["", "; comment", "FAIL_TEST", "AFTER_TEST"],
-        need_ack=True,
-        context=GCodeContextRoot(gcode.get_mutex()),
-    )
+    with pytest.raises(CommandError, match="handler failed"):
+        gcode._process_commands(
+            ["", "; comment", "FAIL_TEST", "AFTER_TEST"],
+            ack_callback=None,
+            context=GCodeContextRoot(gcode.get_mutex()),
+        )
     assert defaults == ["", "; comment"]
-    assert seen == [mutex]
+    assert not seen
     assert (mutex.enters, mutex.exits) == (1, 1)
     assert not mutex.test()
 
@@ -273,14 +274,14 @@ def test_dispatch_uses_only_the_mutex_in_its_context(dispatch):
             with provided_mutex:
                 gcode._process_commands(
                     ["CONTEXT_TEST"],
-                    need_ack=False,
+                    ack_callback=None,
                     context=GCodeContextLegacy(provided_mutex),
                 )
                 assert provided_mutex.test()
         else:
             gcode._process_commands(
                 ["CONTEXT_TEST"],
-                need_ack=False,
+                ack_callback=None,
                 context=GCodeContextRoot(provided_mutex),
             )
         gcode.register_command("CONTEXT_TEST", None)
@@ -353,9 +354,7 @@ def test_direct_subcommands_share_scope_until_dispatched_handler_returns(
                 expired.run_script("FREE_TEST")
 
 
-def test_guard_error_acknowledges_serial_command_without_calling_handler(
-    dispatch,
-):
+def test_legacy_context_rejects_acquiring_or_releasing_mutex(dispatch):
     gcode, _ = dispatch
     with pytest.raises(CommandError, match="requires the G-code mutex"):
         gcode.run_script_from_command("M112")
@@ -374,15 +373,14 @@ def test_guard_error_acknowledges_serial_command_without_calling_handler(
     with gcode.get_mutex():
         with pytest.raises(CommandError, match="cannot acquire"):
             gcode._process_commands(
-                ["NORMAL_TEST"], need_ack=False, context=context
+                ["NORMAL_TEST"], ack_callback=None, context=context
             )
-        gcode._process_commands(["NORMAL_TEST"], need_ack=True, context=context)
         assert gcode.get_mutex().test()
     assert not gcode.get_mutex().test()
     assert messages[0].startswith(
         "!! A legacy G-code context cannot acquire the mutex"
     )
-    assert messages[-1] == "ok"
+    assert len(messages) == 1
 
 
 def test_with_new_context_replays_expired_command_in_live_scope(dispatch):
