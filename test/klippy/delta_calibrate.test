@@ -1,6 +1,8 @@
 # Test case for basic movement on delta printers
 CONFIG delta_calibrate.cfg
 DICTIONARY atmega2560.dict
+# Manual probing needs later commands from the same interactive stream.
+INTERACTIVE
 
 # Start by homing the printer.
 G28

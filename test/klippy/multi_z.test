@@ -1,6 +1,7 @@
 # Test case with multiple z stepper motors
 CONFIG multi_z.cfg
 DICTIONARY atmega2560.dict
+INTERACTIVE
 
 # Start by homing the printer.
 G28

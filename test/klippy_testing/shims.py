@@ -41,7 +41,7 @@ class PrinterShim:
                 command,
                 cmdline,
                 params,
-                False,
+                None,
                 klippy.gcode.GCodeContextScope(
                     klippy.gcode.GCodeContextRoot(self.get_mutex())
                 ),

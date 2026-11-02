@@ -1364,7 +1364,7 @@ class MenuManager:
         while self.gcode_queue:
             script = self.gcode_queue[0]
             try:
-                self.gcode.run_script(script)
+                self.gcode.run_interactive_script(script)
             except Exception:
                 logging.exception("Script running error")
             self.gcode_queue.pop(0)
