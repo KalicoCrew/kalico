@@ -100,6 +100,26 @@ i2c_busy_errata(uint8_t scl_pin, uint8_t sda_pin)
     i2c_delay_us(10);
 }
 
+// Reset the bus and the i2c peripheral
+static void
+i2c_reset(const struct i2c_info *ii)
+{
+    I2C_TypeDef *i2c = ii->i2c;
+    i2c->CR1 = 0;
+    i2c_busy_errata(ii->scl_pin, ii->sda_pin);
+    gpio_peripheral(ii->scl_pin, GPIO_FUNCTION(4) | GPIO_OPEN_DRAIN, 1);
+    gpio_peripheral(ii->sda_pin, GPIO_FUNCTION(4) | GPIO_OPEN_DRAIN, 1);
+    i2c->CR1 = I2C_CR1_SWRST;
+    i2c->CR1 = 0;
+
+    // Set 100Khz frequency and enable
+    uint32_t pclk = get_pclock_frequency((uint32_t)i2c);
+    i2c->CR2 = pclk / 1000000;
+    i2c->CCR = pclk / 100000 / 2;
+    i2c->TRISE = (pclk / 1000000) + 1;
+    i2c->CR1 = I2C_CR1_PE;
+}
+
 struct i2c_config
 i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr)
 {
@@ -112,21 +132,10 @@ i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr)
     if (!is_enabled_pclock((uint32_t)i2c)) {
         // Enable i2c clock and gpio
         enable_pclock((uint32_t)i2c);
-        i2c_busy_errata(ii->scl_pin, ii->sda_pin);
-        gpio_peripheral(ii->scl_pin, GPIO_FUNCTION(4) | GPIO_OPEN_DRAIN, 1);
-        gpio_peripheral(ii->sda_pin, GPIO_FUNCTION(4) | GPIO_OPEN_DRAIN, 1);
-        i2c->CR1 = I2C_CR1_SWRST;
-        i2c->CR1 = 0;
-
-        // Set 100Khz frequency and enable
-        uint32_t pclk = get_pclock_frequency((uint32_t)i2c);
-        i2c->CR2 = pclk / 1000000;
-        i2c->CCR = pclk / 100000 / 2;
-        i2c->TRISE = (pclk / 1000000) + 1;
-        i2c->CR1 = I2C_CR1_PE;
+        i2c_reset(ii);
     }
 
-    return (struct i2c_config){ .i2c=i2c, .addr=addr<<1 };
+    return (struct i2c_config){ .i2c=i2c, .addr=addr<<1, .bus=bus };
 }
 
 static int
@@ -147,17 +156,31 @@ i2c_wait(I2C_TypeDef *i2c, uint32_t set, uint32_t clear, uint32_t timeout)
 }
 
 static int
-i2c_start(I2C_TypeDef *i2c, uint8_t addr, uint8_t xfer_len,
-          uint32_t timeout)
+i2c_start(I2C_TypeDef *i2c, uint8_t bus, uint8_t addr, uint8_t xfer_len,
+          uint32_t *timeout)
 {
+    // A repeated start (already bus master) must not reset the bus
+    int is_restart = i2c->SR2 & I2C_SR2_MSL;
     i2c->CR1 = I2C_CR1_START | I2C_CR1_PE;
-    int ret = i2c_wait(i2c, I2C_SR1_SB, 0, timeout);
+    int ret = i2c_wait(i2c, I2C_SR1_SB, 0, *timeout);
+    if (ret == I2C_BUS_TIMEOUT && !is_restart && i2c->SR2 & I2C_SR2_BUSY) {
+        ret = I2C_BUS_BUSY;
+        if (CONFIG_MACH_STM32F1) {
+            // Bus may be wedged due to errata - reset it and retry once
+            i2c_reset(&i2c_bus[bus]);
+            *timeout = timer_read_time() + timer_from_us(5000);
+            i2c->CR1 = I2C_CR1_START | I2C_CR1_PE;
+            ret = i2c_wait(i2c, I2C_SR1_SB, 0, *timeout);
+            if (ret == I2C_BUS_TIMEOUT && i2c->SR2 & I2C_SR2_BUSY)
+                ret = I2C_BUS_BUSY;
+        }
+    }
     if (ret != I2C_BUS_SUCCESS)
         return ret;
     i2c->DR = addr;
     if (addr & 0x01)
         i2c->CR1 |= I2C_CR1_ACK;
-    ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, timeout);
+    ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, *timeout);
     if (ret != I2C_BUS_SUCCESS)
         return ret;
     irqstatus_t flag = irq_save();
@@ -204,7 +227,7 @@ i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write)
     I2C_TypeDef *i2c = config.i2c;
     uint32_t timeout = timer_read_time() + timer_from_us(5000);
 
-    int ret = i2c_start(i2c, config.addr, write_len, timeout);
+    int ret = i2c_start(i2c, config.bus, config.addr, write_len, &timeout);
     if (ret == I2C_BUS_NACK)
         ret = I2C_BUS_START_NACK;
     while (write_len-- && ret == I2C_BUS_SUCCESS)
@@ -227,7 +250,7 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
 
     if (reg_len) {
         // write the register
-        ret = i2c_start(i2c, config.addr, reg_len, timeout);
+        ret = i2c_start(i2c, config.bus, config.addr, reg_len, &timeout);
         if (ret == I2C_BUS_NACK)
             ret = I2C_BUS_START_NACK;
         while(reg_len-- && ret == I2C_BUS_SUCCESS)
@@ -236,7 +259,7 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
             goto abrt;
     }
     // start/re-start and read data
-    ret = i2c_start(i2c, addr, read_len, timeout);
+    ret = i2c_start(i2c, config.bus, addr, read_len, &timeout);
     if (ret == I2C_BUS_NACK)
         ret = I2C_BUS_START_READ_NACK;
     if (ret != I2C_BUS_SUCCESS)

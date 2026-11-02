@@ -87,6 +87,8 @@ void i2c_shutdown_on_err(int ret)
         shutdown("I2C Timeout");
     case I2C_BUS_ERR:
         shutdown("I2C BUS ERROR");
+    case I2C_BUS_BUSY:
+        shutdown("I2C BUS BUSY");
     }
 }
 
