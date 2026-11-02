@@ -122,6 +122,11 @@ used by GCodeIO and the display menu. It allows the next input to run when
 its handler enters without_lock(), while nested scripts remain sequential.
 GCodeDispatch.run_script() waits for the entire script to finish.
 
+Interruptible waits enter through GCodeCommand.wait_while() and
+GCodeCommand.sleep(), or the corresponding InterruptToken methods for
+code without a command. Tokens are obtained from
+GCodeDispatch.get_interrupt_token().
+
 There are four threads in the Klippy host code. The main thread
 handles incoming gcode commands. A second thread (which resides
 entirely in the **klippy/chelper/serialqueue.c** C code) handles

@@ -29,6 +29,7 @@ class PIDCalibrate:
         tolerance,
         write_file,
         gcmd,
+        calibration,
         calibrate_secondary,
     ):
         if isinstance(heater.control, heaters.ControlDualLoopPID):
@@ -70,17 +71,15 @@ class PIDCalibrate:
                     "Waiting for heater %s to cool down to %.1f for calibration."
                     % (heater.get_name(), max_temp)
                 )
-                pheaters.set_temperature(heater, max_temp, True)
+                pheaters.set_temperature(heater, max_temp, True, gcmd)
         else:
             calibrate = ControlAutoTune(heater, target, tolerance)
 
-        old_control = heater.set_control(calibrate)
+        old_control = calibration.set_control(calibrate)
         try:
-            pheaters.set_temperature(heater, target, True)
-        except self.printer.command_error as e:
-            heater.set_control(old_control, False)
-            raise
-        heater.set_control(old_control, False)
+            pheaters.set_temperature(heater, target, True, gcmd)
+        finally:
+            calibration.set_control(old_control, False)
 
         if write_file:
             tmpdir = tempfile.gettempdir()
@@ -117,103 +116,109 @@ class PIDCalibrate:
             raise gcmd.error(str(e))
         self.printer.lookup_object("toolhead").get_last_move_time()
 
-        if isinstance(heater.control, heaters.ControlDualLoopPID):
-            # Calibrate the inner (secondary) loop
-            kp_s, ki_s, kd_s, _ = self._calibrate(
-                pheaters,
-                heater,
-                target,
-                tolerance,
-                write_file,
-                gcmd,
-                calibrate_secondary=True,
-            )
-
-            logging.info("PID_CALIBRATE (primary) target=%.3f", target)
-            # Calibrate the outer (primary) loop1
-            kp_p, ki_p, kd_p, _ = self._calibrate(
-                pheaters,
-                heater,
-                target,
-                tolerance,
-                write_file,
-                gcmd,
-                calibrate_secondary=False,
-            )
-
-            gcmd.respond_info(
-                "PID parameters for %.2f\xb0C: "
-                "Primary: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "Secondary: inner_pid_Kp=%.3f inner_pid_Ki=%.3f inner_pid_Kd=%.3f\n"
-                "Heater: %s\n"
-                "Tolerance: %.4f\n"
-                "Profile: %s\n"
-                "The SAVE_CONFIG command will update the printer config file\n"
-                "with these parameters and restart the printer."
-                % (
+        with heater.calibration() as calibration:
+            if isinstance(heater.control, heaters.ControlDualLoopPID):
+                # Calibrate the inner (secondary) loop
+                kp_s, ki_s, kd_s, _ = self._calibrate(
+                    pheaters,
+                    heater,
                     target,
-                    kp_p,
-                    ki_p,
-                    kd_p,
-                    kp_s,
-                    ki_s,
-                    kd_s,
-                    heater_name,
                     tolerance,
-                    profile_name,
+                    write_file,
+                    gcmd,
+                    calibration,
+                    calibrate_secondary=True,
                 )
-            )
 
-            profile = {
-                "pid_target": target,
-                "pid_tolerance": tolerance,
-                "control": "dual_loop_pid",
-                "pid_kp": kp_p,
-                "pid_ki": ki_p,
-                "pid_kd": kd_p,
-                "inner_pid_kp": kp_s,
-                "inner_pid_ki": ki_s,
-                "inner_pid_kd": kd_s,
-                "smooth_time": None,
-                "name": profile_name,
-            }
-        else:
-            Kp, Ki, Kd, old_control = self._calibrate(
-                pheaters,
-                heater,
-                target,
-                tolerance,
-                write_file,
-                gcmd,
-                calibrate_secondary=False,
-            )
+                logging.info("PID_CALIBRATE (primary) target=%.3f", target)
+                # Calibrate the outer (primary) loop1
+                kp_p, ki_p, kd_p, _ = self._calibrate(
+                    pheaters,
+                    heater,
+                    target,
+                    tolerance,
+                    write_file,
+                    gcmd,
+                    calibration,
+                    calibrate_secondary=False,
+                )
 
-            logging.info("Autotune: final: Kp=%f Ki=%f Kd=%f", Kp, Ki, Kd)
-            gcmd.respond_info(
-                "PID parameters for %.2f\xb0C: "
-                "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "Heater: %s\n"
-                "Tolerance: %.4f\n"
-                "Profile: %s\n"
-                "The SAVE_CONFIG command will update the printer config file\n"
-                "with these parameters and restart the printer."
-                % (target, Kp, Ki, Kd, heater_name, tolerance, profile_name)
-            )
-            control = "pid_v" if old_control.get_type() == "pid_v" else "pid"
+                gcmd.respond_info(
+                    "PID parameters for %.2f\xb0C: "
+                    "Primary: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
+                    "Secondary: inner_pid_Kp=%.3f inner_pid_Ki=%.3f inner_pid_Kd=%.3f\n"
+                    "Heater: %s\n"
+                    "Tolerance: %.4f\n"
+                    "Profile: %s\n"
+                    "The SAVE_CONFIG command will update the printer config file\n"
+                    "with these parameters and restart the printer."
+                    % (
+                        target,
+                        kp_p,
+                        ki_p,
+                        kd_p,
+                        kp_s,
+                        ki_s,
+                        kd_s,
+                        heater_name,
+                        tolerance,
+                        profile_name,
+                    )
+                )
 
-            profile = {
-                "pid_target": target,
-                "pid_tolerance": tolerance,
-                "control": control,
-                "pid_kp": Kp,
-                "pid_ki": Ki,
-                "pid_kd": Kd,
-                "smooth_time": None,
-                "name": profile_name,
-            }
+                profile = {
+                    "pid_target": target,
+                    "pid_tolerance": tolerance,
+                    "control": "dual_loop_pid",
+                    "pid_kp": kp_p,
+                    "pid_ki": ki_p,
+                    "pid_kd": kd_p,
+                    "inner_pid_kp": kp_s,
+                    "inner_pid_ki": ki_s,
+                    "inner_pid_kd": kd_s,
+                    "smooth_time": None,
+                    "name": profile_name,
+                }
+            else:
+                Kp, Ki, Kd, old_control = self._calibrate(
+                    pheaters,
+                    heater,
+                    target,
+                    tolerance,
+                    write_file,
+                    gcmd,
+                    calibration,
+                    calibrate_secondary=False,
+                )
 
-        heater.set_control(heater.lookup_control(profile, True), False)
-        heater.pmgr.save_profile(profile_name=profile_name, verbose=False)
+                logging.info("Autotune: final: Kp=%f Ki=%f Kd=%f", Kp, Ki, Kd)
+                gcmd.respond_info(
+                    "PID parameters for %.2f\xb0C: "
+                    "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
+                    "Heater: %s\n"
+                    "Tolerance: %.4f\n"
+                    "Profile: %s\n"
+                    "The SAVE_CONFIG command will update the printer config file\n"
+                    "with these parameters and restart the printer."
+                    % (target, Kp, Ki, Kd, heater_name, tolerance, profile_name)
+                )
+                control = (
+                    "pid_v" if old_control.get_type() == "pid_v" else "pid"
+                )
+
+                profile = {
+                    "pid_target": target,
+                    "pid_tolerance": tolerance,
+                    "control": control,
+                    "pid_kp": Kp,
+                    "pid_ki": Ki,
+                    "pid_kd": Kd,
+                    "smooth_time": None,
+                    "name": profile_name,
+                }
+
+            calibration.set_control(heater.lookup_control(profile, True), False)
+            heater.pmgr.save_profile(profile_name=profile_name, verbose=False)
 
 
 TUNE_PID_DELTA = 5.0
