@@ -2756,6 +2756,56 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#calibration_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drift-filter-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drift Filter Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tap-performance-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tap Performance Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decompression-angle-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decompression Angle Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#probing-temperature" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2828,15 +2878,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#continuous-tare-filtering" class="md-nav__link">
+  <a href="#drift-filter-continuous-taring" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Continuous Tare Filtering
+        Drift Filter (Continuous Taring)
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Continuous Tare Filtering">
+    <nav class="md-nav" aria-label="Drift Filter (Continuous Taring)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -3402,6 +3452,56 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#calibration_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#drift-filter-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Drift Filter Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tap-performance-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tap Performance Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decompression-angle-calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decompression Angle Calibration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#probing-temperature" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3474,15 +3574,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#continuous-tare-filtering" class="md-nav__link">
+  <a href="#drift-filter-continuous-taring" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Continuous Tare Filtering
+        Drift Filter (Continuous Taring)
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Continuous Tare Filtering">
+    <nav class="md-nav" aria-label="Drift Filter (Continuous Taring)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -3971,6 +4071,70 @@ The probe validates each tap's shape, break-contact timing, and motion chronolog
 <div class="highlight"><pre><span></span><code>PROBE HOME=Z
 </code></pre></div>
 
+<h3 id="calibration_1">Calibration<a class="headerlink" href="#calibration_1" title="Permanent link">&para;</a></h3>
+<p>Load cell probes support automated calibrations with the <code>LOAD_CELL_PROBE_CALIBRATE</code> command ((<a href="G-Codes.html#load_cell_probe_calibrate">docs</a>)). These calibration tools probe a bed mesh or move the Z axis and analyze the results to determine optimal settings. All calibrations use the same mesh points as <code>BED_MESH_CALIBRATE</code> and save parameters for the current session (use <code>SAVE_CONFIG</code> to persist).</p>
+<h4 id="drift-filter-calibration">Drift Filter Calibration<a class="headerlink" href="#drift-filter-calibration" title="Permanent link">&para;</a></h4>
+<p><code>LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER</code></p>
+<p>Calibrates the drift filter cutoff frequency. The drift filter removes slow force changes caused by bowden tube movement during probing, keeping the signal centered on zero.</p>
+<p><strong>Prerequisites:</strong> This feature requires the SciPy library. See <a href="#installing-scipy">Installing SciPy</a>.</p>
+<p>The calibration moves from maximum Z to <code>horizontal_move_z</code> at each mesh point, recording force data. It tests increasing filter frequencies until drift is eliminated, then returns the lowest frequency that works at all positions.</p>
+<p><strong>Hints</strong></p>
+<ul>
+<li>If the probe triggers early, before touching the bed, this is probably the reason why.</li>
+<li>If the machine cannot complete Z homing, you can manually home it and run this calibration.</li>
+<li>This calibration can be slow. Using fewer mesh points can speed things up and still give usable results, e.g. <code>PROBE_COUNT=3,3</code>. All <a href="G-Codes.html#bed_mesh_calibrate">BED_MESH_CALIBRATE</a> parameters for mesh point generation.</li>
+</ul>
+<p><strong>Example output:</strong></p>
+<div class="highlight"><pre><span></span><code>// Minimum drift filter cutoff: 5.2Hz
+// drift_filter_cutoff_frequency=5.2
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+</code></pre></div>
+
+<p><strong>Normal range:</strong> 1-20Hz. Lower values indicate minimal drift, higher values suggest more bowden movement.</p>
+<p><strong>Partial failures:</strong> If some positions exceed the 20Hz limit, the calibration uses the highest successful frequency but warns. This may still be usable if only a few positions failed.</p>
+<p><strong>Troubleshooting:</strong>
+If the calibration fails, look at the bowden tube motion during the calibration. Bowden tube routing should minimize snagging and sudden shaking.</p>
+<p><strong>Re-calibrate when:</strong></p>
+<ul>
+<li>Bowden tube routing changes</li>
+<li>Experiencing probe failures when probing from max Z</li>
+</ul>
+<h4 id="tap-performance-calibration">Tap Performance Calibration<a class="headerlink" href="#tap-performance-calibration" title="Permanent link">&para;</a></h4>
+<p><code>LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE</code> (<a href="G-Codes.html#load_cell_probe_calibrate">docs</a>)</p>
+<p>Optimizes the <code>pullback_distance</code> parameter for faster probing. The default is conservative; calibration may reduce it based on the probes measured decompression behavior. The calibration probes a bed mesh and measures the decompression distance at each point (Z travel from decompression start to contact break). It calculates a safe minimum: <code>(mean + 3σ) × 2.0</code>. It accepts all <a href="G-Codes.html#bed_mesh_calibrate">BED_MESH_CALIBRATE</a> parameters for mesh point generation.</p>
+<p><strong>Example output:</strong></p>
+<div class="highlight"><pre><span></span><code>// Decompression Distance: mean=0.0607mm, min=0.0498mm, max=0.0758mm, std=0.0080mm
+// pullback_distance=0.1693
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+</code></pre></div>
+
+<p>The most likely cause of a high standard deviation is contamination on the nozzle. Make sure the nozzle is clean prior to running the calibration. Another likely cause is a "springy" bed. If the bed flexes significantly during probing it may not be suitable for a load cell probe.</p>
+<p>Re-calibrate when changes are made to <code>probe_speed</code> or <code>trigger_force</code>, these affect overshoot which determines the required pullback distance.</p>
+<h4 id="decompression-angle-calibration">Decompression Angle Calibration<a class="headerlink" href="#decompression-angle-calibration" title="Permanent link">&para;</a></h4>
+<p>This calibration runs as part of the <a href="#tap-performance-calibration">Tap Performance Calibration</a>, after the pullback distance has been calibrated.</p>
+<p>This enables and calibrates tap quality checking. This detects nozzle ooze during probing by comparing tap geometry to a clean baseline. See <a href="#tap-quality-components">Tap Quality Components</a> for details on how the score is calculated.</p>
+<p><strong>Example output:</strong></p>
+<div class="highlight"><pre><span></span><code>// Tap quality calibration successful:
+// Tap Quality average: 87.7%, min: 70.8%, max: 95.2%, std dev: 4.4%
+// 
+// Mean Decompression Angle: 78.6 degrees
+// decompression_angle=78.6
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file and restart the printer.
+</code></pre></div>
+
+<p><strong>Choosing a threshold for min_tap_quality:</strong> The calibration does not automatically set <code>min_tap_quality</code>. The default is 40%. In testing, the observed tap quality score drops quite significantly before any actual Z error can be detected. Taps with a small amount of ooze have a very different <code>tap_quality</code> mean and standard deviation than clean taps. Choose based on experience:</p>
+<ul>
+<li>Higher thresholds (70-80%): Stricter, may cause retries on acceptable taps</li>
+<li>Lower thresholds (5-20%): Too permissive, only catches severe ooze</li>
+</ul>
+<p><strong>Re-calibrate when:</strong></p>
+<ul>
+<li><code>pullback_speed</code>, <code>trigger_force</code> or load cell sample rate changes</li>
+<li>Tap quality warnings become too frequent or too rare</li>
+</ul>
 <h3 id="probing-temperature">Probing Temperature<a class="headerlink" href="#probing-temperature" title="Permanent link">&para;</a></h3>
 <p>Keep nozzle temperature below the filament oozing point during homing and probing. 140°C is a good starting point for all filament types.</p>
 <p>Filament ooze is the primary source of probing error. Kalico validates tap quality and rejects many bad taps (e.g., due to ooze). Preventing ooze and having a clean nozzle is still best practice. Probing at printing temperatures is not recommended. Watch the console for tap validation errors (e.g., <code>TAP_SHAPE_INVALID</code>, <code>TAP_BREAK_CONTACT_TOO_LATE</code>) which indicate poor tap quality.</p>
@@ -4029,8 +4193,8 @@ Because load cell probes give an absolute value for z that is not relative to an
 
 <p>The circle strategy is a feature of <code>[probe]</code>. When the load cell probe detects a fouled probe it will move to an adjacent location in a circle pattern. For bed mesh this slight position offset is far less critical than using a fouled probe. Re-probing into a fouled location is unlikely to succeed and can cause the meshing operation to fail.</p>
 <h2 id="advanced-configuration">Advanced Configuration<a class="headerlink" href="#advanced-configuration" title="Permanent link">&para;</a></h2>
-<h3 id="continuous-tare-filtering">Continuous Tare Filtering<a class="headerlink" href="#continuous-tare-filtering" title="Permanent link">&para;</a></h3>
-<p>Load cell probes support a filter on the MCU that compensates for drift from external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called <em>continuous taring</em> and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.</p>
+<h3 id="drift-filter-continuous-taring">Drift Filter (Continuous Taring)<a class="headerlink" href="#drift-filter-continuous-taring" title="Permanent link">&para;</a></h3>
+<p>Load cell probes support a drift filter on the MCU that compensates for external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called <em>continuous taring</em> and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.</p>
 <h4 id="installing-scipy">Installing SciPy<a class="headerlink" href="#installing-scipy" title="Permanent link">&para;</a></h4>
 <p>The filter is off by default. The <a href="https://scipy.org/">SciPy</a> library is required to compute the filter coefficients from configuration values. It needs to be installed in the klipper virtual environment. Usually: </p>
 <div class="highlight"><pre><span></span><code>~/klippy-env/bin/pip<span class="w"> </span>install<span class="w"> </span>scipy
@@ -4038,20 +4202,10 @@ Because load cell probes give an absolute value for z that is not relative to an
 
 <p>Pre-compiled builds are available for Python 3 on 32-bit Raspberry Pi systems.</p>
 <h4 id="filter-tuning">Filter Tuning<a class="headerlink" href="#filter-tuning" title="Permanent link">&para;</a></h4>
-<p>The <code>drift_filter_cutoff_frequency</code> parameter should be selected based on observed drift during normal operation.</p>
-<p>Basic tuning guidelines:</p>
-<ul>
-<li>Start with <code>drift_filter_cutoff_frequency: 0.5</code> Hz</li>
-<li>Prusa uses 0.8 Hz (MK4) and 11.2 Hz (XL); this range is reasonable for experimentation</li>
-<li>Increase only until bowden tube drift is eliminated</li>
-<li>Setting too high causes slow triggering and excessive force</li>
-<li>Keep <code>trigger_force</code> low (default 75 g); the drift filter maintains internal readings near zero</li>
-<li>Keep <code>force_safety_limit</code> conservative (default 2 kg) during tuning</li>
-<li>Keep <code>drift_safety_limit</code> conservative (default 1 kg) during tuning</li>
-<li><strong>Note:</strong> Over-aggressive <code>drift_filter_cutoff_frequency</code> can distort tap shape and timing, triggering validation failures (e.g., <code>TAP_BREAK_CONTACT_TOO_LATE</code>). Reduce cutoff frequency or probing speed if such errors appear.</li>
-</ul>
-<p>Tuning of the other filter parameters is beyond the scope of this documentation. 
-A Jupyter notebook is provided in <a href="https://github.com/KalicoCrew/kalico//blob/main/scripts/filter_workbench.ipynb">scripts/filter_workbench.ipynb</a> with an example of a detailed analysis.</p>
+<p>The <code>drift_filter_cutoff_frequency</code> parameter can be automatically calibrated using <code>LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER</code>. See <a href="#drift-filter-calibration">Drift Filter Calibration</a> for details.</p>
+<p><strong>Manual tuning:</strong> If you prefer manual tuning, start with <code>drift_filter_cutoff_frequency: 0.5</code> Hz and increase only until bowden tube drift is eliminated. Setting too high causes slow triggering and excessive force. Keep <code>trigger_force</code> low (default 75 g); the drift filter maintains internal readings near zero.</p>
+<p><strong>Note:</strong> Over-aggressive <code>drift_filter_cutoff_frequency</code> can distort tap shape and timing, triggering validation failures (e.g., <code>TAP_BREAK_CONTACT_TOO_LATE</code>). Reduce cutoff frequency or probing speed if such errors appear.</p>
+<p>Manual tuning of other filter parameters is beyond the scope of this documentation. A Jupyter notebook is provided in <a href="https://github.com/KalicoCrew/kalico//blob/main/scripts/filter_workbench.ipynb">scripts/filter_workbench.ipynb</a> with an example of detailed analysis.</p>
 <h3 id="tap-validation">Tap Validation<a class="headerlink" href="#tap-validation" title="Permanent link">&para;</a></h3>
 <p><strong>Introduction to Tap Probing</strong></p>
 <p>Load cell probe works differently than other probes, it "taps" on the build surface. After the probe makes contact with the build surface it makes a small move back away from the build surface, called the pullback move. This combination of down/up motions is called a "tap". The complete tap sequence is analyzed and a representation is built from the raw force data. This representation is a series of points connected by lines. This is a plot of a typical tap with the movement phases clearly marked:</p>
@@ -4153,7 +4307,7 @@ A Jupyter notebook is provided in <a href="https://github.com/KalicoCrew/kalico/
 </tr>
 </tbody>
 </table>
-<p>These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the <strong>Normalized Decompression Angle</strong>.</p>
+<p>These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the <strong>Normalized Decompression Angle</strong>. This can be automatically set with <a href="#decompression-angle-calibration">Decompression Angle Calibration</a>. Until this is angle is set the tap quality classifier is off.</p>
 <p>Each component has a maximum cutoff value. If the component is above the cutoff, the tap quality score drops to 0%. Each value is a percentage of the compression force:</p>
 <table>
 <thead>
