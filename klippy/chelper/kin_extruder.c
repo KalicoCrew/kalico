@@ -380,14 +380,6 @@ extruder_set_smoothing_params(struct stepper_kinematics *sk, char axis
     return status;
 }
 
-double __visible
-extruder_get_step_gen_window(struct stepper_kinematics *sk)
-{
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    return es->sk.gen_steps_pre_active > es->sk.gen_steps_post_active
-         ? es->sk.gen_steps_pre_active : es->sk.gen_steps_post_active;
-}
-
 struct stepper_kinematics * __visible
 extruder_stepper_alloc(void)
 {

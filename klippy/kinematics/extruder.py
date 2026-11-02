@@ -210,6 +210,9 @@ class ExtruderStepper:
             "pressure_advance_model", self.pa_models, PALinearModel.name
         )(config)
         self.pa_enabled = False
+        # Pressure advance changes are always applied at the time they are
+        # requested, so this option no longer needs to change anything
+        config.getboolean("per_move_pressure_advance", False)
         self.smoother = ExtruderSmoother(config, self.pa_model)
         self.pressure_advance_time_offset = config.getfloat(
             "pressure_advance_time_offset", 0.0, minval=-0.2, maxval=0.2
@@ -531,6 +534,10 @@ class PrinterExtruder:
 
     def get_extruder_steppers(self):
         return self.extruder_steppers
+
+    @property
+    def extruder_stepper(self):
+        return self.extruder_steppers[0] if self.extruder_steppers else None
 
     def get_status(self, eventtime):
         sts = dict(self.heater.get_status(eventtime))
