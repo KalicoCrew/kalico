@@ -19,6 +19,9 @@ class KlippyTestingPlugin:
         )
 
         self.gcode.register_command("ASSERT", self.cmd_ASSERT)
+        self.gcode.register_command(
+            "TEST_INTERACTIVE", self.cmd_TEST_INTERACTIVE, lockfree=True
+        )
 
     def _command_error(self):
         self.printer.request_exit("error_exit")
@@ -30,6 +33,10 @@ class KlippyTestingPlugin:
         self.printer.invoke_shutdown(
             f"Unknown command during test execution: {cmd}"
         )
+
+    def cmd_TEST_INTERACTIVE(self, gcmd):
+        """Submit one interactive input without holding the G-code mutex."""
+        self.gcode.run_interactive_script(gcmd.get("GCODE"))
 
     def cmd_ASSERT(self, gcmd):
         "Evaluate an expression, raising an error if the return value is False"

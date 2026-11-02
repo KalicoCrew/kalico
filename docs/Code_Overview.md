@@ -117,6 +117,11 @@ GCodeCommand for compatibility boundaries. Without a command, it uses
 GCodeContextLegacy as an escape hatch for callers that cannot practically
 obtain one; those callers cannot temporarily release the mutex.
 
+Interactive input enters through GCodeDispatch.run_interactive_script(),
+used by GCodeIO and the display menu. It allows the next input to run when
+its handler enters without_lock(), while nested scripts remain sequential.
+GCodeDispatch.run_script() waits for the entire script to finish.
+
 There are four threads in the Klippy host code. The main thread
 handles incoming gcode commands. A second thread (which resides
 entirely in the **klippy/chelper/serialqueue.c** C code) handles

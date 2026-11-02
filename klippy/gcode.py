@@ -89,6 +89,19 @@ class GCodeContextRoot(GCodeContext):
             self.acquire_mutex()
 
 
+class GCodeContextInteractive(GCodeContextRoot):
+    def __init__(self, mutex: ReactorMutex, handoff):
+        super().__init__(mutex)
+        self._handoff = handoff
+
+    @contextlib.contextmanager
+    def release(self) -> Iterator[None]:
+        with super().release():
+            if not self._handoff.test():
+                self._handoff.complete(None)
+            yield
+
+
 class GCodeContextScope(GCodeContext):
     def __init__(self, context: GCodeContext):
         self._context = context
@@ -168,14 +181,14 @@ class GCodeCommand:
         command,
         commandline,
         params,
-        need_ack,
+        ack_callback,
         context: GCodeContextScope,
     ):
         self._gcode = gcode
         self._command = command
         self._commandline = commandline
         self._params = params
-        self._need_ack = need_ack
+        self._ack_callback = ack_callback
         self._context = context
         # Method wrappers
         self.respond_info = gcode.respond_info
@@ -204,7 +217,7 @@ class GCodeCommand:
         try:
             self._gcode._process_commands(
                 script.split("\n"),
-                need_ack=False,
+                ack_callback=None,
                 context=context,
             )
         finally:
@@ -244,14 +257,9 @@ class GCodeCommand:
         return origline[param_start:param_end]
 
     def ack(self, msg=None):
-        if not self._need_ack:
+        if self._ack_callback is None:
             return False
-        ok_msg = "ok"
-        if msg:
-            ok_msg = "ok %s" % (msg,)
-        self.respond_raw(ok_msg)
-        self._need_ack = False
-        return True
+        return self._ack_callback(msg)
 
     # Parameter parsing helpers
     class sentinel:
@@ -490,7 +498,7 @@ class GCodeDispatch:
     # Parse input into commands
     args_r = re.compile("([A-Z_]+|[A-Z*])")
 
-    def _process_commands(self, commands, need_ack, context: GCodeContext):
+    def _process_commands(self, commands, ack_callback, context: GCodeContext):
         with context.manage():
             for line in commands:
                 # Ignore comments and leading/trailing spaces
@@ -511,7 +519,6 @@ class GCodeDispatch:
                     parts[i]: parts[i + 1].strip()
                     for i in range(1, len(parts), 2)
                 }
-                gcmd = None
                 try:
                     if (
                         cmd not in self.gcode_lockfree
@@ -521,7 +528,7 @@ class GCodeDispatch:
                     scope = GCodeContextScope(context)
                     try:
                         gcmd = GCodeCommand(
-                            self, cmd, origline, params, need_ack, scope
+                            self, cmd, origline, params, ack_callback, scope
                         )
                         handler = self.gcode_handlers.get(cmd, self.cmd_default)
                         handler(gcmd)
@@ -530,19 +537,13 @@ class GCodeDispatch:
                 except self.error as e:
                     self._respond_error(str(e))
                     self.printer.send_event("gcode:command_error")
-                    if not need_ack:
-                        raise
+                    raise
                 except:
                     msg = 'Internal error on command:"%s"' % (cmd,)
                     logging.exception(msg)
                     self.printer.invoke_shutdown(msg)
                     self._respond_error(msg)
-                    if not need_ack:
-                        raise
-                if gcmd is not None:
-                    gcmd.ack()
-                elif need_ack:
-                    self.respond_raw("ok")
+                    raise
 
     def run_script_from_command(self, script, gcmd=None):
         """Use the command context, or the legacy escape hatch when omitted."""
@@ -554,16 +555,39 @@ class GCodeDispatch:
             )
         self._process_commands(
             script.split("\n"),
-            need_ack=False,
+            ack_callback=None,
             context=GCodeContextLegacy(self.mutex),
         )
 
     def run_script(self, script):
         self._process_commands(
             script.split("\n"),
-            need_ack=False,
+            ack_callback=None,
             context=GCodeContextRoot(self.mutex),
         )
+
+    def run_interactive_script(self, script, ack_callback=None):
+        """Run until the script returns or first releases its G-code lock."""
+        reactor = self.printer.get_reactor()
+        handoff = reactor.completion()
+        context = GCodeContextInteractive(self.mutex, handoff)
+
+        def run(eventtime):
+            error = None
+            try:
+                self._process_commands(
+                    script.split("\n"), ack_callback, context
+                )
+            except Exception as e:
+                error = e
+            finally:
+                if not handoff.test():
+                    handoff.complete(error)
+
+        reactor.register_callback(run)
+        result = handoff.wait()
+        if isinstance(result, Exception):
+            raise result
 
     def get_mutex(self):
         return self.mutex
@@ -583,7 +607,7 @@ class GCodeDispatch:
             command,
             commandline,
             params,
-            False,
+            None,
             context,
         )
 
@@ -841,17 +865,38 @@ class GCodeIO:
         self.is_processing_data = True
         while pending_commands:
             self.pending_commands = []
-            self.gcode._process_commands(
-                pending_commands,
-                need_ack=True,
-                context=GCodeContextRoot(self.gcode_mutex),
-            )
+            for line in pending_commands:
+                self._process_command(line)
             pending_commands = self.pending_commands
         self.is_processing_data = False
         if self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(
                 self.fd, self._process_data
             )
+
+    def _process_command(self, line):
+        acknowledged = False
+
+        def ack(msg=None):
+            nonlocal acknowledged
+            if acknowledged:
+                return False
+            acknowledged = True
+            self.gcode.respond_raw("ok" if not msg else "ok %s" % (msg,))
+            return True
+
+        try:
+            if self.is_fileinput:
+                self.gcode._process_commands(
+                    [line], ack, GCodeContextRoot(self.gcode_mutex)
+                )
+            else:
+                self.gcode.run_interactive_script(line, ack)
+        except Exception:
+            # Dispatch has already reported the error (and shut down on bugs).
+            pass
+        finally:
+            ack()
 
     def _respond_raw(self, msg):
         if self.pipe_is_active:
