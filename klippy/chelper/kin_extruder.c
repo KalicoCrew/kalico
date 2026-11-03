@@ -68,7 +68,10 @@ pa_move_integrate(struct move *m, struct list_head *pa_list
     // Determine pressure_advance value
     int can_pressure_advance = m->axes_r.y != 0.;
     double pressure_advance = 0.;
-    if (can_pressure_advance) {
+    if (m->axes_r.z != 0.) {
+        // per_move_pressure_advance: the move carries its own value
+        pressure_advance = m->axes_r.y;
+    } else if (can_pressure_advance) {
         struct pa_params *pa = list_last_entry(pa_list, struct pa_params, node);
         while (unlikely(pa->active_print_time > m->print_time) &&
                 !list_is_first(&pa->node, pa_list)) {
