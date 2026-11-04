@@ -689,6 +689,7 @@ class LoadCellPrimitives:
     # pauses for the last move to complete and then
     # sets the endstop tare value and range
     def tare(self, gcmd=None):
+        self._load_cell.assert_calibrated()
         num_samples = self._config_helper.get_tare_samples(gcmd)
         tare_counts_per_channel = self._load_cell.avg_counts(num_samples)
         self._load_cell.tare(tare_counts_per_channel)
@@ -699,8 +700,7 @@ class LoadCellPrimitives:
 
     def home_start(self, print_time):
         # do not permit homing if the load cell is not calibrated
-        if not self._load_cell.is_calibrated():
-            raise self._printer.command_error("Load Cell not calibrated")
+        self._load_cell.assert_calibrated()
         # start trsync
         trigger_completion = self._dispatch.start(print_time)
         self._mcu_load_cell_probe.home_start(print_time)
