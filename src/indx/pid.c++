@@ -2,6 +2,7 @@
 #include "generic/misc.h"
 extern "C" {
 #include "command.h"
+#include "sched.h"
 }
 
 #include <cmath>
@@ -34,6 +35,9 @@ pid_controller::step(float current_temperature, float dt) {
     float d = 0.0;
 
     this->output = p + this->integrator + d;
+    if (!std::isfinite(this->output)) {
+        shutdown("Heater PID output is not finite");
+    }
 
     auto clamped_output = std::max(0.0f, std::min(1.0f, this->output));
     return clamped_output;

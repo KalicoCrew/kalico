@@ -34,8 +34,8 @@ indx_heater::run() {
 
     switch (this->state.nozzle_temperature.error) {
     case ir_sensor_error::ok:
-        if (this->state.nozzle_temperature.object_temperature >
-            HEATER_MAX_TEMPERATURE) {
+        if (!(this->state.nozzle_temperature.object_temperature <=
+              HEATER_MAX_TEMPERATURE)) {
             shutdown("Heater maximum safe temperature passed");
         }
 

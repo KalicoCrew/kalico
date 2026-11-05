@@ -241,7 +241,9 @@ class IndxToolboardHeater:
         self.max_temp_sensor = config.getfloat("max_temp_sensor", default=130.0)
 
         self.ir_sensor_tuning = None
-        ir_sensor_exponent = config.getfloat("ir_sensor_exponent", default=None)
+        ir_sensor_exponent = config.getfloat(
+            "ir_sensor_exponent", default=None, above=0.0
+        )
         ir_sensor_obj_gain = config.getfloat("ir_sensor_obj_gain", default=None)
         ir_sensor_bracket_gain = config.getfloat(
             "ir_sensor_bracket_gain", default=None
@@ -660,7 +662,7 @@ class IndxToolboardHeater:
             "indx_set_ir_sensor_params exponent=%u obj_gain=%u bracket_gain=%u",
             cq=self.cmd_queue,
         )
-        exponent = gcmd.get_float("EXPONENT")
+        exponent = gcmd.get_float("EXPONENT", above=0.0)
         obj_gain = gcmd.get_float("OBJ_GAIN")
         bracket_gain = gcmd.get_float("BRACKET_GAIN")
         cmd.send(
