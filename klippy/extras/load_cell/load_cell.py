@@ -14,7 +14,7 @@ from klippy import Printer
 from klippy.configfile import ConfigWrapper
 from klippy.extras.bulk_sensor import BatchWebhooksClient
 from klippy.extras.load_cell.interfaces import BulkAdcSensor
-from klippy.gcode import GCodeCommand, GCodeDispatch
+from klippy.gcode import CommandError, GCodeCommand, GCodeDispatch
 from klippy.toolhead import ToolHead
 
 
@@ -159,9 +159,9 @@ class LoadCellCommandHelper:
 
     # set reference tare counts on a calibrated load cell
     def _calibration_tare(self, gcmd: GCodeCommand):
-        # it is invalid to set the reference tare counts on an uncalibrated
-        # load cell. Prompt user to run full calibration
-        if not self.load_cell.is_calibrated():
+        # It is invalid to set the reference tare counts on an uncalibrated
+        # load cell. Prompt user to run the full calibration
+        if not self.load_cell.counts_per_gram:
             raise gcmd.error(
                 "Load cell has not been calibrated. Run LOAD_CELL_CALIBRATE first."
             )
@@ -182,6 +182,8 @@ class LoadCellCommandHelper:
     def _report_calibration_change(
         self, gcmd: GCodeCommand, reporter: ForceReporter
     ):
+        if self.load_cell.reference_tare_counts is None:
+            return
         change = reporter.counts - self.load_cell.reference_tare_counts
         formatter = ForceFormatter(
             counts=change,
@@ -763,13 +765,20 @@ class LoadCell:
         reference: ZeroReference = ZeroReference.TARE,
         channel: int | None = None,
     ) -> float | None:
-        if not self.is_calibrated():
+        # cannot convert without a conversion factor
+        if self.counts_per_gram is None:
             return None
         ref_tare: tuple[int, ...] = (0,) * self.channel_count
+        # each reference only needs its own zero point
         if reference == ZeroReference.REFERENCE_TARE:
+            if self.reference_tare_counts_per_channel is None:
+                return None
             ref_tare = self.reference_tare_counts_per_channel
         elif reference == ZeroReference.TARE:
+            if self.tare_counts_per_channel is None:
+                return None
             ref_tare = self.tare_counts_per_channel
+        # else: ZeroReference.ZERO is always convertable
         ref_counts: int = (
             sum(ref_tare) if channel is None else ref_tare[channel]
         )
@@ -863,6 +872,18 @@ class LoadCell:
         return (
             self.counts_per_gram is not None
             and self.reference_tare_counts is not None
+        )
+
+    def assert_calibrated(self):
+        if self.is_calibrated():
+            return
+        if self.counts_per_gram and self.reference_tare_counts is None:
+            raise CommandError(
+                "Load Cell reference_tare_counts not calibrated. "
+                "Run `LOAD_CELL_CALIBRATE TARE=TRUE SAVE=TRUE`"
+            )
+        raise CommandError(
+            "Load Cell not calibrated. Run `LOAD_CELL_CALIBRATE`"
         )
 
     def get_sensor(self):

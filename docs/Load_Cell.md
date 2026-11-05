@@ -193,7 +193,8 @@ See the [configuration reference](Config_Reference.md#load_cell_probe) for all a
 Load cells are direct nozzle contact probes. The system includes safety checks to prevent excessive force on the toolhead. Poorly chosen configuration values can defeat these protections.
 
 **Calibration check:**
-Before homing or probing, the load cell probe checks that it is calibrated. If not, the printer stops with error `!! Load Cell Probe Error: Load Cell not calibrated`.
+Before homing or probing, the load cell probe checks that it is fully calibrated. If not, the printer stops with an error telling you how to resolve that. Either:
+`!! Load Cell not calibrated. Run LOAD_CELL_CALIBRATE` or `!! Load Cell reference_tare_counts not calibrated. Run LOAD_CELL_CALIBRATE TARE=TRUE SAVE=TRUE`.
 
 **Accurate `counts_per_gram`:**
 This setting converts raw counts to grams. All safety limits are in gram units. An inaccurate value allows excessive force on the toolhead. Never guess this value—always use `LOAD_CELL_CALIBRATE`.
