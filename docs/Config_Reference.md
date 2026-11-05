@@ -6484,8 +6484,9 @@ mcu:
 #ir_sensor_obj_gain:
 #ir_sensor_bracket_gain:
 #   Override the IR sensor tuning parameters stored in the sensor
-#   EEPROM. All three must be provided if any is given. These should
-#   not normally be set.
+#   EEPROM. All three must be provided if any is given, and
+#   ir_sensor_exponent must be above 0. These should not normally be
+#   set.
 ```
 
 ### [sx1509]

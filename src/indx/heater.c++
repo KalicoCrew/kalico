@@ -294,11 +294,6 @@ command_indx_set_control_params(uint32_t *args) {
     auto b = *reinterpret_cast<float *>(&args[3]);
     auto i_window = *reinterpret_cast<float *>(&args[4]);
     auto i_limit = *reinterpret_cast<float *>(&args[5]);
-    if (!std::isfinite(kp) || !std::isfinite(ti) || !std::isfinite(td) ||
-        !std::isfinite(b) || !std::isfinite(i_window) ||
-        !std::isfinite(i_limit)) {
-        shutdown("Heater PID parameters must be finite");
-    }
     auto tt = td < 0.000001 ? ti / 8.0f : sqrtf(ti * td);
     auto params = pid_params{
         .kp = kp,

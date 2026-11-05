@@ -1133,7 +1133,8 @@ override.
 #### INDX_SET_IR_SENSOR_PARAMS
 `INDX_SET_IR_SENSOR_PARAMS EXPONENT=<value> OBJ_GAIN=<value>
 BRACKET_GAIN=<value>`: Override the IR sensor tuning parameters
-stored in the sensor EEPROM. These should not normally be changed.
+stored in the sensor EEPROM. EXPONENT must be above 0. These should
+not normally be changed.
 
 #### INDX_SET_CYCLE_LIMIT
 `INDX_SET_CYCLE_LIMIT LIMIT=<value>`: Limit the coil driver duty
