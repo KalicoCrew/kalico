@@ -90,13 +90,13 @@ spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 
     uint32_t prescale;
     for (prescale = 2; prescale <= 254; prescale += 2) {
-        if ((prescale + 2) * 256 * rate > pclk)
+        if ((uint64_t)(prescale + 2) * 256 * rate > pclk)
             break;
     }
 
     uint32_t postdiv;
     for (postdiv = 255; postdiv > 0; --postdiv) {
-        if (prescale * postdiv * rate < pclk)
+        if ((uint64_t)prescale * postdiv * rate < pclk)
             break;
     }
 
