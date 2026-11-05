@@ -10,7 +10,7 @@
 #include "gpio.h" // spi_setup
 
 void
-spi_init(uint32_t bus, SercomSpi *ss, uint32_t ctrla, uint32_t baud)
+spi_init(uint32_t bus, SercomSpi *ss, uint32_t ctrla, uint8_t baud)
 {
     static uint8_t have_run_init;
     if (have_run_init & (1<<bus))
