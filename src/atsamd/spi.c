@@ -5,11 +5,12 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "compiler.h" // DIV_ROUND_UP
 #include "internal.h" // enable_pclock
 #include "gpio.h" // spi_setup
 
 void
-spi_init(uint32_t bus, SercomSpi *ss, uint32_t ctrla, uint32_t baud)
+spi_init(uint32_t bus, SercomSpi *ss, uint32_t ctrla, uint8_t baud)
 {
     static uint8_t have_run_init;
     if (have_run_init & (1<<bus))
@@ -33,7 +34,11 @@ spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
                       | SERCOM_SPI_CTRLA_ENABLE);
     Sercom *sercom = sercom_enable_pclock(bus);
     SercomSpi *ss = &sercom->SPI;
-    uint32_t baud = sercom_get_pclock_frequency(bus) / (2 * rate) - 1;
+    // Round the divider up so the bus never runs faster than requested
+    uint32_t pclk = sercom_get_pclock_frequency(bus);
+    uint32_t baud = DIV_ROUND_UP(pclk, 2 * rate) - 1;
+    if (baud > 255)
+        baud = 255;
     spi_init(bus, ss, ctrla, baud);
     return (struct spi_config){ .ss = ss, .ctrla = ctrla, .baud = baud };
 }
