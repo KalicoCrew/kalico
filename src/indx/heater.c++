@@ -242,9 +242,9 @@ command_indx_set_target(uint32_t *args) {
         sched_del_timer(&indx_heater_instance->timeout_timer);
     } else {
         indx_heater_instance->pid.update_set_point(set_point);
+        sched_del_timer(&indx_heater_instance->timeout_timer);
         indx_heater_instance->timeout_timer.waketime =
             timer_read_time() + timer_from_us(HEATER_TIMEOUT_US);
-        sched_del_timer(&indx_heater_instance->timeout_timer);
         sched_add_timer(&indx_heater_instance->timeout_timer);
     }
 }
