@@ -1,0 +1,11 @@
+# A [fan] section ignores the P parameter of M106, as it always did
+DICTIONARY atmega2560.dict
+CONFIG fan_pwm_scaling.cfg
+
+G28
+M106 P2 S255
+G1 X50 Y50 F6000
+G4 P3000
+G1 X20 Y20 F6000
+M400
+ASSERT TEST='{printer.fan.value == 1.0}'

@@ -8,6 +8,12 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261102: MPC now uses `ambient_transfer` as the base of its model and adds
+the increase of `fan_ambient_transfer` over its first value. Values from
+`MPC_CALIBRATE` behave as before. If you edited `ambient_transfer` by hand so
+that it differs from the first `fan_ambient_transfer` value, the heat loss
+will change by that difference.
+
 20261021: The temporary acceleration and velocity limits applied during
 `TEST_RESONANCES` and `SHAPER_CALIBRATE` are now derived from the actual
 test sequence instead of only the configured `accel_per_hz`. Previously an

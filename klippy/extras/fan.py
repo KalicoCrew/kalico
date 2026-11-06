@@ -176,25 +176,126 @@ class FanTachometer:
 
 
 class PrinterFan:
+    """The "fan" object, for a [fan] section or for [fan <name>] sections.
+
+    M106/M107 without P control the active fans. printer.fan and heater
+    controls use the active fans through this object.
+    """
+
+    cmd_ACTIVATE_FAN_help = "Select the fans controlled by M106 and M107"
+
     def __init__(self, config):
-        self.fan = Fan(config)
-        # Register commands
-        gcode = config.get_printer().lookup_object("gcode")
-        gcode.register_command("M106", self.cmd_M106)
-        gcode.register_command("M107", self.cmd_M107)
+        # Heater controls reach the fan they use through a .fan attribute
+        self.fan = self
+        self.fans = {}
+        self.fans_by_index = {}
+        self.active_fans = []
+        self.requested_speed = 0.0
+        self.gcode = config.get_printer().lookup_object("gcode")
+        self.gcode.register_command("M106", self.cmd_M106)
+        self.gcode.register_command("M107", self.cmd_M107)
+        if config.get_prefix_sections("fan "):
+            self.gcode.register_command(
+                "ACTIVATE_FAN",
+                self.cmd_ACTIVATE_FAN,
+                desc=self.cmd_ACTIVATE_FAN_help,
+            )
+        else:
+            self.add_fan("fan", Fan(config))
+
+    def add_fan(self, name, fan, index=None):
+        self.fans[name] = fan
+        if index is not None:
+            self.fans_by_index[index] = fan
+        # Other indexes are separate fans for slicers, such as an aux fan
+        if not index:
+            self.active_fans.append(fan)
 
     def get_status(self, eventtime):
-        return self.fan.get_status(eventtime)
+        fan = (self.active_fans or list(self.fans.values()))[0]
+        return fan.get_status(eventtime)
+
+    def set_speed(self, value, print_time=None):
+        for fan in self.active_fans:
+            fan.set_speed(value, print_time)
+
+    def _set_speed_from_gcode(self, gcmd, value):
+        # A config without indexes ignores P, as it always did
+        index = None
+        if self.fans_by_index:
+            index = gcmd.get_int("P", None, minval=0)
+        if index is None:
+            self.requested_speed = value
+            for fan in self.active_fans:
+                fan.set_speed_from_command(value)
+        elif index in self.fans_by_index:
+            self.fans_by_index[index].set_speed_from_command(value)
+        else:
+            # Slicers may command fans the printer doesn't have
+            gcmd.respond_info("Ignoring unknown fan index %d" % (index,))
 
     def cmd_M106(self, gcmd):
-        # Set fan speed
         value = gcmd.get_float("S", 255.0, minval=0.0) / 255.0
-        self.fan.set_speed_from_command(value)
+        self._set_speed_from_gcode(gcmd, value)
 
     def cmd_M107(self, gcmd):
-        # Turn fan off
-        self.fan.set_speed_from_command(0.0)
+        self._set_speed_from_gcode(gcmd, 0.0)
+
+    def cmd_ACTIVATE_FAN(self, gcmd):
+        names = [name.strip() for name in gcmd.get("FAN").split(",")]
+        for name in names:
+            if name not in self.fans:
+                raise gcmd.error("Unknown fan '%s'" % (name,))
+        new_fans = [self.fans[name] for name in names]
+        for fan in self.active_fans:
+            if fan not in new_fans:
+                fan.set_speed_from_command(0.0)
+        for fan in new_fans:
+            if fan not in self.active_fans:
+                fan.set_speed_from_command(self.requested_speed)
+        self.active_fans = new_fans
+
+
+class NamedFan:
+    cmd_SET_FAN_SPEED_help = "Sets the speed of a fan"
+
+    def __init__(self, config, printer_fan):
+        self.fan = Fan(config)
+        self.printer_fan = printer_fan
+        name = config.get_name().split()[-1]
+        index = config.getint("index", None, minval=0)
+        if index in printer_fan.fans_by_index:
+            raise config.error("Fan index %d used more than once" % (index,))
+        printer_fan.add_fan(name, self.fan, index)
+        printer_fan.gcode.register_mux_command(
+            "SET_FAN_SPEED",
+            "FAN",
+            name,
+            self.cmd_SET_FAN_SPEED,
+            desc=self.cmd_SET_FAN_SPEED_help,
+        )
+
+    def get_status(self, eventtime):
+        status = self.fan.get_status(eventtime)
+        status["active"] = self.fan in self.printer_fan.active_fans
+        return status
+
+    def cmd_SET_FAN_SPEED(self, gcmd):
+        self.fan.set_speed_from_command(gcmd.get_float("SPEED", minval=0.0))
 
 
 def load_config(config):
     return PrinterFan(config)
+
+
+def load_config_prefix(config):
+    name = config.get_name()
+    if config.has_section("fan"):
+        raise config.error(
+            "[fan] and [%s] can't be used together. Give every fan a name,"
+            " for example by renaming [fan] to [fan part]." % (name,)
+        )
+    printer_fan = config.get_printer().load_object(config, "fan")
+    if not isinstance(printer_fan, PrinterFan):
+        raise config.error("Can't setup [%s] and heated_fan together" % (name,))
+    return NamedFan(config, printer_fan)

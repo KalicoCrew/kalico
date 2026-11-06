@@ -3905,6 +3905,31 @@ pin:
 #   is from 0.0 to 1.0.
 ```
 
+### ⚠️ [fan my_fan]
+
+Named print cooling fans, for printers with more than one, such as one
+fan per extruder. They accept the same options as [fan](#fan). `[fan]`
+and `[fan my_fan]` can't be used together, so every fan needs a name.
+
+Fans without an `index` follow `M106` and `M107` until
+[ACTIVATE_FAN](G-Codes.md#activate_fan) selects specific ones. The
+`printer.fan` status and any option that refers to `fan` keep working and
+use the first active fan. A heater with
+[MPC](MPC.md) on a multi-fan printer should set `cooling_fan: fan my_fan`
+to model its own fan, or [list several](MPC.md#multiple-cooling-fans).
+
+```
+[fan my_fan]
+pin:
+#   See the [fan] section for this and the other available options.
+#index:
+#   The fan number for `M106 P<index>` and `M107 P<index>`, as used by
+#   slicers. For example, OrcaSlicer uses 2 for an auxiliary fan and 3 for
+#   an exhaust fan. A fan with an index above 0 doesn't follow `M106` and
+#   `M107` without `P` unless ACTIVATE_FAN selects it. The default is no
+#   index.
+```
+
 ### [heated_fan]
 
 Heated print cooling fans. An experimental module for high-temperature

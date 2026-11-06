@@ -1,0 +1,4 @@
+# fan_ambient_transfer needs one line per cooling fan
+DICTIONARY atmega2560.dict
+CONFIG mpc_multi_fan_mismatch.cfg
+SHOULD_FAIL

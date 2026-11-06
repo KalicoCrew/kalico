@@ -76,15 +76,24 @@ class ControlMPC:
 
         if gcmd.get("FAN_AMBIENT_TRANSFER", None):
             try:
-                self.const_fan_ambient_transfer = [
-                    float(v)
-                    for v in gcmd.get("FAN_AMBIENT_TRANSFER").split(",")
+                fan_transfers = [
+                    [float(v) for v in values.split(",")]
+                    for values in gcmd.get("FAN_AMBIENT_TRANSFER").split(":")
                 ]
             except ValueError:
                 raise gcmd.error(
                     f"Error on '{gcmd._commandline}': unable to parse FAN_AMBIENT_TRANSFER\n"
-                    "Must be a comma-separated list of values ('0.05,0.07,0.08')"
+                    "Must be a comma-separated list of values ('0.05,0.07,0.08'),"
+                    " with a ':' between the lists of each cooling fan"
                 )
+            if self.cooling_fans and len(fan_transfers) != len(
+                self.cooling_fans
+            ):
+                raise gcmd.error(
+                    f"FAN_AMBIENT_TRANSFER has {len(fan_transfers)} lists for"
+                    f" {len(self.cooling_fans)} cooling fans"
+                )
+            self.const_fan_ambient_transfer = fan_transfers
 
         temp = gcmd.get("FILAMENT_TEMP", None)
         if temp is not None:
@@ -134,8 +143,22 @@ class ControlMPC:
         self.filament_temp_src = self.profile["filament_temp_src"]
         self._update_filament_const()
         self.ambient_sensor = self.profile["ambient_temp_sensor"]
-        self.cooling_fan = self.profile["cooling_fan"]
+        self.cooling_fans = self.profile["cooling_fans"]
         self.const_fan_ambient_transfer = self.profile["fan_ambient_transfer"]
+
+    def _ambient_transfer(self, read_time):
+        # Every fan adds its own increase over its measurement at 0% speed
+        ambient_transfer = self.const_ambient_transfer
+        for fan, transfers in zip(
+            self.cooling_fans, self.const_fan_ambient_transfer
+        ):
+            speed = max(0.0, min(1.0, fan.get_status(read_time)["speed"]))
+            fan_break = speed * (len(transfers) - 1)
+            below = transfers[math.floor(fan_break)]
+            above = transfers[math.ceil(fan_break)]
+            frac = fan_break % 1.0
+            ambient_transfer += below * (1 - frac) + frac * above - transfers[0]
+        return ambient_transfer
 
     def is_valid(self):
         return (
@@ -198,19 +221,7 @@ class ControlMPC:
                     extrude_speed_next = pos_move / dt
 
         # Modulate ambient transfer coefficient with fan speed
-        ambient_transfer = self.const_ambient_transfer
-        if self.cooling_fan and len(self.const_fan_ambient_transfer) > 1:
-            fan_speed = max(
-                0.0, min(1.0, self.cooling_fan.get_status(read_time)["speed"])
-            )
-            fan_break = fan_speed * (len(self.const_fan_ambient_transfer) - 1)
-            below = self.const_fan_ambient_transfer[math.floor(fan_break)]
-            above = self.const_fan_ambient_transfer[math.ceil(fan_break)]
-            if below != above:
-                frac = fan_break % 1.0
-                ambient_transfer = below * (1 - frac) + frac * above
-            else:
-                ambient_transfer = below
+        ambient_transfer = self._ambient_transfer(read_time)
 
         # Simulate
 
@@ -443,8 +454,9 @@ class MpcCalibrate:
                 else first_res["sensor_responsiveness"]
             )
             ambient_transfer = second_res["ambient_transfer"]
-            fan_ambient_transfer = ", ".join(
-                [f"{p:.6g}" for p in second_res["fan_ambient_transfer"]]
+            fan_ambient_transfer = "\n".join(
+                ", ".join(f"{p:.6g}" for p in transfers)
+                for transfers in second_res["fan_ambient_transfer"]
             )
 
             cfgname = self.heater.get_name()
@@ -603,34 +615,44 @@ class MpcCalibrate:
 
         self.wait_stable(5)
 
-        fan = self.orig_control.cooling_fan
+        fans = self.orig_control.cooling_fans
 
         fan_powers = []
-        if fan is None:
+        if not fans:
             power_base = self.measure_power(
                 ambient_max_measure_time, ambient_measure_sample_time
             )
             gcmd.respond_info(f"Average stable power: {power_base} W")
         else:
-            for idx in range(0, fan_breakpoints):
-                speed = idx / (fan_breakpoints - 1)
-                curtime = self.heater.reactor.monotonic()
-                fan.set_speed(speed)
-                gcmd.respond_info("Waiting for temperature to stabilize")
-                self.wait_stable(3)
-                gcmd.respond_info(
-                    f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
-                )
-                power = self.measure_power(
-                    ambient_max_measure_time, ambient_measure_sample_time
-                )
-                gcmd.respond_info(
-                    f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
-                )
-                fan_powers.append((speed, power))
-            curtime = self.heater.reactor.monotonic()
-            fan.set_speed(0.0)
-            power_base = fan_powers[0][1]
+            # Each fan is measured alone, so all of them must start off
+            for fan in fans:
+                fan.set_speed(0.0)
+            for fan_idx, fan in enumerate(fans):
+                label = f"fan {fan_idx + 1}" if len(fans) > 1 else "fan"
+                powers = []
+                for idx in range(0, fan_breakpoints):
+                    speed = idx / (fan_breakpoints - 1)
+                    fan.set_speed(speed)
+                    gcmd.respond_info("Waiting for temperature to stabilize")
+                    self.wait_stable(3)
+                    # The heater is still recovering from the previous fan,
+                    # so its power isn't a valid 0% measurement
+                    if fan_idx and not idx:
+                        powers.append((speed, fan_powers[0][0][1]))
+                        continue
+                    gcmd.respond_info(
+                        f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% {label} speed"
+                    )
+                    power = self.measure_power(
+                        ambient_max_measure_time, ambient_measure_sample_time
+                    )
+                    gcmd.respond_info(
+                        f"{speed * 100.0:.0f}% {label} average power: {power:.2f} W"
+                    )
+                    powers.append((speed, power))
+                fan.set_speed(0.0)
+                fan_powers.append(powers)
+            power_base = fan_powers[0][0][1]
 
         return {
             "target_temp": target_temp,
@@ -775,8 +797,8 @@ class MpcCalibrate:
         )
 
         fan_ambient_transfer = [
-            power / target_ambient_temp
-            for (_speed, power) in transfer_res["fan_powers"]
+            [power / target_ambient_temp for (_speed, power) in powers]
+            for powers in transfer_res["fan_powers"]
         ]
 
         return {

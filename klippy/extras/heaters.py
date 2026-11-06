@@ -8,6 +8,7 @@ import logging
 import os
 import threading
 
+from .. import mathutil
 from .control_mpc import (
     FILAMENT_TEMP_SRC_AMBIENT,
     FILAMENT_TEMP_SRC_FIXED,
@@ -505,9 +506,8 @@ class Heater:
                         )
                 temp_profile["ambient_temp_sensor"] = ambient_sensor
 
-                fan_name = config_section.get("cooling_fan", None)
-                fan = None
-                if fan_name is not None:
+                fans = []
+                for fan_name in config_section.getlist("cooling_fan", ()):
                     fan_obj = config_section.get_printer().load_object(
                         config_section,
                         fan_name,
@@ -519,20 +519,31 @@ class Heater:
                         )
                     if fan_obj is None:
                         raise config_section.error(
-                            f"Unknown part_cooling_fan '{fan_name}' specified"
+                            f"Unknown cooling_fan '{fan_name}' specified"
                         )
                     if not hasattr(fan_obj, "fan") or not hasattr(
                         fan_obj.fan, "set_speed"
                     ):
                         raise config_section.error(
-                            f"part_cooling_fan '{fan_name}' is not a valid fan object"
+                            f"cooling_fan '{fan_name}' is not a valid fan object"
                         )
-                    fan = fan_obj.fan
-                temp_profile["cooling_fan"] = fan
+                    fans.append(fan_obj.fan)
+                temp_profile["cooling_fans"] = fans
 
-                temp_profile["fan_ambient_transfer"] = (
-                    config_section.getfloatlist("fan_ambient_transfer", [])
+                # One line of values per cooling fan
+                fan_transfers = config_section.getlists(
+                    "fan_ambient_transfer",
+                    (),
+                    seps=(",", "\n"),
+                    parser=mathutil.safe_float,
                 )
+                if fans and fan_transfers and len(fans) != len(fan_transfers):
+                    raise config_section.error(
+                        f"fan_ambient_transfer has {len(fan_transfers)} lines"
+                        f" for {len(fans)} cooling fans. Remove"
+                        " fan_ambient_transfer and run MPC_CALIBRATE again."
+                    )
+                temp_profile["fan_ambient_transfer"] = fan_transfers
             elif control == "pid" or control == "pid_v":
                 for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
                     can_be_none = (

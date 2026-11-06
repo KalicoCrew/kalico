@@ -1,0 +1,10 @@
+# Test MPC with several cooling fans
+DICTIONARY atmega2560.dict
+CONFIG mpc_multi_fan.cfg
+
+MPC_SET HEATER=extruder FAN_AMBIENT_TRANSFER=0.15,0.2,0.21:0.15,0.17,0.18
+M106 S255
+SET_FAN_SPEED FAN=side SPEED=0.5
+M104 S100
+G4 P2000
+M104 S0

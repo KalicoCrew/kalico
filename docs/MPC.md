@@ -47,7 +47,11 @@ filament_heat_capacity: 1.8
   The fan that is cooling extruded filament and the hotend. Default is no fan so 
   there will be no fan taken into account for controlling the heater.
   Specifying "fan" will automatically use the part cooling fan. Any other fan
-  section can also be used, e.g. `cooling_fan: fan_generic <fan_name>`.
+  section can also be used, e.g. `cooling_fan: fan_generic <fan_name>` or
+  `cooling_fan: fan <fan_name>`.
+  Several fans can be listed, separated by commas, e.g.
+  `cooling_fan: fan part, fan_generic side`. See
+  [multiple cooling fans](#multiple-cooling-fans).
   
 - `filament_diameter: 1.75`  
   _Default Value: 1.75 (mm)_  
@@ -228,6 +232,24 @@ These model parameters are not suitable for pre-configuration or are not explici
 - `fan_ambient_transfer:`  
   Heat transfer from heater block to ambient in with fan enabled in (W/K).  
   
+### Multiple cooling fans
+
+With several fans in `cooling_fan`, calibration turns all of them off and then
+measures one fan at a time, so it takes about that many times longer. All fans
+share the 0% measurement of the first fan. The fans
+can then run at independent speeds during a print, and the model adds up the
+cooling of each fan. Fans that blow on the same spot will cool less together
+than this sum, so the model is only an approximation when they overlap.
+
+The results are saved with one line per fan, in the order of `cooling_fan`:
+```
+#*# fan_ambient_transfer = 0.155082, 0.20156, 0.216441
+#*#   0.155082, 0.17230, 0.180120
+```
+Adding or removing a fan requires a new calibration. Kalico refuses to start
+when the number of lines doesn't match the number of fans, until
+`fan_ambient_transfer` is removed from the config.
+
 # Support Macros
 
 ## Temperature Wait
@@ -360,7 +382,8 @@ heater_power: 400
   
 - `cooling_fan: fan_generic <fan_name>`  
   _No Default Value_  
-  This is the fan cooling the bed. Optional parameter to support bed fans.  
+  This is the fan cooling the bed. Optional parameter to support bed fans.
+  Several fans can be listed, see [multiple cooling fans](#multiple-cooling-fans).  
 
 The bed should be able to reach at least 90C to perform calibration with the following G-code. 
 
@@ -389,6 +412,8 @@ These calibrated model parameters need to be saved to the _SAVE_CONFIG_ block ma
 Similar to [`SET_HEATER_PID`](G-Codes.md#set_heater_pid), you can update your MPC calibration profile at runtime.
 
 `MPC_SET HEATER=<heater_name> [BLOCK_HEAT_CAPACITY=0.0] [SENSOR_RESPONSIVENESS=0.0] [AMBIENT_TRANSFER=0.0] [FAN_AMBIENT_TRANSFER=0.01,0.02,0.03]`
+
+With several cooling fans, separate the list of each fan with a colon: `FAN_AMBIENT_TRANSFER=0.01,0.02,0.03:0.01,0.015,0.02`.
 
 # BACKGROUND
 
