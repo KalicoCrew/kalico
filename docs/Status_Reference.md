@@ -19,6 +19,18 @@ The following information is available in
   angle sensor is a tle5012b chip and if measurements are in progress
   (otherwise it reports `None`).
 
+## axis_twist_compensation
+
+The following information is available in
+[axis_twist_compensation probe_name](Config_Reference.md#axis_twist_compensation)
+objects:
+
+- `probe`, `reference_probe`: The target and reference probe names. The reference
+  is `None` for manual calibration.
+- `calibrating`: True while this probe's calibration is in progress.
+- `mesh_matrix`, `mesh_params`: The active compensation mesh and its geometry
+  and interpolation settings. Empty when no map has been calibrated or loaded.
+
 ## bed_mesh
 
 The following information is available in the
