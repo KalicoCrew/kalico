@@ -1314,6 +1314,7 @@ class PrinterHeaters:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.sensor_factories = {}
+        self.thermistor_factories = {}
         self.heaters = {}
         self.gcode_id_to_sensor = {}
         self.available_heaters = []
@@ -1354,6 +1355,9 @@ class PrinterHeaters:
 
     def add_sensor_factory(self, sensor_type, sensor_factory):
         self.sensor_factories[sensor_type] = sensor_factory
+
+    def add_thermistor_factory(self, thermistor_type, thermistor_factory):
+        self.thermistor_factories[thermistor_type] = thermistor_factory
 
     def setup_heater(self, config, gcode_id=None):
         heater_name = config.get_name().split()[-1]
@@ -1406,6 +1410,16 @@ class PrinterHeaters:
                 "Unknown temperature sensor '%s'" % (sensor_type,)
             )
         return self.sensor_factories[sensor_type](config)
+
+    def setup_thermistor(self, config):
+        if not self.have_load_sensors:
+            self.load_config(config)
+        thermistor_type = config.get("thermistor_type")
+        if thermistor_type not in self.thermistor_factories:
+            raise self.printer.config_error(
+                "Unknown thermistor_type '%s'" % (thermistor_type,)
+            )
+        return self.thermistor_factories[thermistor_type](config)
 
     def register_sensor(self, config, psensor, gcode_id=None):
         self.available_sensors.append(config.get_name())

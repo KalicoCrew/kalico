@@ -74,7 +74,9 @@ class IndxThermistorWrapper:
                 "pullup_resistor": 3900,
             },
         )
-        self.sensor = CustomThermistor(config_thermistor).create(config_sensor)
+        self.sensor = CustomThermistor(config_thermistor).create_sensor(
+            config_sensor
+        )
         self.max_temp = config.getfloat(
             f"max_temp_{sensor}", minval=0.0, default=def_max_temp
         )
