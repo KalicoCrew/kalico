@@ -393,34 +393,56 @@ class PrinterConfig:
             raise error(msg)
         return data.replace("\r\n", "\n")
 
+    @staticmethod
+    def _autosave_line(line):
+        # Return the content of a "#*# " prefixed line, or None if 'line'
+        # isn't an autosave line. Trailing whitespace and non-standard
+        # whitespace after the prefix (eg, from copy-paste) are tolerated.
+        line = line.rstrip()
+        if line == "#*#":
+            return ""
+        if line.startswith("#*#") and line[3].isspace():
+            return line[4:]
+        return None
+
     def _find_autosave_data(self, data):
-        regular_data = data
-        autosave_data = ""
-        pos = data.find(AUTOSAVE_HEADER)
-        if pos >= 0:
-            regular_data = data[:pos]
-            autosave_data = data[pos + len(AUTOSAVE_HEADER) :].strip()
-        # Check for errors and strip line prefixes
-        if "\n#*# " in regular_data:
-            logging.warning(
-                "Can't read autosave from config file"
-                " - autosave state corrupted"
-            )
-            return data, ""
-        out = [""]
-        for line in autosave_data.split("\n"):
-            if (
-                not line.startswith("#*#")
-                or (len(line) >= 4 and not line.startswith("#*# "))
-            ) and autosave_data:
-                logging.warning(
-                    "Can't read autosave from config file"
-                    " - modifications after header"
+        # Returns (regular_data, autosave_data, error). On error the
+        # autosave data can't be trusted, and the whole file is returned
+        # as regular data.
+        header_text = [
+            l[4:] for l in AUTOSAVE_HEADER.strip().split("\n") if l[4:]
+        ]
+        lines = data.split("\n")
+        start = len(lines)
+        for i, line in enumerate(lines):
+            if self._autosave_line(line) == header_text[0]:
+                start = i
+                break
+        for line in lines[:start]:
+            if self._autosave_line(line.lstrip()):
+                return (
+                    data,
+                    "",
+                    "autosave lines found before SAVE_CONFIG header",
                 )
-                return data, ""
-            out.append(line[4:])
+        # Strip line prefixes. Repeated headers (from earlier SAVE_CONFIG
+        # runs) are skipped, so multiple clean blocks merge into one with
+        # later values taking precedence.
+        out = [""]
+        for lineno, line in enumerate(lines[start:], start + 1):
+            if not line.strip():
+                continue
+            content = self._autosave_line(line)
+            if content is None:
+                return (
+                    data,
+                    "",
+                    "line %d is not part of SAVE_CONFIG data" % (lineno,),
+                )
+            if content.strip() not in header_text:
+                out.append(content)
         out.append("")
-        return regular_data, "\n".join(out)
+        return "\n".join(lines[:start]), "\n".join(out), None
 
     comment_r = re.compile("[#;].*$")
     value_r = re.compile("[^A-Za-z0-9_].*$")
@@ -588,7 +610,12 @@ class PrinterConfig:
     def read_main_config(self):
         filename = self.printer.get_start_args()["config_file"]
         data = self._read_config_file(filename)
-        regular_data, autosave_data = self._find_autosave_data(data)
+        regular_data, autosave_data, err = self._find_autosave_data(data)
+        if err:
+            self.runtime_warning(
+                "Ignoring SAVE_CONFIG data in %s - %s. SAVE_CONFIG is"
+                " disabled until the file is fixed." % (filename, err)
+            )
         regular_config = self._build_config_wrapper(regular_data, filename)
         autosave_data = self._strip_duplicates(autosave_data, regular_config)
         self.autosave = self._build_config_wrapper(autosave_data, filename)
@@ -848,12 +875,21 @@ class PrinterConfig:
         cfgname = self.printer.get_start_args()["config_file"]
         try:
             data = self._read_config_file(cfgname)
-            regular_data, old_autosave_data = self._find_autosave_data(data)
+            regular_data, old_autosave_data, err = self._find_autosave_data(
+                data
+            )
             config = self._build_config_wrapper(regular_data, cfgname)
         except error as e:
             msg = "Unable to parse existing config on SAVE_CONFIG"
             logging.exception(msg)
             raise gcode.error(msg)
+        if err:
+            # Appending a new block would leave the old one in place and
+            # the new data would be ignored on the next restart as well
+            raise gcode.error(
+                "Unable to SAVE_CONFIG - %s in %s. Fix the SAVE_CONFIG"
+                " block by hand and restart." % (err, cfgname)
+            )
         regular_data = self._strip_duplicates(regular_data, self.autosave)
 
         if get_danger_options().autosave_includes:
