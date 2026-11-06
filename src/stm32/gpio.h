@@ -57,6 +57,7 @@ void spi_transfer(struct spi_config config, uint8_t receive_data
 struct i2c_config {
     void *i2c;
     uint8_t addr;
+    uint8_t bus;
 };
 
 struct i2c_config i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr);
