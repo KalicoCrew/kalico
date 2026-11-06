@@ -170,16 +170,20 @@ read_fifo_block_spi(struct lis2dw *ax)
     memcpy(ax->sb.data, &msg[1], BYTES_PER_BLOCK);
 }
 
-// Read 8 samples from FIFO via i2c
+// Read one sample from FIFO via i2c. The i2c code busy-waits for every
+// byte, so reading a whole block (48 bytes, over 1ms at 400kHz) would
+// stall other sensors on the same mcu. Reading one sample per task wake
+// lets them run in between; the block is sent once it is full.
 static void
-read_fifo_block_i2c(struct lis2dw *ax)
+read_fifo_sample_i2c(struct lis2dw *ax)
 {
     uint8_t msg_reg[] = {LIS_AR_DATAX0};
     if (ax->model == LIS3DH)
         msg_reg[0] |= LIS_MS_I2C;
 
     int ret = i2c_dev_read(ax->i2c, sizeof(msg_reg), msg_reg
-                           , BYTES_PER_BLOCK, ax->sb.data);
+                           , BYTES_PER_SAMPLE
+                           , &ax->sb.data[ax->sb.data_count]);
     i2c_shutdown_on_err(ret);
 }
 
@@ -187,27 +191,40 @@ read_fifo_block_i2c(struct lis2dw *ax)
 static void
 read_fifo_block(struct lis2dw *ax, uint8_t oid)
 {
-    if (CONFIG_WANT_SPI && ax->bus_type == SPI_SERIAL)
+    uint_fast8_t count = BYTES_PER_BLOCK;
+    if (CONFIG_WANT_SPI && ax->bus_type == SPI_SERIAL) {
         read_fifo_block_spi(ax);
-    else if (CONFIG_WANT_I2C && ax->bus_type == I2C_SERIAL)
-        read_fifo_block_i2c(ax);
-    ax->sb.data_count = BYTES_PER_BLOCK;
-    sensor_bulk_report(&ax->sb, oid);
-    ax->fifo_bytes_pending -= BYTES_PER_BLOCK;
+    } else if (CONFIG_WANT_I2C && ax->bus_type == I2C_SERIAL) {
+        read_fifo_sample_i2c(ax);
+        count = BYTES_PER_SAMPLE;
+    }
+    ax->sb.data_count += count;
+    ax->fifo_bytes_pending -= count;
+    if (ax->sb.data_count >= BYTES_PER_BLOCK)
+        sensor_bulk_report(&ax->sb, oid);
+}
+
+// Bytes read per task wake: a block via spi, a sample via i2c
+static uint_fast8_t
+read_size(struct lis2dw *ax)
+{
+    if (CONFIG_WANT_I2C && ax->bus_type == I2C_SERIAL)
+        return BYTES_PER_SAMPLE;
+    return BYTES_PER_BLOCK;
 }
 
 // Query accelerometer data
 static void
 lis2dw_query(struct lis2dw *ax, uint8_t oid)
 {
-    if (ax->fifo_bytes_pending < BYTES_PER_BLOCK)
+    if (ax->fifo_bytes_pending < read_size(ax))
         query_fifo_status(ax);
 
-    if (ax->fifo_bytes_pending >= BYTES_PER_BLOCK)
+    if (ax->fifo_bytes_pending >= read_size(ax))
         read_fifo_block(ax, oid);
 
     // check if we need to run the task again (more packets in fifo?)
-    if (ax->fifo_bytes_pending >= BYTES_PER_BLOCK) {
+    if (ax->fifo_bytes_pending >= read_size(ax)) {
         // More data in fifo - wake this task again
         sched_wake_task(&lis2dw_wake);
     } else {
@@ -260,8 +277,9 @@ command_query_lis2dw_status(uint32_t *args)
     }
     update_fifo_status(ax, fifo_status);
 
+    // Samples read but not yet sent are still buffered for the host
     sensor_bulk_status(&ax->sb, args[0], time1, time2-time1
-                       , ax->fifo_bytes_pending);
+                       , ax->fifo_bytes_pending + ax->sb.data_count);
 }
 DECL_COMMAND(command_query_lis2dw_status, "query_lis2dw_status oid=%c");
 
