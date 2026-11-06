@@ -61,11 +61,13 @@
  #define GPIO_Tx GPIO('H', 13)
 #endif
 
-#if !(CONFIG_STM32_CANBUS_PB0_PB1 || CONFIG_STM32_CANBUS_PC2_PC3 \
-     || CONFIG_STM32_CANBUS_PB5_PB6 ||CONFIG_STM32_CANBUS_PB12_PB13)
+#if CONFIG_MACH_STM32H503 \
+    || !(CONFIG_STM32_CANBUS_PB0_PB1 || CONFIG_STM32_CANBUS_PC2_PC3 \
+         || CONFIG_STM32_CANBUS_PB5_PB6 || CONFIG_STM32_CANBUS_PB12_PB13)
+ // H503 has FDCAN1 only. PB5/PB6 and PB12/PB13 are FDCAN1 on that chip.
  #define SOC_CAN FDCAN1
  #define MSG_RAM (((struct fdcan_ram_layout*)SRAMCAN_BASE)->fdcan1)
- #if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32G4
+ #if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32G4 || CONFIG_MACH_STM32H5
   #define CAN_IT0_IRQn  FDCAN1_IT0_IRQn
  #endif
 #else
@@ -81,7 +83,7 @@
  #define CAN_FUNCTION  GPIO_FUNCTION(3) // Alternative function mapping number
 #endif
 
-#if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32G4
+#if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32G4 || CONFIG_MACH_STM32H5
  #define CAN_FUNCTION  GPIO_FUNCTION(9) // Alternative function mapping number
 #endif
 
@@ -174,7 +176,7 @@ canhw_set_filter(uint32_t id)
     can_filter(1, id);
     can_filter(2, id + 1);
 
-#if CONFIG_MACH_STM32G0 || CONFIG_MACH_STM32G4
+#if CONFIG_MACH_STM32G0 || CONFIG_MACH_STM32G4 || CONFIG_MACH_STM32H5
     SOC_CAN->RXGFC = ((id ? 3 : 1) << FDCAN_RXGFC_LSS_Pos
                       | 0x02 << FDCAN_RXGFC_ANFS_Pos);
 #elif CONFIG_MACH_STM32H7
@@ -273,9 +275,9 @@ CAN_IRQHandler(void)
 
 static inline const uint32_t
 make_btr(uint32_t sjw,       // Sync jump width, ... hmm
-         uint32_t time_seg1, // time segment before sample point, 1 .. 16
-         uint32_t time_seg2, // time segment after sample point, 1 .. 8
-         uint32_t brp)       // Baud rate prescaler, 1 .. 1024
+         uint32_t time_seg1, // time segment before sample point, 1 .. 256
+         uint32_t time_seg2, // time segment after sample point, 1 .. 128
+         uint32_t brp)       // Baud rate prescaler, 1 .. 512
 {
     return (((uint32_t)(sjw-1)) << FDCAN_NBTP_NSJW_Pos
             | ((uint32_t)(time_seg1-1)) << FDCAN_NBTP_NTSEG1_Pos
@@ -310,8 +312,30 @@ compute_btr(uint32_t pclock, uint32_t bitrate)
         if (brp_rem == 0)
             break;
     }
+    // NTSEG1 is 8 bits and NTSEG2 is 7 bits. The window above can leave
+    // phase_seg2 at 1, below SJW. 250 MHz does that at 250k, 500k, and
+    // 1M. Take the fewest quanta that still has phase_seg2 >= SJW.
+    // SJW stays 2, so a 250-quanta bit would only tolerate about 400 ppm.
+    if (qs / 8 < sjw) {
+        uint32_t alt, best = qs;
+        uint32_t limit = bit_clocks < 293 ? bit_clocks : 293;
+        for (alt = 16; alt <= limit; alt++) {
+            uint32_t seg2 = alt / 8;
+            uint32_t seg1 = alt - (1 + seg2);
+            uint32_t alt_brp = bit_clocks / alt;
+            if ((bit_clocks % alt) == 0 && seg2 >= sjw && seg2 <= 128
+                && seg1 >= 1 && seg1 <= 256 && alt_brp >= 1
+                && alt_brp <= 512) {
+                best = alt;
+                break;
+            }
+        }
+        qs = best;
+    }
     uint32_t brp       = bit_clocks / qs;
     uint32_t time_seg2 = qs / 8; // sample at ~87.5%
+    if (time_seg2 < sjw)
+        sjw = time_seg2;
     uint32_t time_seg1 = qs - (1 + time_seg2);
 
     return make_btr(sjw, time_seg1, time_seg2, brp);
