@@ -413,16 +413,22 @@ class TapValidationError(Exception):
     def __init__(
         self, error_code: str, message: str, is_recoverable: bool = True
     ):
-        super().__init__(message)
+        super().__init__(error_code, message, is_recoverable)
         self.error_code = error_code
+        self.message = message
         self.is_recoverable = is_recoverable
-        pass
+
+    def __str__(self):
+        return (
+            f"TapValidationError: {self.error_code}: {self.message}"
+            f" {self.is_recoverable}"
+        )
 
     def to_dict(self) -> dict[str, str]:
         return {
             "error_code": self.error_code,
             "is_recoverable": self.is_recoverable,
-            "message": str(self),
+            "message": self.message,
         }
 
 
