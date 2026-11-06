@@ -423,13 +423,65 @@ class Homing:
                 homepos[axis] = newpos[axis]
             self.toolhead.set_position(homepos)
 
+    def home_far_end(self, rail, axis):
+        # Stall at the far end of the axis from wherever the toolhead is
+        hi = rail.get_homing_info()
+        pos_min, pos_max = rail.get_range()
+        direction = 1.0 if hi.positive_dir else -1.0
+        # Pretend the toolhead sits past the homed end so that a move longer
+        # than the configured range stays within the axis limits. The caller
+        # must home again to restore the real position.
+        far_limit = pos_min if hi.positive_dir else pos_max
+        forcepos = [None, None, None]
+        forcepos[axis] = far_limit + direction * 1.5 * (pos_max - pos_min)
+        movepos = [None, None, None]
+        movepos[axis] = far_limit
+        endstops = rail.get_endstops()
+        try:
+            self._set_homing_accel(hi.accel, pre_homing=True)
+            self._set_homing_current("xyz"[axis], pre_homing=True)
+            for attempt in range(2):
+                self.toolhead.set_position(
+                    self._fill_coord(forcepos), homing_axes="xyz"[axis]
+                )
+                self._reset_endstop_states(endstops)
+                hmove = HomingMove(self.printer, endstops)
+                hmove.homing_move(self._fill_coord(movepos), hi.speed)
+                if hmove.check_no_movement() is not None:
+                    raise self.printer.command_error(
+                        "Endstop %s triggered before moving toward the far end"
+                        % (hmove.check_no_movement(),)
+                    )
+                if attempt or not hmove.moved_less_than_dist(
+                    hi.min_home_dist, [axis]
+                ):
+                    break
+                # Started too close to the far end, back off and stall again
+                backoff = self.toolhead.get_position()
+                backoff[axis] += direction * hi.min_home_dist
+                self.toolhead.move(backoff, hi.retract_speed)
+        finally:
+            self._set_homing_accel(hi.accel, pre_homing=False)
+            self._set_homing_current("xyz"[axis], pre_homing=False)
+        return {sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions}
+
 
 class PrinterHoming:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.measured_travel = {}
+        self.last_trigger_mcu_pos = None
+        self.printer.register_event_handler(
+            "homing:home_rails_end", self._handle_home_rails_end
+        )
         # Register g-code commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28)
+        gcode.register_command(
+            "MEASURE_AXIS_TRAVEL",
+            self.cmd_MEASURE_AXIS_TRAVEL,
+            desc=self.cmd_MEASURE_AXIS_TRAVEL_help,
+        )
 
     def manual_home(
         self, toolhead, endstops, pos, speed, triggered, check_triggered
@@ -476,6 +528,85 @@ class PrinterHoming:
         kin = self.printer.lookup_object("toolhead").get_kinematics()
         try:
             kin.home(homing_state)
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                raise self.printer.command_error(
+                    "Homing failed due to printer shutdown"
+                )
+            self.printer.lookup_object("stepper_enable").motor_off()
+            raise
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        self.last_trigger_mcu_pos = dict(homing_state.trigger_mcu_pos)
+
+    def get_status(self, eventtime):
+        return {"measured_travel": dict(self.measured_travel)}
+
+    def _measure_travel(self, rail, axis):
+        # Stall at the far end, then home normally and compare the two
+        # trigger positions
+        far = Homing(self.printer).home_far_end(rail, axis)
+        self.last_trigger_mcu_pos = None
+        gcode = self.printer.lookup_object("gcode")
+        gcode.run_script_from_command("G28 %s" % ("XYZ"[axis],))
+        near = self.last_trigger_mcu_pos
+        if near is None:
+            raise self.printer.command_error(
+                "G28 %s did not home the axis" % ("XYZ"[axis],)
+            )
+        kin = self.printer.lookup_object("toolhead").get_kinematics()
+
+        def calc_axis(mcu_pos):
+            return kin.calc_position(
+                {
+                    s.get_name(): mcu_pos.get(s.get_name(), 0)
+                    * s.get_step_dist()
+                    for s in kin.get_steppers()
+                }
+            )[axis]
+
+        return abs(calc_axis(near) - calc_axis(far))
+
+    cmd_MEASURE_AXIS_TRAVEL_help = (
+        "Measure the travel of a sensorless axis and check it against"
+        " its configured range"
+    )
+
+    def cmd_MEASURE_AXIS_TRAVEL(self, gcmd):
+        axis_name = gcmd.get("AXIS").lower()
+        if axis_name not in ("x", "y"):
+            raise gcmd.error("AXIS must be X or Y")
+        axis = "xyz".index(axis_name)
+        toolhead = self.printer.lookup_object("toolhead")
+        rails = getattr(toolhead.get_kinematics(), "rails", [])
+        rail = rails[axis] if axis < len(rails) else None
+        if rail is None or rail.get_name() != "stepper_" + axis_name:
+            raise gcmd.error(
+                "MEASURE_AXIS_TRAVEL is not supported by this kinematics"
+            )
+        if not rail.get_homing_info().use_sensorless_homing:
+            raise gcmd.error(
+                "MEASURE_AXIS_TRAVEL requires sensorless homing"
+                " (a virtual endstop) on %s" % (rail.get_name(),)
+            )
+        samples = gcmd.get_int("SAMPLES", 1, minval=1)
+        tolerance = gcmd.get_float("TOLERANCE", 1.0, above=0.0)
+        pos_min, pos_max = rail.get_range()
+        expected = pos_max - pos_min
+        try:
+            for _ in range(samples):
+                travel = self._measure_travel(rail, axis)
+                self.measured_travel[axis_name] = travel
+                gcmd.respond_info(
+                    "%s travel: %.3f (configured %.3f)"
+                    % (rail.get_name(), travel, expected)
+                )
+                if abs(travel - expected) > tolerance:
+                    raise gcmd.error(
+                        "%s travel %.3f differs from position_max -"
+                        " position_min (%.3f) by more than TOLERANCE %.3f"
+                        % (rail.get_name(), travel, expected, tolerance)
+                    )
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(

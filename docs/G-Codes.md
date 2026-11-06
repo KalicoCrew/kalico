@@ -1043,6 +1043,25 @@ from the config.
 If SAVE_TO_PROFILE is set to 1, the new value will be written to the
 current PID_PROFILE.
 
+### [homing]
+
+The homing module is automatically loaded.
+
+#### MEASURE_AXIS_TRAVEL
+`MEASURE_AXIS_TRAVEL AXIS=<X|Y> [SAMPLES=<count>] [TOLERANCE=<mm>]`:
+Measure the full travel of an axis that uses sensorless homing and
+check it against the configured range. Each sample first stalls at the
+end opposite to the endstop, then homes the axis normally (`G28`), and
+reports the distance between both stalls. The axis does not need to be
+homed beforehand and is homed when the command finishes, so it can
+replace `G28` for that axis in a homing routine. An error is raised if
+a sample differs from `position_max - position_min` by more than
+TOLERANCE (default 1.0mm), which can catch a blocked or racked axis or
+a bad sensorless homing tune. SAMPLES (default 1) sets how many
+measurements are taken. The last result is available in
+[printer.homing.measured_travel](Status_Reference.md#homing). The axis
+must use a `virtual_endstop` (or `use_sensorless_homing: True`).
+
 ### [idle_timeout]
 
 The idle_timeout module is automatically loaded.

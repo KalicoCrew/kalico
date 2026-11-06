@@ -331,6 +331,13 @@ object is available if any heater is defined):
   available to read, a temperature monitor may not be available and
   will return null in such case.
 
+## homing
+
+The following information is available in the `homing` object:
+- `measured_travel`: A dictionary with the last travel measured by
+  [MEASURE_AXIS_TRAVEL](G-Codes.md#measure_axis_travel) for each axis,
+  e.g. `{"x": 117.2}`. Axes that were not measured are absent.
+
 ## idle_timeout
 
 The following information is available in the
