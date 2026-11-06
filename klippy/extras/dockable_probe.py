@@ -504,7 +504,7 @@ class DockableProbe:
 
     def cmd_ATTACH_PROBE(self, gcmd):
         return_pos = self.toolhead.get_position()
-        self.attach_probe(return_pos)
+        self.attach_probe(gcmd, return_pos)
 
     cmd_DETACH_PROBE_help = (
         "Check probe status and detach probe using the movement gcodes"
@@ -512,7 +512,7 @@ class DockableProbe:
 
     def cmd_DETACH_PROBE(self, gcmd):
         return_pos = self.toolhead.get_position()
-        self.detach_probe(return_pos)
+        self.detach_probe(gcmd, return_pos)
 
     cmd_MOVE_AVOIDING_DOCK_help = "Move to X Y avoiding dock safe area"
 
@@ -523,8 +523,13 @@ class DockableProbe:
         speed = gcmd.get("SPEED", self.travel_speed, parser=float, above=0.0)
         self._move_avoiding_dock([x, y], speed)
 
-    def attach_probe(self, return_pos=None, always_restore_toolhead=False):
-        self._lower_probe()
+    def attach_probe(
+        self,
+        gcmd,
+        return_pos=None,
+        always_restore_toolhead=False,
+    ):
+        self._lower_probe(gcmd)
 
         retry = 0
         while (
@@ -535,19 +540,19 @@ class DockableProbe:
                 raise self.printer.command_error(
                     "Attach Probe: Probe not detected in dock, aborting"
                 )
-            self.pre_attach_gcode.run_gcode_from_command()
+            self.pre_attach_gcode.run_gcode(gcmd)
             # Call these gcodes as a script because we don't have enough
-            # structs/data to call the cmd_...() funcs and supply 'gcmd'.
+            # structs/data to call the cmd_...() funcs directly.
             # This method also has the advantage of calling user-written gcodes
             # if they've been defined.
-            self.gcode.run_script_from_command(
+            gcmd.run_script(
                 """
                 MOVE_TO_APPROACH_PROBE
                 MOVE_TO_DOCK_PROBE
                 MOVE_TO_EXTRACT_PROBE
             """
             )
-            self.post_attach_gcode.run_gcode_from_command()
+            self.post_attach_gcode.run_gcode(gcmd)
 
             retry += 1
 
@@ -561,25 +566,25 @@ class DockableProbe:
             # Do NOT return to the original Z position after attach
             # as the probe might crash into the bed.
 
-    def detach_probe(self, return_pos=None):
+    def detach_probe(self, gcmd, return_pos=None):
         retry = 0
         while (
             self.get_probe_state() != PROBE_DOCKED
             and retry < self.dock_retries + 1
         ):
-            self.pre_detach_gcode.run_gcode_from_command()
+            self.pre_detach_gcode.run_gcode(gcmd)
             # Call these gcodes as a script because we don't have enough
-            # structs/data to call the cmd_...() funcs and supply 'gcmd'.
+            # structs/data to call the cmd_...() funcs directly.
             # This method also has the advantage of calling user-written gcodes
             # if they've been defined.
-            self.gcode.run_script_from_command(
+            gcmd.run_script(
                 """
                 MOVE_TO_INSERT_PROBE
                 MOVE_TO_DOCK_PROBE
                 MOVE_TO_DETACH_PROBE
             """
             )
-            self.post_detach_gcode.run_gcode_from_command()
+            self.post_detach_gcode.run_gcode(gcmd)
 
             retry += 1
 
@@ -595,15 +600,20 @@ class DockableProbe:
             self.toolhead.manual_move(
                 [None, None, return_pos[2]], self.lift_speed
             )
-        self._raise_probe()
+        self._raise_probe(gcmd)
 
-    def auto_detach_probe(self, return_pos=None):
+    def auto_detach_probe(self, gcmd, return_pos=None):
         if self.get_probe_state() == PROBE_DOCKED:
             return
         if self.auto_attach_detach:
-            self.detach_probe(return_pos)
+            self.detach_probe(gcmd, return_pos)
 
-    def auto_attach_probe(self, return_pos=None, always_restore_toolhead=False):
+    def auto_attach_probe(
+        self,
+        gcmd,
+        return_pos=None,
+        always_restore_toolhead=False,
+    ):
         if self.get_probe_state() == PROBE_ATTACHED:
             return
         if not self.auto_attach_detach:
@@ -611,7 +621,7 @@ class DockableProbe:
                 "Cannot probe, probe is not "
                 "attached and auto-attach is disabled"
             )
-        self.attach_probe(return_pos, always_restore_toolhead)
+        self.attach_probe(gcmd, return_pos, always_restore_toolhead)
 
     #######################################################################
     # Functions for calculating points and moving the toolhead
@@ -862,19 +872,19 @@ class DockableProbe:
     #######################################################################
     # Probe Wrappers
     #######################################################################
-    def _raise_probe(self):
+    def _raise_probe(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self.deactivate_gcode.run_gcode_from_command()
+        self.deactivate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
                 "Toolhead moved during probe deactivate_gcode script"
             )
 
-    def _lower_probe(self):
+    def _lower_probe(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
-        self.activate_gcode.run_gcode_from_command()
+        self.activate_gcode.run_gcode(gcmd)
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
                 "Toolhead moved during probe activate_gcode script"
@@ -891,7 +901,9 @@ class DockableProbe:
         # will complete the probing next to the dock. This behavior
         # is driven by the probing context from probe.py
         return_pos = self.toolhead.get_position()
-        self.auto_attach_probe(return_pos, context.always_restore_toolhead)
+        self.auto_attach_probe(
+            context.gcmd, return_pos, context.always_restore_toolhead
+        )
 
     def multi_probe_end(self, context):
         self.multi = MULTI_OFF
@@ -902,12 +914,12 @@ class DockableProbe:
         self.toolhead.manual_move(
             [None, None, return_pos[2] + 2], self.lift_speed
         )
-        self.auto_detach_probe(return_pos)
+        self.auto_detach_probe(context.gcmd, return_pos)
 
     def probe_prepare(self, hmove):
         if self.multi == MULTI_OFF or self.multi == MULTI_FIRST:
             return_pos = self.toolhead.get_position()
-            self.auto_attach_probe(return_pos)
+            self.auto_attach_probe(hmove.gcmd, return_pos)
         if self.multi == MULTI_FIRST:
             self.multi = MULTI_ON
 
@@ -920,7 +932,7 @@ class DockableProbe:
             self.toolhead.manual_move(
                 [None, None, return_pos[2] + 2], self.lift_speed
             )
-            self.auto_detach_probe(return_pos)
+            self.auto_detach_probe(hmove.gcmd, return_pos)
 
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
@@ -940,7 +952,7 @@ class DockableProbe:
 
     def probing_move(self, pos, speed, gcmd):
         phoming = self.printer.lookup_object("homing")
-        return phoming.probing_move(self, pos, speed)
+        return phoming.probing_move(self, pos, speed, gcmd)
 
 
 def load_config(config):

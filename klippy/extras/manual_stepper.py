@@ -103,7 +103,9 @@ class ManualStepper:
         if sync:
             self.sync_print_time()
 
-    def do_homing_move(self, movepos, speed, accel, triggered, check_trigger):
+    def do_homing_move(
+        self, movepos, speed, accel, triggered, check_trigger, gcmd
+    ):
         if not self.can_home:
             raise self.printer.command_error(
                 "No endstop for this manual stepper"
@@ -113,7 +115,7 @@ class ManualStepper:
         endstops = self.rail.get_endstops()
         phoming = self.printer.lookup_object("homing")
         phoming.manual_home(
-            self, endstops, pos, speed, triggered, check_trigger
+            self, endstops, pos, speed, triggered, check_trigger, gcmd
         )
 
     cmd_MANUAL_STEPPER_help = "Command a manually configured stepper"
@@ -139,7 +141,12 @@ class ManualStepper:
             ):
                 raise gcmd.error("Move out of range")
             self.do_homing_move(
-                movepos, speed, accel, homing_move > 0, abs(homing_move) == 1
+                movepos,
+                speed,
+                accel,
+                homing_move > 0,
+                abs(homing_move) == 1,
+                gcmd,
             )
         elif gcmd.get_float("MOVE", None) is not None:
             movepos = gcmd.get_float("MOVE")

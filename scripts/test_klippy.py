@@ -6,6 +6,7 @@
 import logging
 import optparse
 import os
+import shlex
 import subprocess
 import sys
 
@@ -45,6 +46,7 @@ class TestCase:
         config_fname = gcode_fname = dict_fnames = None
         should_fail = multi_tests = False
         gcode = []
+        self.interactive = False
         f = open(self.fname, "r")
         for line in f:
             cpos = line.find("#")
@@ -82,6 +84,8 @@ class TestCase:
                         "%s=%s"
                         % (mcu.strip(), self.relpath(fname.strip(), "dict"))
                     )
+            elif parts[0] == "INTERACTIVE":
+                self.interactive = True
             elif parts[0] == "GCODE":
                 gcode_fname = self.relpath(parts[1])
             elif parts[0] == "SHOULD_FAIL":
@@ -97,6 +101,18 @@ class TestCase:
     def launch_test(
         self, config_fname, dict_fnames, gcode_fname, gcode, should_fail
     ):
+        if self.interactive:
+            if gcode_fname is not None:
+                if gcode:
+                    raise error(
+                        "Can't specify both a gcode file and gcode commands"
+                    )
+                with open(gcode_fname) as source:
+                    gcode = source.read().splitlines()
+                gcode_fname = None
+            gcode = [
+                "TEST_INTERACTIVE GCODE=" + shlex.quote(line) for line in gcode
+            ]
         gcode_is_temp = False
         if gcode_fname is None:
             gcode_fname = self.relpath(TEMP_GCODE_FILE, "temp")

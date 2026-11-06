@@ -1,6 +1,7 @@
 # Test case for z_tilt and quad_gantry_level
 CONFIG z_tilt.cfg
 DICTIONARY atmega2560.dict
+INTERACTIVE
 
 # Start by homing the printer.
 G28

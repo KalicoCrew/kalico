@@ -1,6 +1,7 @@
 # Test case for z_tilt_ng
 CONFIG z_tilt_ng.cfg
 DICTIONARY atmega2560.dict
+INTERACTIVE
 
 # Start by homing the printer.
 G28

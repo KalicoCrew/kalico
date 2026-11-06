@@ -2,6 +2,8 @@ from klippy.configfile import ConfigWrapper as RealConfigWrapper
 from klippy.configfile import error as ConfigError
 from klippy.mcu import MIN_SCHEDULE_TIME_INIT  # noqa: F401
 
+from ..homing import Homing
+
 
 class ConfigWrapper(RealConfigWrapper):
     def __init__(self, printer, name, contents, fallback=None):
@@ -83,3 +85,8 @@ def get_tmc_current_helper(stepper):
     Compatibility layer for Kalico and Klipper.
     """
     return stepper.get_tmc_current_helper()
+
+
+def create_homing(printer, gcmd):
+    """Create homing state for the current command."""
+    return Homing(printer, gcmd)
