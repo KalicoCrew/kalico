@@ -2450,10 +2450,14 @@ class TradRackToolHead(toolhead.ToolHead, object):
             "klippy:shutdown", self._handle_shutdown
         )
 
-    def set_position(self, newpos, homing_axes=()):
+    def set_position(
+        self, newpos, homing_axes=(), extra_axes=(), kinematic_axes=True
+    ):
         for _ in range(4 - len(newpos)):
             newpos.append(0.0)
-        super(TradRackToolHead, self).set_position(newpos, homing_axes)
+        super(TradRackToolHead, self).set_position(
+            newpos, homing_axes, extra_axes, kinematic_axes
+        )
 
     def get_sel_max_velocity(self):
         return self.sel_max_velocity, self.sel_max_accel
