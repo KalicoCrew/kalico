@@ -131,7 +131,15 @@ class HomingMove:
                     triggered=triggered,
                 )
                 endstop_triggers.append(wait)
-            all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
+            if endstop_triggers:
+                all_endstop_trigger = multi_complete(
+                    self.printer, endstop_triggers
+                )
+            else:
+                # If no endstops are provided, consider this a normal move.
+                # Provide a completion that never triggers, so the move completes
+                # normally.
+                all_endstop_trigger = self.printer.get_reactor().completion()
             self.toolhead.dwell(HOMING_START_DELAY)
         except Exception:
             # Stop endstops already started so they release their resources
