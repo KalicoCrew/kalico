@@ -1,8 +1,13 @@
+import contextlib
 import logging
 import math
 import struct
 from collections import namedtuple
+from dataclasses import replace
 from time import strftime
+
+from klippy.extras import tmc
+from klippy.extras.homing import HomingMove
 
 from ..thermistor import CustomThermistor
 from . import calibration, compat
@@ -180,6 +185,9 @@ class IndxToolboardHeater:
         )
         self.supply_voltage = 24.0
 
+        self.extruder_stallguard_endstop = None
+        self.extruder_force_endstop = None
+
         # The autotuned thermal-model parameters have no defaults.
         # The user must run INDX_CALIBRATE to generate them.
         model_params = ThermalModelParams(
@@ -313,12 +321,13 @@ class IndxToolboardHeater:
         self.cmd_queue = self.toolboard.mcu.alloc_command_queue()
 
         self.toolboard.printer.register_event_handler(
-            "klippy:connect", self.handle_connect
+            "klippy:mcu_identify", self.handle_mcu_identify
         )
 
         self.last_report = None
         self.power_scale = 0
         self.heaters = []
+        self._last_extruder_move_info = {}
 
         gcode = self.toolboard.printer.lookup_object("gcode")
         gcode.register_command("INDX_SET_PID", self.cmd_SET_PID)
@@ -411,7 +420,9 @@ class IndxToolboardHeater:
                 f" time_on_first={float_to_u32(t_on_first)}"
             )
 
-    def handle_connect(self):
+    def handle_mcu_identify(self):
+        self.toolhead = self.toolboard.printer.lookup_object("toolhead")
+
         # Look for heaters that have us as their PWM output
         pheaters = self.toolboard.printer.lookup_object("heaters")
         for heater_name in pheaters.get_all_heaters():
@@ -440,6 +451,49 @@ class IndxToolboardHeater:
 
             self.fan.add_heater(heater)
             self.heaters.append(heater)
+
+            if hasattr(tmc, "TMCSensorlessHomingHelper"):
+                for axis in self.toolhead.get_extra_axes():
+                    if (
+                        axis is not None
+                        and axis.get_heater() == heater
+                        and hasattr(axis, "extruder_stepper")
+                        and axis.extruder_stepper is not None
+                    ):
+                        driver = self.toolboard.printer.lookup_object(
+                            f"tmc2240 {axis.extruder_stepper.name}",
+                            default=None,
+                        )
+                        if driver:
+                            stallguard_helper = tmc.TMCSensorlessHomingHelper(
+                                self.toolhead.printer, driver.mcu_tmc
+                            )
+                            self.extruder_stallguard_endstop = (
+                                stallguard_helper.setup_spi_endstop()
+                            )
+                            self.extruder_stallguard_endstop.set_settle_time(
+                                0.0
+                            )
+                            self.extruder_stallguard_endstop.add_stepper(
+                                axis.extruder_stepper.stepper
+                            )
+
+            for _, probe in self.toolboard.printer.lookup_objects(
+                "load_cell_probe"
+            ):
+                endstop = probe.get_endstop()
+                if endstop.get_mcu() != self.toolboard.mcu:
+                    continue
+                for axis in self.toolhead.get_extra_axes():
+                    if (
+                        axis is not None
+                        and axis.get_heater() == heater
+                        and hasattr(axis, "extruder_stepper")
+                        and axis.extruder_stepper is not None
+                    ):
+                        endstop.add_stepper(axis.extruder_stepper.stepper)
+                self.extruder_force_endstop = endstop
+                break
 
             # Support for Kalico profile system
             if hasattr(heater, "pmgr"):
@@ -489,8 +543,6 @@ class IndxToolboardHeater:
         )
 
     def extruder_position(self, time):
-        if self.toolhead is None:
-            self.toolhead = self.toolboard.printer.lookup_object("toolhead")
         if self.toolhead is None:
             return 0.0
         extruder = self.toolhead.get_extruder()
@@ -638,6 +690,11 @@ class IndxToolboardHeater:
         if target_temp == 0.0:
             target_temp = float("nan")
         self.cmd_set_target.send([float_to_u32(target_temp + KELVIN_OFFSET)])
+
+    def get_status(self, eventtime):
+        return {
+            "last_extruder_move": self._last_extruder_move_info,
+        }
 
     def _check_not_calibrating(self):
         compat.check_not_calibrating(self.heater)
@@ -1438,50 +1495,104 @@ class IndxToolboardHeater:
         )
 
     def cmd_EXTRUDER_MOVE(self, gcmd):
-        self._check_not_calibrating()
-        distance = gcmd.get_float("DISTANCE")
-        speed = gcmd.get_float("SPEED", above=0.0)
-        current = gcmd.get_float("CURRENT", above=0.0)
+        with contextlib.ExitStack() as es:
+            self._last_extruder_move_info = {}
+            self._check_not_calibrating()
+            distance = gcmd.get_float("DISTANCE")
+            speed = gcmd.get_float("SPEED", above=0.0)
+            current = gcmd.get_float("CURRENT", above=0.0)
 
-        toolhead = self.toolboard.printer.lookup_object("toolhead")
-        extruder = toolhead.get_extruder()
-        if self.heater is None or extruder.get_heater() != self.heater:
-            raise gcmd.error("Active extruder is not using the INDX heater")
-        if extruder.extruder_stepper is None:
-            raise gcmd.error("Active extruder does not have a stepper")
-        stepper = extruder.extruder_stepper.stepper
-        current_helper = compat.get_tmc_current_helper(stepper)
-        if current_helper is None:
-            raise gcmd.error(
-                "Active extruder does not have a TMC current helper"
+            toolhead = self.toolboard.printer.lookup_object("toolhead")
+            extruder = toolhead.get_extruder()
+            if self.heater is None or extruder.get_heater() != self.heater:
+                raise gcmd.error("Active extruder is not using the INDX heater")
+            if extruder.extruder_stepper is None:
+                raise gcmd.error("Active extruder does not have a stepper")
+            stepper = extruder.extruder_stepper.stepper
+            current_helper = compat.get_tmc_current_helper(stepper)
+            if current_helper is None:
+                raise gcmd.error(
+                    "Active extruder does not have a TMC current helper"
+                )
+
+            run_current, hold_current, req_hold_current, *_ = (
+                current_helper.get_current()
+            )
+            current = min(current, run_current)
+            speed = min(speed, extruder.max_e_velocity)
+            hold_current = (
+                req_hold_current
+                if req_hold_current is not None
+                else hold_current
             )
 
-        run_current, hold_current, req_hold_current, *_ = (
-            current_helper.get_current()
-        )
-        current = min(current, run_current)
-        restore_hold_current = (
-            req_hold_current if req_hold_current is not None else hold_current
-        )
+            endstops = []
 
-        toolhead.wait_moves()
-        print_time = toolhead.get_last_move_time()
-        current_helper.set_current(current, restore_hold_current, print_time)
-        try:
+            force = gcmd.get_int("FORCE", default=None, minval=1, maxval=65000)
+            if force is not None and gcmd.get("STALL", None) is not None:
+                raise gcmd.error("FORCE and STALL cannot be used together")
+
+            if hasattr(tmc, "TMCSpiEndstop"):
+                sg_threshold = gcmd.get_int(
+                    "STALL", minval=0, maxval=255, default=None
+                )
+                if sg_threshold is not None:
+                    if self.extruder_stallguard_endstop is None:
+                        # This shouldn't happen because the current helper _was_ available.
+                        raise gcmd.error(
+                            "Stallguard-based extruder halt not available."
+                        )
+                    mcu_tmc = current_helper.mcu_tmc
+                    es.enter_context(
+                        mcu_tmc.push_fields({"sg4_thrs": sg_threshold})
+                    )
+                    self.extruder_stallguard_endstop.set_accel(
+                        extruder.max_e_accel
+                    )
+                    endstops.append(
+                        (self.extruder_stallguard_endstop, "stallguard")
+                    )
+
+            toolhead.wait_moves()
+            es.enter_context(current_helper.push_current(current, hold_current))
             pos = toolhead.get_position()
             pos[3] += distance
-            can_extrude = self.heater.can_extrude
-            self.heater.can_extrude = True
-            try:
-                toolhead.manual_move(pos, speed)
-            finally:
-                self.heater.can_extrude = can_extrude
-            toolhead.wait_moves()
-        finally:
-            print_time = toolhead.get_last_move_time()
-            current_helper.set_current(
-                run_current, restore_hold_current, print_time
+            start_mcu_pos = stepper.get_mcu_position()
+
+            es.enter_context(self.heater.push_cold_extrude(True))
+            if force is not None:
+                endstop = self.extruder_force_endstop
+                if endstop is None:
+                    raise gcmd.error("No load_cell_probe on the INDX MCU")
+                params = replace(
+                    endstop.build_tare_params(gcmd),
+                    trigger_force=force,
+                    drift_safety_limit=0,
+                )
+                es.enter_context(endstop.with_tare_params(params))
+                endstops.append((endstop, "load_cell"))
+
+            hmove = HomingMove(
+                self.toolboard.printer,
+                endstops,
+                toolhead,
+                gcmd,
             )
+            trigpos = hmove.homing_move(
+                pos,
+                speed,
+                check_triggered=False,
+                probe_pos=True,
+            )
+            status = {
+                "trigger_position": trigpos[3],
+                "halt_position": toolhead.get_position()[3],
+                "movement": stepper.get_mcu_position() != start_mcu_pos,
+            }
+            for _endstop, name in endstops:
+                status[f"{name}_triggered"] = name in hmove.trigger_times
+            gcmd.respond_info(f"Status: {status}")
+            self._last_extruder_move_info = status
 
     def cmd_SET_MODEL_PARAMS(self, gcmd):
         self._check_not_calibrating()
