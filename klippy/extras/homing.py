@@ -61,6 +61,10 @@ class HomingMove:
         self.endstops = endstops
         self.toolhead = toolhead
         self.stepper_positions = []
+        self.kinematic_axes = False
+        self.extra_steppers = {}
+        self._moving_extra_axes = set()
+        self.trigger_times = {}
         self.distance_elapsed = []
 
     def get_mcu_endstops(self):
@@ -70,31 +74,60 @@ class HomingMove:
         startpos = self.toolhead.get_position()
         axes_d = [mp - sp for mp, sp in zip(movepos, startpos)]
         move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
+        if move_d < 0.000000001:
+            # Match Move's distance for extra-axis-only moves.
+            move_d = max((abs(d) for d in axes_d[3:]), default=0.0)
         move_t = move_d / speed
-        max_steps = max(
-            [
-                (
-                    abs(
-                        s.calc_position_from_coord(startpos)
-                        - s.calc_position_from_coord(movepos)
-                    )
-                    / s.get_step_dist()
+        max_steps = 0.0
+        for s in mcu_endstop.get_steppers():
+            extra = self.extra_steppers.get(s.get_name())
+            if extra is not None:
+                stepper_d = abs(axes_d[extra[0]])
+            else:
+                stepper_d = abs(
+                    s.calc_position_from_coord(startpos)
+                    - s.calc_position_from_coord(movepos)
                 )
-                for s in mcu_endstop.get_steppers()
-            ]
-        )
+            max_steps = max(max_steps, stepper_d / s.get_step_dist())
         if max_steps <= 0.0:
             return 0.001
         return move_t / max_steps
 
     def calc_toolhead_pos(self, kin_spos, offsets):
-        kin_spos = dict(kin_spos)
-        kin = self.toolhead.get_kinematics()
-        for stepper in kin.get_steppers():
-            sname = stepper.get_name()
-            kin_spos[sname] += offsets.get(sname, 0) * stepper.get_step_dist()
         thpos = self.toolhead.get_position()
-        return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
+        if self.kinematic_axes:
+            kin_spos = dict(kin_spos)
+            kin = self.toolhead.get_kinematics()
+            for stepper in kin.get_steppers():
+                sname = stepper.get_name()
+                kin_spos[sname] += (
+                    offsets.get(sname, 0) * stepper.get_step_dist()
+                )
+            thpos[:3] = list(kin.calc_position(kin_spos))[:3]
+        updated_axes = set()
+        for sname, (axis, stepper) in self.extra_steppers.items():
+            if axis not in self._moving_extra_axes or axis in updated_axes:
+                continue
+            updated_axes.add(axis)
+            thpos[axis] = (
+                kin_spos[sname]
+                + offsets.get(sname, 0) * stepper.get_step_dist()
+            )
+        return thpos
+
+    def set_toolhead_pos(self, pos):
+        if not self._moving_extra_axes:
+            if self.kinematic_axes:
+                self.toolhead.set_position(pos)
+            return
+        self.toolhead.set_position(
+            pos,
+            extra_axes=self._moving_extra_axes,
+            kinematic_axes=self.kinematic_axes,
+        )
+        for axis, stepper in self.extra_steppers.values():
+            if axis in self._moving_extra_axes:
+                stepper.set_position([pos[axis], 0.0, 0.0])
 
     def homing_move(
         self,
@@ -108,15 +141,43 @@ class HomingMove:
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location
         self.toolhead.flush_step_generation()
+        startpos = self.toolhead.get_position()
+        axes_d = [mp - sp for mp, sp in zip(movepos, startpos)]
         kin = self.toolhead.get_kinematics()
         kin_spos = {
             s.get_name(): s.get_commanded_position() for s in kin.get_steppers()
         }
-        self.stepper_positions = [
+        stepper_positions = [
             StepperPosition(s, name)
             for es, name in self.endstops
             for s in es.get_steppers()
         ]
+        self.kinematic_axes = any(axes_d[:3])
+        self.extra_steppers.clear()
+        if any(sp.stepper_name not in kin_spos for sp in stepper_positions):
+            for axis, ea in enumerate(self.toolhead.get_extra_axes()):
+                if ea is None:
+                    continue
+                for sp in stepper_positions:
+                    if sp.stepper.get_trapq() != ea.get_trapq():
+                        continue
+                    self.extra_steppers[sp.stepper_name] = (axis, sp.stepper)
+        self._moving_extra_axes = {
+            axis for axis, s in self.extra_steppers.values() if axes_d[axis]
+        }
+        participating_names = set()
+        if self.kinematic_axes:
+            participating_names.update(kin_spos)
+        for sname, (axis, _) in self.extra_steppers.items():
+            if axis in self._moving_extra_axes:
+                participating_names.add(sname)
+        self.stepper_positions = [
+            sp
+            for sp in stepper_positions
+            if sp.stepper_name in participating_names
+        ]
+        for sp in self.stepper_positions:
+            kin_spos[sp.stepper_name] = sp.start_cmd_pos
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
         endstop_triggers = []
@@ -157,7 +218,7 @@ class HomingMove:
         except self.printer.command_error as e:
             error = "Error during homing move: %s" % (str(e),)
         # Wait for endstops to trigger
-        trigger_times = {}
+        self.trigger_times = {}
         move_end_print_time = self.toolhead.get_last_move_time()
         for mcu_endstop, name in self.endstops:
             try:
@@ -167,13 +228,13 @@ class HomingMove:
                     error = "Error during homing %s: %s" % (name, str(e))
                 continue
             if trigger_time > 0.0:
-                trigger_times[name] = trigger_time
+                self.trigger_times[name] = trigger_time
             elif check_triggered and error is None:
                 error = "No trigger on %s after full movement" % (name,)
         # Determine stepper halt positions
         self.toolhead.flush_step_generation()
         for sp in self.stepper_positions:
-            tt = trigger_times.get(sp.endstop_name, move_end_print_time)
+            tt = self.trigger_times.get(sp.endstop_name, move_end_print_time)
             sp.note_home_end(tt)
         if probe_pos:
             halt_steps = {
@@ -187,7 +248,7 @@ class HomingMove:
             haltpos = trigpos = self.calc_toolhead_pos(kin_spos, trig_steps)
             if trig_steps != halt_steps:
                 haltpos = self.calc_toolhead_pos(kin_spos, halt_steps)
-            self.toolhead.set_position(haltpos)
+            self.set_toolhead_pos(haltpos)
             for sp in self.stepper_positions:
                 sp.verify_no_probe_skew(haltpos)
         else:
@@ -205,15 +266,24 @@ class HomingMove:
                 sname: steps_moved.get(sname, 0)
                 for sname in [s.get_name() for s in kin.get_steppers()]
             }
-            self.distance_elapsed = kin.calc_position(filled_steps_moved)
+            self.distance_elapsed = (
+                kin.calc_position(filled_steps_moved)
+                if self.kinematic_axes
+                else [0.0, 0.0, 0.0]
+            )
             if any(over_steps.values()):
-                self.toolhead.set_position(movepos)
+                self.set_toolhead_pos(haltpos)
                 halt_kin_spos = {
                     s.get_name(): s.get_commanded_position()
                     for s in kin.get_steppers()
                 }
+                halt_kin_spos.update(
+                    (sname, stepper.get_commanded_position())
+                    for sname, (axis, stepper) in self.extra_steppers.items()
+                    if axis in self._moving_extra_axes
+                )
                 haltpos = self.calc_toolhead_pos(halt_kin_spos, over_steps)
-            self.toolhead.set_position(haltpos)
+            self.set_toolhead_pos(haltpos)
         # Signal homing/probing move complete
         try:
             self.printer.send_event("homing:homing_move_end", self)

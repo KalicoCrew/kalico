@@ -313,6 +313,13 @@ class PrinterExtruder:
     def get_trapq(self):
         return self.trapq
 
+    def set_position(self, newpos, homing_axes=""):
+        self.last_position = newpos[0]
+        if self.extruder_stepper is not None:
+            stepper = self.extruder_stepper.stepper
+            if stepper.get_trapq() == self.trapq:
+                stepper.set_position(newpos)
+
     def get_axis_gcode_id(self):
         return "E"
 
