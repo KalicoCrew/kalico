@@ -128,28 +128,23 @@ def test_homing_begin_end_round_trip(
     )
 
 
-@pytest.mark.parametrize(
-    "driver_module,diag_pin_field",
-    [(tmc2130, "diag1_stall"), (tmc2240, "diag1_stall")],
-    ids=["tmc2130", "tmc2240"],
-)
-def test_homing_begin_sets_homing_values(driver_module, diag_pin_field):
+def test_tmc2130_sg2_homing_values():
     """During homing, the driver must be put into its stall-safe state."""
-    vph, fields, mcu_tmc = _make_vph(driver_module, diag_pin_field)
+    vph, fields, mcu_tmc = _make_vph(tmc2130, "diag1_stall")
 
     fields.set_field("tpwmthrs", 0x12345)
     fields.set_field("tcoolthrs", 0)  # unset, should be forced to 0xFFFFF
     fields.set_field("thigh", 0x0ABCD)
     fields.set_field("en_pwm_mode", 1)
-    fields.set_field(diag_pin_field, 0)
+    fields.set_field("diag1_stall", 0)
 
     hmove = FakeHMove([vph.mcu_endstop])
     vph.handle_homing_move_begin(hmove)
 
-    # stealthchop must be disabled on drivers that have en_pwm_mode
+    # SG2 requires spreadCycle.
     assert fields.get_field("en_pwm_mode") == 0
     # diag pin must be routed to stall for this axis
-    assert fields.get_field(diag_pin_field) == 1
+    assert fields.get_field("diag1_stall") == 1
     # thigh must be zero during homing
     assert fields.get_field("thigh") == 0
     # tcoolthrs must be forced to the max-sensitivity value since it was 0
@@ -188,51 +183,42 @@ def test_homing_skipped_when_endstop_not_in_move():
 
 
 # ---------------------------------------------------------------------------
-# TMC2209 (stallguard4 / no en_pwm_mode) — round trip
+# Stallguard4 — round trip
 # ---------------------------------------------------------------------------
 
 
-def test_tmc2209_sg4_round_trip():
-    """TMC2209 uses en_spreadcycle instead of en_pwm_mode. Must also round-trip."""
-    # tmc2209 inherits most fields from tmc2208; ensure we have what we need
-    if "en_spreadcycle" not in {
-        f for reg in tmc2209.Fields.values() for f in reg
-    }:
-        pytest.skip("tmc2209 does not expose en_spreadcycle in test data")
-
-    fields = _make_fields(tmc2209)
-    mcu_tmc = FakeMCUTMC(fields)
-    vph = object.__new__(TMCVirtualPinHelper)
-    vph.mcu_tmc = mcu_tmc
-    vph.fields = fields
-    vph.diag_pin = "PA1"
-    vph.diag_pin_field = None  # SG4 drivers have no diag pin field
-    vph.mcu_endstop = object()
-    vph.en_pwm = False
-    vph.pwmthrs = 0
-    vph.coolthrs = 0
-    vph.thigh = 0
-    vph._dirty_regs = collections.OrderedDict()
-    vph._prev_state = collections.OrderedDict()
+@pytest.mark.parametrize(
+    "driver_module,mode_field,stealth_value,diag_pin_field",
+    [
+        (tmc2209, "en_spreadcycle", 0, None),
+        (tmc2240, "en_pwm_mode", 1, "diag1_stall"),
+    ],
+    ids=["tmc2209", "tmc2240"],
+)
+def test_sg4_round_trip(
+    driver_module, mode_field, stealth_value, diag_pin_field
+):
+    """SG4 requires stealthChop and restores the previous state afterward."""
+    vph, fields, mcu_tmc = _make_vph(driver_module, diag_pin_field)
 
     fields.set_field("tpwmthrs", 0x22222)
     fields.set_field("tcoolthrs", 0x33333)
-    fields.set_field("en_spreadcycle", 1)  # was spreadCycle, not stealth
+    fields.set_field(mode_field, 1 - stealth_value)  # start in spreadCycle
 
-    touched = ["tpwmthrs", "tcoolthrs", "en_spreadcycle"]
+    touched = ["tpwmthrs", "tcoolthrs", mode_field]
     before = _snapshot(fields, touched)
 
     hmove = FakeHMove([vph.mcu_endstop])
     vph.handle_homing_move_begin(hmove)
 
     # During homing on SG4 drivers, stealthchop must be ON (spreadcycle OFF)
-    assert fields.get_field("en_spreadcycle") == 0
+    assert fields.get_field(mode_field) == stealth_value
     assert fields.get_field("tpwmthrs") == 0
 
     vph.handle_homing_move_end(hmove)
     after = _snapshot(fields, touched)
     assert after == before, (
-        f"tmc2209 round-trip mismatch: before={before} after={after}"
+        f"SG4 round-trip mismatch: before={before} after={after}"
     )
 
 
