@@ -420,3 +420,44 @@ def test_spi_endstop_unlocks_before_trsync_stop(monkeypatch):
     endstop._dispatch.stop = stop
     assert endstop.home_wait(1.0) == 0.0
     assert locked_at_stop == [False]
+
+
+@pytest.mark.parametrize(
+    "scan_delay,speed,expected_clock",
+    [(0.001, 5, 10_012_000), (0.020, 5, 10_031_000), (0.020, 1, 10_026_000)],
+)
+def test_spi_guard_time_includes_startup_delays(
+    scan_delay, speed, expected_clock
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from klippy.extras import homing, tmc
+
+    stepper = SimpleNamespace(get_step_dist=lambda: 0.001)
+    rest_time = stepper.get_step_dist() / speed
+    endstop = tmc.TMCSpiEndstop.__new__(tmc.TMCSpiEndstop)
+    endstop._printer = SimpleNamespace(
+        lookup_object=lambda name: SimpleNamespace(
+            motion_queuing=SimpleNamespace(
+                get_kin_flush_delay=lambda: scan_delay
+            )
+        )
+    )
+    endstop._accel = 500.0
+    endstop._settle_time = 0.0
+    endstop._oid = 7
+    endstop._mutex = Mock()
+    endstop._mcu = SimpleNamespace(
+        print_time_to_clock=lambda time: round(time * 1.0e6),
+        seconds_to_clock=lambda time: round(time * 1.0e6),
+    )
+    endstop._dispatch = SimpleNamespace(
+        get_steppers=lambda: [stepper],
+        start=Mock(),
+        get_oid=lambda: 8,
+    )
+    endstop._home_cmd = Mock()
+    endstop.home_start(10.0, homing.ENDSTOP_SAMPLE_TIME, 4, rest_time)
+    # Homing startup and scan-window delays precede the acceleration guard.
+    assert endstop._home_cmd.send.call_args.args[0][1] == expected_clock
