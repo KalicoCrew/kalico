@@ -9962,18 +9962,21 @@ available for tle5012b chips.</p>
 <a href="Config_Reference.html#axis_twist_compensation">axis_twist_compensation config
 section</a> is enabled.</p>
 <h4 id="axis_twist_compensation_calibrate">AXIS_TWIST_COMPENSATION_CALIBRATE<a class="headerlink" href="#axis_twist_compensation_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=&lt;name&gt;] [AXIS=&lt;X|Y&gt;]
-[SAMPLE_COUNT=&lt;value&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>:</p>
-<p>Calibrates axis twist compensation by specifying the target axis or
-enabling automatic calibration.</p>
-<ul>
-<li><strong>SAMPLE_COUNT:</strong> Number of points tested during the calibration.
-If not specified, it defaults to 3.</li>
-</ul>
-<ul>
-<li><strong>AXIS:</strong> Define the axis (<code>X</code> or <code>Y</code>) for which the twist compensation
-will be calibrated. If not specified, the axis defaults to <code>'X'</code>.</li>
-</ul>
+<p><code>AXIS_TWIST_COMPENSATION_CALIBRATE [PROBE=&lt;name&gt;]
+[REFERENCE_PROBE=&lt;name&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>:</p>
+<p>Measure a complete mesh with the target probe, followed by a complete mesh
+with the reference probe. Omitted <code>PROBE</code> selects the default probe.
+<code>REFERENCE_PROBE</code> overrides the target's configured <code>reference_probe</code>, which
+otherwise inherits from the base section and defaults to <code>manual</code>.</p>
+<p>Mesh settings come from <code>[axis_twist_compensation]</code>, with overrides from
+<code>[axis_twist_compensation &lt;target&gt;]</code> when present. A target does not need an
+existing named section. The resulting reference-minus-target mesh has its
+mean removed and becomes active immediately. Run <code>SAVE_CONFIG</code> to store the
+mesh, its layout, and selected reference under the target's named section.</p>
+<p>During a manual pass, use <code>TESTZ</code> and <code>ACCEPT</code> at each point, or <code>ABORT</code> to
+cancel. Cancellation or probing errors restore the previous map. A calling
+macro waits for calibration to finish before continuing; cancellation or an
+error stops it. <code>AXIS</code> and <code>SAMPLE_COUNT</code> are no longer supported.</p>
 <h3 id="bed_mesh">[bed_mesh]<a class="headerlink" href="#bed_mesh" title="Permanent link">&para;</a></h3>
 <p>The following commands are available when the
 <a href="Config_Reference.html#bed_mesh">bed_mesh config section</a> is enabled

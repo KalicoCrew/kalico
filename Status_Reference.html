@@ -1002,6 +1002,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#axis_twist_compensation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        axis_twist_compensation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#bed_mesh" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3349,6 +3360,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#axis_twist_compensation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        axis_twist_compensation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#bed_mesh" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4017,6 +4039,17 @@ Kalico software.</p>
   tle5012b magnetic hall sensor. This value is only available if the
   angle sensor is a tle5012b chip and if measurements are in progress
   (otherwise it reports <code>None</code>).</li>
+</ul>
+<h2 id="axis_twist_compensation">axis_twist_compensation<a class="headerlink" href="#axis_twist_compensation" title="Permanent link">&para;</a></h2>
+<p>The following information is available in
+<a href="Config_Reference.html#axis_twist_compensation">axis_twist_compensation probe_name</a>
+objects:</p>
+<ul>
+<li><code>probe</code>, <code>reference_probe</code>: The target and reference probe names. The reference
+  is <code>None</code> for manual calibration.</li>
+<li><code>calibrating</code>: True while this probe's calibration is in progress.</li>
+<li><code>mesh_matrix</code>, <code>mesh_params</code>: The active compensation mesh and its geometry
+  and interpolation settings. Empty when no map has been calibrated or loaded.</li>
 </ul>
 <h2 id="bed_mesh">bed_mesh<a class="headerlink" href="#bed_mesh" title="Permanent link">&para;</a></h2>
 <p>The following information is available in the

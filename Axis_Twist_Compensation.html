@@ -1542,49 +1542,32 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#overview-of-compensation-usage" class="md-nav__link">
+  <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Overview of compensation usage
+        Configuration
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Overview of compensation usage">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-usage-x-axis-calibration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Usage: X-Axis Calibration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#for-y-axis-calibration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        For Y-Axis Calibration
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#axis_twist_compensation-setup-and-commands" class="md-nav__link">
+  <a href="#calibration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        [axis_twist_compensation] setup and commands
+        Calibration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy data
       
     </span>
   </a>
@@ -2752,49 +2735,32 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#overview-of-compensation-usage" class="md-nav__link">
+  <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Overview of compensation usage
+        Configuration
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Overview of compensation usage">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-usage-x-axis-calibration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Usage: X-Axis Calibration
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#for-y-axis-calibration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        For Y-Axis Calibration
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#axis_twist_compensation-setup-and-commands" class="md-nav__link">
+  <a href="#calibration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        [axis_twist_compensation] setup and commands
+        Calibration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy data
       
     </span>
   </a>
@@ -2827,77 +2793,88 @@
 
 
 <h1 id="axis-twist-compensation">Axis Twist Compensation<a class="headerlink" href="#axis-twist-compensation" title="Permanent link">&para;</a></h1>
-<p>This document describes the <code>[axis_twist_compensation]</code> module.</p>
-<p>Some printers may have a small twist in their X rail which can skew the results
-of a probe attached to the X carriage.
-This is common in printers with designs like the Prusa MK3, Sovol SV06 etc and is
-further described under <a href="Probe_Calibrate.html#location-bias-check">probe location
-bias</a>. It may result in
-probe operations such as <a href="Bed_Mesh.html">Bed Mesh</a>,
-<a href="G-Codes.html#screws_tilt_adjust">Screws Tilt Adjust</a>,
-<a href="G-Codes.html#z_tilt_adjust">Z Tilt Adjust</a> etc returning inaccurate
-representations of the bed.</p>
-<p>This module uses manual measurements by the user to correct the probe's results.
-Note that if your axis is significantly twisted it is strongly recommended to
-first use mechanical means to fix it prior to applying software corrections,
-as the calibration could be affected by issues with probe accuracy,
-bed flatness, Z axis alignment, etc.</p>
-<p><strong>Warning</strong>: This module is not compatible with dockable probes yet and will
-try to probe the bed without attaching the probe if you use it.</p>
-<h2 id="overview-of-compensation-usage">Overview of compensation usage<a class="headerlink" href="#overview-of-compensation-usage" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p><strong>Tip:</strong> Make sure the <a href="Config_Reference.html#probe">probe X and Y offsets</a> are
-correctly set as they greatly influence calibration.</p>
-</blockquote>
-<h3 id="basic-usage-x-axis-calibration">Basic Usage: X-Axis Calibration<a class="headerlink" href="#basic-usage-x-axis-calibration" title="Permanent link">&para;</a></h3>
-<ol>
-<li>After setting up the <code>[axis_twist_compensation]</code> module, run:</li>
-</ol>
-<div class="highlight"><pre><span></span><code>AXIS_TWIST_COMPENSATION_CALIBRATE
+<p>Position-dependent probe errors can result from twisted rails or other probe
+location bias. The <code>[axis_twist_compensation &lt;probe_name&gt;]</code> module corrects
+these errors with a two-dimensional map, including variations that cannot be
+represented as independent X and Y curves.</p>
+<p>Calibration measures the same physical bed locations twice: first with the
+target probe, then with a reference probe or manual nozzle measurements. It
+subtracts the target measurements from the reference measurements and removes
+the mean difference. Constant probe Z offsets remain separate and should still
+be calibrated normally. The reference probe's existing compensation, if any,
+is used. The target's old map is temporarily removed for calibration and restored
+if calibration fails or is cancelled.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>Configure shared mesh settings in the base section. Use probe names from
+<code>LIST_PROBES</code> when running calibration:</p>
+<div class="highlight"><pre><span></span><code><span class="k">[axis_twist_compensation]</span>
+<span class="na">reference_probe</span><span class="o">:</span><span class="w"> </span><span class="s">contact_probe</span>
+<span class="na">mesh_min</span><span class="o">:</span><span class="w"> </span><span class="s">20, 20</span>
+<span class="na">mesh_max</span><span class="o">:</span><span class="w"> </span><span class="s">180, 180</span>
+<span class="na">probe_count</span><span class="o">:</span><span class="w"> </span><span class="s">5, 5</span>
+<span class="na">algorithm</span><span class="o">:</span><span class="w"> </span><span class="s">bicubic</span>
+<span class="na">mesh_pps</span><span class="o">:</span><span class="w"> </span><span class="s">2, 2</span>
+<span class="na">horizontal_move_z</span><span class="o">:</span><span class="w"> </span><span class="s">5</span>
+<span class="na">speed</span><span class="o">:</span><span class="w"> </span><span class="s">50</span>
 </code></pre></div>
 
-<p>This command will calibrate the X-axis by default.
-- The calibration wizard will prompt you to measure the probe Z offset at
-    several points along the bed.
-- By default, the calibration uses 3 points, but you can specify a different
-    number with the option:
-<code>SAMPLE_COUNT=&lt;value&gt;</code></p>
+<p>Omit <code>reference_probe</code>, or set it to <code>manual</code>, to measure the reference mesh
+manually with the nozzle.
+Named <code>[axis_twist_compensation &lt;target&gt;]</code> sections can override the shared
+settings. Each probe has its own map. A reference probe cannot be the same
+probe as its target. Calibration settings are independent of <code>[bed_mesh]</code>,
+which is not required for compensation. Circular meshes use <code>mesh_radius</code>,
+<code>mesh_origin</code>, and <code>round_probe_count</code>, as in bed mesh.</p>
+<p>Set probe XY offsets correctly before calibrating. Mesh bounds describe physical
+bed locations; they must be reachable by both probes, or by the target probe
+and nozzle when using manual calibration. Choose a clearance height suitable
+for both probes. Level the gantry and stabilize the printer's temperature
+before calibration, keeping the bed and printer mechanically unchanged between
+passes. The calibration does not home or level the printer automatically.</p>
+<h2 id="calibration">Calibration<a class="headerlink" href="#calibration" title="Permanent link">&para;</a></h2>
 <ol>
 <li>
-<p><strong>Adjust Your Z Offset:</strong>
-After completing the calibration, be sure to
-<a href="Probe_Calibrate.html#calibrating-probe-z-offset">adjust your Z offset</a>.</p>
+<p>Home and prepare the printer, then run:</p>
+<p><code>gcode
+ AXIS_TWIST_COMPENSATION_CALIBRATE PROBE=inductive_probe REFERENCE_PROBE=contact_probe</code></p>
 </li>
 <li>
-<p><strong>Perform Bed Leveling Operations:</strong>
-Use probe-based operations as needed, such as:
-- <a href="G-Codes.html#screws_tilt_adjust">Screws Tilt Adjust</a>
-- <a href="G-Codes.html#z_tilt_adjust">Z Tilt Adjust</a></p>
+<p>The target probe measures the entire configured area. The reference probe
+   then measures the same locations. For a manual reference mesh, send <code>TESTZ</code>
+   to find nozzle contact and <code>ACCEPT</code> to record each point through the API
+   (for example, a printer web interface). Use <code>ABORT</code> to cancel.</p>
 </li>
-<li>
-<p><strong>Finalize the Setup:</strong></p>
-<ul>
-<li>Home all axes, and perform a <a href="Bed_Mesh.html">Bed Mesh</a> if necessary.</li>
-<li>Run a test print, followed by any fine-tuning if needed.</li>
-</ul>
-</li>
+<li>The completed compensation map becomes active immediately. Run <code>SAVE_CONFIG</code>
+   to create or update the target's named section, including the selected
+   reference, layout, and mesh data.</li>
+<li>Calibrate the target probe's constant Z offset as needed, and regenerate any
+   bed-leveling mesh captured before the new compensation was active.</li>
 </ol>
-<h3 id="for-y-axis-calibration">For Y-Axis Calibration<a class="headerlink" href="#for-y-axis-calibration" title="Permanent link">&para;</a></h3>
-<p>The calibration process for the Y-axis is similar to the X-axis. To calibrate
-the Y-axis, use:</p>
-<div class="highlight"><pre><span></span><code>AXIS_TWIST_COMPENSATION_CALIBRATE AXIS=Y
-</code></pre></div>
-
-<p>This will guide you through the same measuring process as for the X-axis.</p>
-<blockquote>
-<p><strong>Tip:</strong> Bed temperature and nozzle temperature and size do not seem to have
-an influence to the calibration process.</p>
-</blockquote>
-<h2 id="axis_twist_compensation-setup-and-commands">[axis_twist_compensation] setup and commands<a class="headerlink" href="#axis_twist_compensation-setup-and-commands" title="Permanent link">&para;</a></h2>
-<p>Configuration options for <code>[axis_twist_compensation]</code> can be found in the
-<a href="Config_Reference.html#axis_twist_compensation">Configuration Reference</a>.</p>
-<p>Commands for <code>[axis_twist_compensation]</code> can be found in the
-<a href="G-Codes.html#axis_twist_compensation">G-Codes Reference</a></p>
+<p>The calibration command waits for both passes to finish. When called from a
+G-code macro, the macro pauses while the user performs manual moves and accepts
+points, then continues after successful calibration. <code>ABORT</code> or a probing error
+stops the macro and restores the previous map.</p>
+<p>Calibration replaces the previous map only after both passes succeed. Errors and
+manual cancellation restore that map and leave its saved data intact. The active
+bed-leveling mesh and bed-mesh profiles are not replaced by calibration.</p>
+<p>Subsequent probing, including rapid scanning, selects the map for the probe
+being used. Probes without maps receive no correction. Mesh sampling outside
+the calibrated area uses the nearest mesh boundary, following bed-mesh behavior.</p>
+<h2 id="legacy-data">Legacy data<a class="headerlink" href="#legacy-data" title="Permanent link">&para;</a></h2>
+<p>Existing <code>z_compensations</code> / <code>zy_compensations</code> arrays in the base section
+are imported for the default probe if it has no existing calibration. The
+conversion creates a regular mesh covering the machine's XY work area,
+preserving the original additive corrections and extending the old curves
+using their original linear formula. Probe offsets are accounted for when
+placing the generated mesh. Conversion requires no probing or configuration
+changes; the old settings remain the source until a new mesh is calibrated.</p>
+<p>Only full-mesh calibration is supported. <code>AXIS</code> and <code>SAMPLE_COUNT</code> are rejected,
+and old line-calibration coordinates are ignored. Configure mesh bounds before
+calibrating again. The command's <code>REFERENCE_PROBE</code> parameter overrides the
+configured reference for that run and the generated config block; without an
+override, the configured reference is used.</p>
+<p>See the <a href="Config_Reference.html#axis_twist_compensation">Configuration Reference</a>
+and <a href="G-Codes.html#axis_twist_compensation">G-Code Reference</a> for options and commands.</p>
 
 
 
