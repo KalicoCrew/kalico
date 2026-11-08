@@ -394,10 +394,12 @@ class NozzleCalibration:
             ax.legend()
             klippy_logs_dir: str = os.path.dirname(log_file)
             fig.savefig(os.path.join(klippy_logs_dir, filename), dpi=300)
-            self.gcmd.respond_info(
-                "View the Nozzle elongation results: "
-                f"http://{socket.gethostname()}/server/files/logs/{filename}"
+            url = f"http://{socket.gethostname()}/server/files/logs/{filename}"
+            img = (
+                f'<img src="{url}" width="100%" height="auto" '
+                f'alt="Nozzle Elongation Coefficient Diagram" />'
             )
+            self.gcmd.respond_info(f'<a href="{url}">{img}</a>')
         except Exception as ex:
             logging.error(f"Failed to save plot {filename}")
             logging.error(ex)
