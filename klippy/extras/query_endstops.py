@@ -25,6 +25,10 @@ class QueryEndstops:
 
     def register_endstop(self, mcu_endstop, name):
         self.endstops.append((mcu_endstop, name))
+        # Allow the endstop to look up per-name settings (for example
+        # [non_critical_endstop_disconnect_values])
+        if hasattr(mcu_endstop, "add_endstop_name"):
+            mcu_endstop.add_endstop_name(name)
 
     def get_status(self, eventtime):
         return {"last_query": {name: value for name, value in self.last_state}}

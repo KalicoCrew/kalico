@@ -426,6 +426,11 @@ class TriggerDispatch:
 
 
 class MCU_endstop:
+    # Class-level default so endstop wrappers/subclasses that do not call
+    # MCU_endstop.__init__ (for example probe endstops) still work. It is
+    # immutable and only ever replaced per instance, never mutated.
+    _endstop_names = ()
+
     def __init__(self, mcu, pin_params):
         self._mcu = mcu
         self._pin = pin_params["pin"]
@@ -439,6 +444,13 @@ class MCU_endstop:
 
     def get_mcu(self):
         return self._mcu
+
+    def add_endstop_name(self, name):
+        if name not in self._endstop_names:
+            self._endstop_names = self._endstop_names + (name,)
+
+    def get_endstop_names(self):
+        return list(self._endstop_names)
 
     def add_stepper(self, stepper):
         self._dispatch.add_stepper(stepper)
@@ -478,6 +490,21 @@ class MCU_endstop:
                 f"Cannot use endstop on disconnected MCU "
                 f"'{self._mcu.get_name()}'"
             )
+
+    def _get_disconnect_fallback(self):
+        # Synthetic state for an endstop on a disconnected non-critical
+        # mcu, if explicitly configured by the user (otherwise None)
+        if not get_danger_options().ignore_non_critical_endstop_disconnect:
+            return None
+        values = self._mcu.get_printer().lookup_object(
+            "non_critical_endstop_disconnect_values", None
+        )
+        if values is None:
+            return None
+        for name in self._endstop_names:
+            if values.has_value(name):
+                return values.get_value(name)
+        return None
 
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
@@ -520,6 +547,10 @@ class MCU_endstop:
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
 
     def query_endstop(self, print_time):
+        if self._mcu.non_critical_disconnected:
+            fallback = self._get_disconnect_fallback()
+            if fallback is not None:
+                return fallback
         self._check_connected()
         clock = self._mcu.print_time_to_clock(print_time)
         if self._mcu.is_fileoutput():
