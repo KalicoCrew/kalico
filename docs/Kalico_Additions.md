@@ -36,6 +36,7 @@
 - [`[tmcXXXX] current_change_dwell_time`](./Config_Reference.md#tmc-stepper-driver-configuration) will add a delay before homing
 - [`[stepper_X] homing_retract_dist, homing_retract_speed`](./Config_Reference.md#stepper) add a short retraction and a second homing for better accuracy
 - [`[stepper_X] min_home_dist`](./Config_Reference.md#stepper) will move away from the endstop before homing
+- [`MEASURE_AXIS_TRAVEL`](./G-Codes.md#measure_axis_travel) measures the full travel of a sensorless X/Y axis by stalling at both ends and checks it against the configured range
 
 ## Probes and Probing
 
