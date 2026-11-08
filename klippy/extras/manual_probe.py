@@ -156,9 +156,10 @@ BISECT_MAX = 0.200
 
 # Helper script to determine a Z height
 class ManualProbeHelper:
-    def __init__(self, printer, gcmd, finalize_callback):
+    def __init__(self, printer, gcmd, finalize_callback, pass_gcmd=False):
         self.printer = printer
         self.finalize_callback = finalize_callback
+        self.pass_gcmd = pass_gcmd
         self.gcode = self.printer.lookup_object("gcode")
         self.toolhead = self.printer.lookup_object("toolhead")
         self.manual_probe = self.printer.lookup_object("manual_probe")
@@ -198,7 +199,7 @@ class ManualProbeHelper:
         self.last_kinematics_pos = kin_pos
         return kin_pos
 
-    def move_z(self, z_pos):
+    def move_z(self, z_pos, gcmd):
         curpos = self.toolhead.get_position()
         try:
             z_bob_pos = z_pos + Z_BOB_MINIMUM
@@ -206,7 +207,7 @@ class ManualProbeHelper:
                 self.toolhead.manual_move([None, None, z_bob_pos], self.speed)
             self.toolhead.manual_move([None, None, z_pos], self.speed)
         except self.printer.command_error as e:
-            self.finalize(False)
+            self.finalize(False, gcmd)
             raise
 
     def report_z_status(self, warn_no_change=False, prev_pos=None):
@@ -252,14 +253,14 @@ class ManualProbeHelper:
                 "Manual probe failed! Use TESTZ commands to position the\n"
                 "nozzle prior to running ACCEPT."
             )
-            self.finalize(False)
+            self.finalize(False, gcmd)
             return
-        self.finalize(True)
+        self.finalize(True, gcmd)
 
     cmd_ABORT_help = "Abort manual Z probing tool"
 
     def cmd_ABORT(self, gcmd):
-        self.finalize(False)
+        self.finalize(False, gcmd)
 
     cmd_TESTZ_help = "Move to new Z height"
 
@@ -290,10 +291,10 @@ class ManualProbeHelper:
         else:
             next_z_pos = z_pos + gcmd.get_float("Z")
         # Move to given position and report it
-        self.move_z(next_z_pos)
+        self.move_z(next_z_pos, gcmd)
         self.report_z_status(next_z_pos != z_pos, z_pos)
 
-    def finalize(self, success):
+    def finalize(self, success, gcmd):
         self.manual_probe.reset_status()
         self.gcode.register_command("ACCEPT", None)
         self.gcode.register_command("NEXT", None)
@@ -302,7 +303,10 @@ class ManualProbeHelper:
         kin_pos = None
         if success:
             kin_pos = self.get_kinematics_pos()
-        self.finalize_callback(kin_pos)
+        if self.pass_gcmd:
+            self.finalize_callback(kin_pos, gcmd)
+        else:
+            self.finalize_callback(kin_pos)
 
 
 def load_config(config):

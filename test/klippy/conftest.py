@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ class KlippyTest(pytest.File):
         with self.path.open("r", encoding="utf-8") as test_file:
             multi_test = False
             should_fail = False
+            interactive = False
             gcode = []
             config_file = None
             dictionaries = []
@@ -38,6 +40,9 @@ class KlippyTest(pytest.File):
 
                 elif parts[0] == "SHOULD_FAIL":
                     should_fail = True
+
+                elif parts[0] == "INTERACTIVE":
+                    interactive = True
 
                 elif parts[0] == "GCODE":
                     with self.relative_path(parts[1]).open(
@@ -65,6 +70,7 @@ class KlippyTest(pytest.File):
                             config_file=config_file,
                             dictionaries=list(dictionaries),
                             should_fail=should_fail,
+                            interactive=interactive,
                         )
 
                     config_file = self.relative_path(parts[1])
@@ -77,6 +83,7 @@ class KlippyTest(pytest.File):
                             config_file=config_file,
                             dictionaries=list(dictionaries),
                             should_fail=should_fail,
+                            interactive=interactive,
                         )
 
                 else:
@@ -90,6 +97,7 @@ class KlippyTest(pytest.File):
                     config_file=config_file,
                     dictionaries=list(dictionaries),
                     should_fail=should_fail,
+                    interactive=interactive,
                 )
 
 
@@ -101,6 +109,7 @@ class KlippyTestItem(pytest.Item):
         dictionaries: list[str],
         gcode: list[str],
         should_fail: bool = False,
+        interactive: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -108,6 +117,7 @@ class KlippyTestItem(pytest.Item):
         self.config_file = config_file
         self.dictionaries = dictionaries
         self.gcode = gcode
+        self.interactive = interactive
 
         if should_fail:
             self.add_marker(pytest.mark.xfail)
@@ -122,7 +132,12 @@ class KlippyTestItem(pytest.Item):
         gcode_file = self.tmp_dir.joinpath("_test_.gcode")
         output_file = self.tmp_dir.joinpath("_test_.output")
 
-        gcode_file.write_text("\n".join(self.gcode) + "\n")
+        gcode = self.gcode
+        if self.interactive:
+            gcode = [
+                "TEST_INTERACTIVE GCODE=" + shlex.quote(line) for line in gcode
+            ]
+        gcode_file.write_text("\n".join(gcode) + "\n")
 
         args = [sys.executable, "-m", "klippy", str(self.config_file)]
         args.extend(["-i", str(gcode_file)])

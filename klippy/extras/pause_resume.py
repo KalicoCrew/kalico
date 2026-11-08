@@ -81,7 +81,7 @@ class PauseResume:
             gcmd.respond_info("Print already paused")
             return
         self.send_pause_command()
-        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=PAUSE_STATE")
+        gcmd.run_script("SAVE_GCODE_STATE NAME=PAUSE_STATE")
         self.is_paused = True
 
     def send_resume_command(self):
@@ -100,7 +100,7 @@ class PauseResume:
             gcmd.respond_info("Print is not paused, resume aborted")
             return
         velocity = gcmd.get_float("VELOCITY", self.recover_velocity)
-        self.gcode.run_script_from_command(
+        gcmd.run_script(
             "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=1 MOVE_SPEED=%.4f"
             % (velocity)
         )
