@@ -10940,13 +10940,18 @@ same taps. The calibration fails if any tap does not pass the quality check.</p>
 </ul>
 <p>See <a href="Load_Cell.html#tap-performance-calibration">Tap Performance Calibration</a> and <a href="Load_Cell.html#decompression-angle-calibration">Decompression Angle Calibration</a> for choosing thresholds and interpreting results.</p>
 <h3 id="manual_probe">[manual_probe]<a class="headerlink" href="#manual_probe" title="Permanent link">&para;</a></h3>
-<p>The manual_probe module is automatically loaded.</p>
+<p>The manual_probe module is automatically loaded and registers a probe named
+<code>manual</code>. It becomes the default probe when no other default probe is selected.
+Use <code>MANUAL_PROBE</code> for standalone manual probing, or <code>PROBE=manual</code> to select
+it in calibration commands such as <code>BED_MESH_CALIBRATE</code>. <code>METHOD=manual</code>
+remains supported by those calibration commands. The manual probe does not
+register the standard probe commands.</p>
 <h4 id="manual_probe_1">MANUAL_PROBE<a class="headerlink" href="#manual_probe_1" title="Permanent link">&para;</a></h4>
-<p><code>MANUAL_PROBE [SPEED=&lt;speed&gt;]</code>: Run a helper script useful for
+<p><code>MANUAL_PROBE [PROBE=&lt;name&gt;] [SPEED=&lt;speed&gt;]</code>: Run a helper script useful for
 measuring the height of the nozzle at a given location. If SPEED is
 specified, it sets the speed of TESTZ commands (the default is
-5mm/s). During a manual probe, the following additional commands are
-available:</p>
+5mm/s). The probe defaults to <code>manual</code>; use <code>PROBE</code> to select another probe.
+During a manual probe, the following additional commands are available:</p>
 <ul>
 <li><code>ACCEPT</code>: This command accepts the current Z position and concludes
   the manual probing tool.</li>
@@ -10957,11 +10962,15 @@ available:</p>
   .1mm. The value may also be <code>+</code>, <code>-</code>, <code>++</code>, or <code>--</code> to move the
   nozzle up or down an amount relative to previous attempts.</li>
 </ul>
+<p>Manual probing waits until each point is accepted or probing is aborted before
+the calling command or macro continues. Send <code>TESTZ</code>, <code>ACCEPT</code>, and <code>ABORT</code>
+through the API (for example, a printer web interface). Commands in the same
+pseudo-TTY stream remain queued behind the waiting command.</p>
 <h4 id="z_endstop_calibrate">Z_ENDSTOP_CALIBRATE<a class="headerlink" href="#z_endstop_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>Z_ENDSTOP_CALIBRATE [SPEED=&lt;speed&gt;]</code>: Run a helper script useful for
-calibrating a Z position_endstop config setting. See the MANUAL_PROBE
-command for details on the parameters and the additional commands
-available while the tool is active.</p>
+<p><code>Z_ENDSTOP_CALIBRATE [PROBE=&lt;name&gt;] [SPEED=&lt;speed&gt;]</code>: Calibrate a Z
+position_endstop config setting. The probe defaults to <code>manual</code>; use <code>PROBE</code>
+to select another probe. See the MANUAL_PROBE command for details on the
+parameters and the additional commands available while the tool is active.</p>
 <h4 id="z_offset_apply_endstop">Z_OFFSET_APPLY_ENDSTOP<a class="headerlink" href="#z_offset_apply_endstop" title="Permanent link">&para;</a></h4>
 <p><code>Z_OFFSET_APPLY_ENDSTOP</code>: Take the current Z Gcode offset (aka,
 babystepping), and subtract it from the stepper_z endstop_position.
@@ -11248,9 +11257,10 @@ median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.</p>
 <h4 id="probe_calibrate">PROBE_CALIBRATE<a class="headerlink" href="#probe_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>PROBE_CALIBRATE [PROBE=&lt;name&gt;] [SPEED=&lt;speed&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>: Run a
-helper script useful for calibrating the probe's z_offset. See the
-PROBE command for details on the optional probe parameters. See the
+<p><code>PROBE_CALIBRATE [PROBE=&lt;name&gt;] [REFERENCE_PROBE=&lt;name&gt;]
+[SPEED=&lt;speed&gt;] [&lt;probe_parameter&gt;=&lt;value&gt;]</code>: Run a helper script useful
+for calibrating the probe's z_offset. <code>REFERENCE_PROBE</code> selects the
+reference probe, which defaults to <code>manual</code>. See the PROBE command for details on the optional probe parameters. See the
 MANUAL_PROBE command for details on the SPEED parameter and the
 additional commands available while the tool is active. Please note,
 the PROBE_CALIBRATE command uses the speed variable to move in XY
@@ -11282,11 +11292,12 @@ tapping to enhance the cleaning effect.</p>
 <a href="Config_Reference.html#probe_eddy_current">probe_eddy_current config section</a>
 is enabled.</p>
 <h4 id="probe_eddy_current_calibrate">PROBE_EDDY_CURRENT_CALIBRATE<a class="headerlink" href="#probe_eddy_current_calibrate" title="Permanent link">&para;</a></h4>
-<p><code>PROBE_EDDY_CURRENT_CALIBRATE CHIP=&lt;config_name&gt;</code>: This starts a tool
-that calibrates the sensor resonance frequencies to corresponding Z
+<p><code>PROBE_EDDY_CURRENT_CALIBRATE CHIP=&lt;config_name&gt; [PROBE=&lt;name&gt;]</code>:
+This starts a tool that calibrates the sensor resonance frequencies to corresponding Z
 heights. The tool will take a couple of minutes to complete. After
 completion, use the SAVE_CONFIG command to store the results in the
-printer.cfg file.</p>
+printer.cfg file. The reference probe defaults to <code>manual</code>; use <code>PROBE</code> to
+select another probe.</p>
 <h4 id="ldc_calibrate_drive_current">LDC_CALIBRATE_DRIVE_CURRENT<a class="headerlink" href="#ldc_calibrate_drive_current" title="Permanent link">&para;</a></h4>
 <p><code>LDC_CALIBRATE_DRIVE_CURRENT CHIP=&lt;config_name&gt;</code> This tool will
 calibrate the ldc1612 DRIVE_CURRENT0 register. Prior to using this
