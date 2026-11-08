@@ -3034,6 +3034,18 @@ execution of G-code commands is in the process_commands() method in
 printer object calls, which frequently translate the actions to
 commands to be executed on the micro-controller (as declared via the
 DECL_COMMAND macro in the micro-controller code).</p>
+<p>Handlers receive a GCodeCommand representing a parsed command. The
+run_script() and create_subcommand() methods are the entry points
+for calling other commands. See GCodeContextRoot and
+GCodeContextScope in <strong>klippy/gcode.py</strong> for mutex ownership and
+command lifetime handling. run_script_from_command() accepts an optional
+GCodeCommand for compatibility boundaries. Without a command, it uses
+GCodeContextLegacy as an escape hatch for callers that cannot practically
+obtain one; those callers cannot temporarily release the mutex.</p>
+<p>Interactive input enters through GCodeDispatch.run_interactive_script(),
+used by GCodeIO and the display menu. It allows the next input to run when
+its handler enters without_lock(), while nested scripts remain sequential.
+GCodeDispatch.run_script() waits for the entire script to finish.</p>
 <p>There are four threads in the Klippy host code. The main thread
 handles incoming gcode commands. A second thread (which resides
 entirely in the <strong>klippy/chelper/serialqueue.c</strong> C code) handles
