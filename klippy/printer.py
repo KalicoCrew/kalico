@@ -53,8 +53,7 @@ Printer is halted
 """
 
 
-class WaitInterruption(gcode.CommandError):
-    pass
+WaitInterruption = gcode.WaitInterruption
 
 
 class SubsystemComponentCollection:
@@ -470,21 +469,14 @@ class Printer:
     wait_interrupted = WaitInterruption
 
     def wait_while(self, condition_cb, error_on_cancel=True, interval=1.0):
+        """Compatibility wrapper; prefer InterruptToken.wait_while() directly.
+
+        Sampling the token here is racy: an interruption before this call
+        can be missed. Capture an InterruptToken when starting the operation
+        and wait on that token instead.
         """
-        receives a callback
-        waits until callback returns False
-            (or is interrupted, or printer shuts down)
-        """
-        gcode = self.lookup_object("gcode")
-        counter = gcode.get_interrupt_counter()
-        eventtime = self.reactor.monotonic()
-        while condition_cb(eventtime):
-            if self.is_shutdown() or counter != gcode.get_interrupt_counter():
-                if error_on_cancel:
-                    raise WaitInterruption("Command interrupted")
-                else:
-                    return
-            eventtime = self.reactor.pause(eventtime + interval)
+        token = self.lookup_object("gcode").get_interrupt_token()
+        return token.wait_while(condition_cb, error_on_cancel, interval)
 
 
 ######################################################################

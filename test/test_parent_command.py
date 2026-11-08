@@ -31,6 +31,7 @@ def context():
 
     printer = SimpleNamespace(
         get_start_args=lambda: {},
+        is_shutdown=lambda: False,
         get_reactor=lambda: reactor,
         lookup_object=lambda name, default=None: objects.get(name, default),
         register_event_handler=lambda event, callback: handlers.setdefault(
