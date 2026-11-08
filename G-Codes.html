@@ -10548,7 +10548,10 @@ software (see
 <p><code>FIRMWARE_RESTART</code>: This is similar to a RESTART command, but it also
 clears any error state from the micro-controller.</p>
 <h4 id="heater_interrupt">HEATER_INTERRUPT<a class="headerlink" href="#heater_interrupt" title="Permanent link">&para;</a></h4>
-<p><code>HEATER_INTERRUPT</code>: Interrupts a TEMPERATURE_WAIT command.</p>
+<p><code>HEATER_INTERRUPT</code>: Interrupts active temperature waits, MPC
+calibration waits, and Python macro <code>wait_while</code>, <code>wait_until</code>, and
+<code>sleep</code> helpers. Commands started after <code>HEATER_INTERRUPT</code> are not
+affected.</p>
 <h4 id="log_rollover">LOG_ROLLOVER<a class="headerlink" href="#log_rollover" title="Permanent link">&para;</a></h4>
 <p><code>LOG_ROLLOVER</code>: Trigger a klippy.log rollover and generate a new log file.</p>
 <h4 id="status">STATUS<a class="headerlink" href="#status" title="Permanent link">&para;</a></h4>

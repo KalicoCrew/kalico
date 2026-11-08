@@ -3463,6 +3463,10 @@ gcode:
 <li>call_remote_method / action_call_remote_method</li>
 <li>math</li>
 </ul>
+<p>The Python helpers <code>wait_while(check)</code> and <code>wait_until(check)</code> call a
+function that takes no arguments until it returns <code>False</code> or <code>True</code>,
+respectively. <code>sleep(seconds)</code> waits for the specified duration.
+<code>HEATER_INTERRUPT</code> stops these waits and aborts the macro with an error.</p>
 <h2 id="actions">Actions<a class="headerlink" href="#actions" title="Permanent link">&para;</a></h2>
 <p>There are some commands available that can alter the state of the
 printer. For example, <code>{ action_emergency_stop() }</code> would cause the
