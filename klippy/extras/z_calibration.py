@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from klippy.extras.probe import ProbeList
+from klippy.extras.probe import ProbeList, multi_probe_session
 from klippy.mcu import MCU_endstop
 
 
@@ -525,17 +525,16 @@ class CalibrationState:
         )
         # probe the probe-switch
         self.helper.switch_gcode.run_gcode_from_command()
-        self.probe.multi_probe_begin()
-        # probe the body of the switch
-        switch_zero = self._probe_on_site(
-            self.z_endstop, self.helper.switch_site, check_probe=True
-        )
-        # probe position on bed
-        probe_site = self._add_probe_offset(self.helper.bed_site)
-        probe_zero = self._probe_on_site(
-            self.probe.mcu_probe, probe_site, check_probe=True
-        )
-        self.probe.multi_probe_end()
+        with multi_probe_session(self.probe):
+            # probe the body of the switch
+            switch_zero = self._probe_on_site(
+                self.z_endstop, self.helper.switch_site, check_probe=True
+            )
+            # probe position on bed
+            probe_site = self._add_probe_offset(self.helper.bed_site)
+            probe_zero = self._probe_on_site(
+                self.probe.mcu_probe, probe_site, check_probe=True
+            )
         # calculate the offset
         offset = probe_zero - (
             switch_zero - nozzle_zero + self.helper.switch_offset
