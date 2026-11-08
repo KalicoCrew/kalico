@@ -429,6 +429,72 @@ class MAX31865(SensorBase):
         return [cmd, value]
 
 
+class MAX31865Thermistor(SensorBase):
+    def __init__(self, config):
+        self.rtd_reference_r = config.getfloat(
+            "rtd_reference_r", 4300.0, above=0.0
+        )
+        self.adc_to_resist = self.rtd_reference_r / float(MAX31865_ADC_MAX)
+        self.parallel_r = config.getfloat("parallel_r", 4300.0, above=0.0)
+        pheaters = config.get_printer().load_object(config, "heaters")
+        self.thermistor = pheaters.setup_thermistor(config)
+        self.config_reg = self.build_spi_init(config)
+        SensorBase.__init__(self, config, "MAX31865", self.config_reg)
+
+    def handle_fault(self, adc, fault):
+        if fault & 0x80:
+            self.report_fault("Max31865 RTD input is disconnected")
+        if fault & 0x40:
+            self.report_fault("Max31865 RTD input is shorted")
+        if fault & 0x20:
+            self.report_fault(
+                "Max31865 VREF- is greater than 0.85 * VBIAS, FORCE- open"
+            )
+        if fault & 0x10:
+            self.report_fault(
+                "Max31865 VREF- is less than 0.85 * VBIAS, FORCE- open"
+            )
+        if fault & 0x08:
+            self.report_fault(
+                "Max31865 VRTD- is less than 0.85 * VBIAS, FORCE- open"
+            )
+        if fault & 0x04:
+            self.report_fault("Max31865 Overvoltage or undervoltage fault")
+        if not fault & 0xFC:
+            self.report_fault("Max31865 Unspecified error")
+        # Attempt to clear the fault
+        self.spi.spi_send(self.config_reg)
+
+    def calc_temp(self, adc):
+        adc = adc >> 1  # remove fault bit
+        r_adc = adc * self.adc_to_resist
+        ratio = r_adc / self.parallel_r
+        ratio = max(0.00001, min(0.99999, ratio))
+        r = self.parallel_r * ratio / (1.0 - ratio)
+        return self.thermistor.r_to_temp(r)
+
+    def calc_adc(self, temp):
+        r = self.thermistor.temp_to_r(temp)
+        r_adc = (r * self.parallel_r) / (self.parallel_r + r)
+        adc = int(r_adc / self.adc_to_resist)
+        adc = max(0, min(MAX31865_ADC_MAX - 1, adc))
+        adc = adc << 1  # Add fault bit
+        return adc
+
+    def build_spi_init(self, config):
+        value = (
+            MAX31865_CONFIG_BIAS
+            | MAX31865_CONFIG_MODEAUTO
+            | MAX31865_CONFIG_FAULTCLEAR
+        )
+        if config.getboolean("rtd_use_50Hz_filter", False):
+            value |= MAX31865_CONFIG_FILT50HZ
+        if config.getint("rtd_num_of_wires", 2) == 3:
+            value |= MAX31865_CONFIG_3WIRE
+        cmd = 0x80 + MAX31865_CONFIG_REG
+        return [cmd, value]
+
+
 ######################################################################
 # Sensor registration
 ######################################################################
@@ -438,6 +504,7 @@ Sensors = {
     "MAX31855": MAX31855,
     "MAX31856": MAX31856,
     "MAX31865": MAX31865,
+    "MAX31865Thermistor": MAX31865Thermistor,
 }
 
 
