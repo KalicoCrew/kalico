@@ -10,14 +10,16 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import socket
 import threading
 import time
+import traceback
 
 import numpy as np
 
-from klippy import Printer
+from klippy import Printer, queuelogger
 from klippy.configfile import ConfigWrapper, PrinterConfig
 from klippy.extras.heaters import Heater, PrinterHeaters
 from klippy.extras.probe import ProbeList
@@ -311,6 +313,9 @@ class NozzleCalibration:
         self.z_lift_speed: float = gcmd.get_float(
             "Z_LIFT_SPEED", 5.0, minval=1.0
         )
+        self.plot_timeout: float = gcmd.get_float(
+            "PLOT_TIMEOUT", 120.0, above=0.0
+        )
         self.temperatures = []
         self.z_values = []
 
@@ -349,8 +354,9 @@ class NozzleCalibration:
             self.pheaters.set_temperature(self.heater, 0)
 
         # Perform linear regression
-        temp_coeff = self._calculate_and_report_coeff()
-        self._save_config(temp_coeff)
+        slope, intercept = self._calculate_and_report_coeff()
+        self._save_config(-1.0 * slope)
+        self._plot_results(slope, intercept)
 
     def _change_temp(self, temp: float):
         self.pheaters.set_temperature(self.heater, temp, wait=True)
@@ -363,14 +369,6 @@ class NozzleCalibration:
         self.toolhead.manual_move(probe_result, speed=self.z_lift_speed)
 
     def _plot_results(self, slope: float, intercept: float):
-        try:
-            import matplotlib.pyplot as plt
-        except:
-            self.gcmd.respond_info(
-                "matplotlib not installed, cannot plot results!"
-            )
-            return
-
         # Save into the logs directory, which Moonraker serves
         start_args = self.printer.get_start_args()
         log_file = start_args.get("log_file")
@@ -380,34 +378,67 @@ class NozzleCalibration:
 
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"nozzle_elongation_{timestamp}.png"
-        fig, ax = plt.subplots()
-        try:
-            z_min = min(self.z_values)
-            z_values = [z_value - z_min for z_value in self.z_values]
-            ax.scatter(self.temperatures, z_values, label="measurements")
-            line_x = np.array([min(self.temperatures), max(self.temperatures)])
-            line_y = slope * line_x + (intercept - z_min)
-            ax.plot(
-                line_x, line_y, color="tab:red", label=f"temp_coeff=-{slope}"
-            )
-            ax.set_title("Nozzle Elongation Coefficient")
-            ax.set_xlabel("Temperature °C")
-            ax.set_ylabel("Nozzle Elongation mm")
-            ax.legend()
-            klippy_logs_dir: str = os.path.dirname(log_file)
-            fig.savefig(os.path.join(klippy_logs_dir, filename), dpi=300)
+        path = os.path.join(os.path.dirname(log_file), filename)
+        self.gcmd.respond_info("Plotting results...")
+        status, detail = self._run_plot_process(
+            path, self.temperatures, self.z_values, slope, intercept
+        )
+        if status == "ok":
             self.gcmd.respond_info(
                 "View the Nozzle elongation results: "
                 f"http://{socket.gethostname()}/server/files/logs/{filename}"
             )
-        except Exception as ex:
-            logging.error(f"Failed to save plot {filename}")
-            logging.error(ex)
+        elif status == "no_matplotlib":
+            self.gcmd.respond_info(
+                "matplotlib could not be imported, cannot plot results: "
+                f"{detail}"
+            )
+        elif status == "timeout":
+            self.gcmd.respond_info(
+                f"Plotting did not finish within {self.plot_timeout:.0f}s "
+                "and was skipped"
+            )
+        else:
+            logging.error("Failed to save plot %s: %s", filename, detail)
             self.gcmd.respond_info(f"Failed to save plot {filename}")
-        finally:
-            plt.close(fig)
 
-    def _calculate_and_report_coeff(self) -> float:
+    def _run_plot_process(self, *plot_args) -> tuple[str, str]:
+        # Importing matplotlib can stall for a long time on slow hosts, so it
+        # must never run in the klippy process.
+        parent_conn, child_conn = multiprocessing.Pipe()
+
+        def wrapper():
+            queuelogger.clear_bg_logging()
+            try:
+                _write_plot(*plot_args)
+            except ImportError as e:
+                child_conn.send(("no_matplotlib", str(e)))
+            except Exception:
+                child_conn.send(("error", traceback.format_exc()))
+            else:
+                child_conn.send(("ok", ""))
+            child_conn.close()
+
+        proc = multiprocessing.Process(target=wrapper)
+        proc.daemon = True
+        proc.start()
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+        deadline = eventtime + self.plot_timeout
+        while proc.is_alive() and eventtime < deadline:
+            eventtime = reactor.pause(eventtime + 0.1)
+        try:
+            if proc.is_alive():
+                proc.kill()
+                return "timeout", ""
+            if not parent_conn.poll():
+                return "error", "plot process exited unexpectedly"
+            return parent_conn.recv()
+        finally:
+            proc.join()
+            parent_conn.close()
+
+    def _calculate_and_report_coeff(self) -> tuple[float, float]:
         # I don't know that there is a lot of value in this:
         # A picture would be worth 1000 words here
         # self.gcmd.respond_info(f"Temperatures: {self.temperatures}")
@@ -428,9 +459,8 @@ class NozzleCalibration:
         slope = round(slope, 8)
         temp_coeff = -1.0 * slope
 
-        self._plot_results(slope, intercept)
         self.gcmd.respond_info(f"Temperature Coefficient: {temp_coeff}")
-        return temp_coeff
+        return slope, intercept
 
     def _save_config(self, temp_coeff: float):
         self.z_thermal_adjust.save_temp_coeff(temp_coeff)
@@ -438,6 +468,33 @@ class NozzleCalibration:
             "Temperature coefficient saved. "
             "Run SAVE_CONFIG to update printer.cfg and restart."
         )
+
+
+def _write_plot(
+    path: str,
+    temperatures: list[float],
+    z_values: list[float],
+    slope: float,
+    intercept: float,
+):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    fig = Figure()
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(1, 1, 1)
+    z_min = min(z_values)
+    ax.scatter(
+        temperatures, [z - z_min for z in z_values], label="measurements"
+    )
+    line_x = np.array([min(temperatures), max(temperatures)])
+    line_y = slope * line_x + (intercept - z_min)
+    ax.plot(line_x, line_y, color="tab:red", label=f"temp_coeff=-{slope}")
+    ax.set_title("Nozzle Elongation Coefficient")
+    ax.set_xlabel("Temperature °C")
+    ax.set_ylabel("Nozzle Elongation mm")
+    ax.legend()
+    fig.savefig(path, dpi=300)
 
 
 def load_config_prefix(config):
