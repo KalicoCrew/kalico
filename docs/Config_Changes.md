@@ -8,6 +8,12 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261109: A missing coefficient in the `3hump_ei` shaper definition was
+corrected, which slightly alters the toolhead motion produced by the
+`3hump_ei` shaper at nonzero damping ratios. No configuration change is
+required, but printed results with `3hump_ei` may differ marginally from
+before.
+
 20261021: The temporary acceleration and velocity limits applied during
 `TEST_RESONANCES` and `SHAPER_CALIBRATE` are now derived from the actual
 test sequence instead of only the configured `accel_per_hz`. Previously an
