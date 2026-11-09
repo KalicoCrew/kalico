@@ -57,7 +57,7 @@ def bisect(func, left, right):
 
 def find_shaper_plot_range(estimate_shaper, shaper_freq, vib_tol):
     def eval_shaper(freq):
-        return estimate_shaper(freq) - vib_tol
+        return estimate_shaper(freq)[0] - vib_tol
 
     if not PLOT_FREQ_RANGE:
         left = bisect(eval_shaper, 0.1 * shaper_freq, shaper_freq)
