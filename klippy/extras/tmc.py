@@ -4,11 +4,12 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import contextlib
 import logging
 
 from klippy import mcu, stepper
 
-from . import bulk_sensor
+from . import bulk_sensor, homing
 
 ######################################################################
 # Field helpers
@@ -18,6 +19,25 @@ from . import bulk_sensor
 # Return the position of the first bit set in a mask
 def ffs(mask):
     return (mask & -mask).bit_length() - 1
+
+
+@contextlib.contextmanager
+def push_fields(mcu_tmc, fields, field_values):
+    previous = {name: fields.get_field(name) for name in field_values}
+
+    def apply(values):
+        registers = collections.OrderedDict()
+        for name, value in values.items():
+            reg = fields.lookup_register(name)
+            registers[reg] = fields.set_field(name, value)
+        for reg, value in registers.items():
+            mcu_tmc.set_register(reg, value)
+
+    try:
+        apply(field_values)
+        yield
+    finally:
+        apply(previous)
 
 
 class FieldHelper:
@@ -738,55 +758,49 @@ class TMCCommandHelper:
 
 
 ######################################################################
-# TMC virtual pins
+# TMC sensorless homing and virtual pins
 ######################################################################
 
 
 # Helper class for "sensorless homing"
-class TMCVirtualPinHelper:
-    def __init__(self, config, mcu_tmc):
-        self.printer = config.get_printer()
+class TMCSensorlessHomingHelper:
+    def __init__(self, printer, mcu_tmc):
+        self.printer = printer
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
-        if self.fields.lookup_register("diag0_stall") is not None:
-            if config.get("diag0_pin", None) is not None:
-                self.diag_pin = config.get("diag0_pin")
-                self.diag_pin_field = "diag0_stall"
-            else:
-                self.diag_pin = config.get("diag1_pin", None)
-                self.diag_pin_field = "diag1_stall"
-        else:
-            self.diag_pin = config.get("diag_pin", None)
-            self.diag_pin_field = None
+        self.diag_pin_field = None
         self.mcu_endstop = None
         self._dirty_regs = collections.OrderedDict()
         self._prev_state = collections.OrderedDict()
-        # Register virtual_endstop pin
-        name_parts = config.get_name().split()
-        ppins = self.printer.lookup_object("pins")
-        ppins.register_chip("%s_%s" % (name_parts[0], name_parts[-1]), self)
 
-    def setup_pin(self, pin_type, pin_params):
-        # Validate pin
-        ppins = self.printer.lookup_object("pins")
-        if pin_type != "endstop" or pin_params["pin"] != "virtual_endstop":
-            raise ppins.error("tmc virtual endstop only useful as endstop")
-        if pin_params["invert"] or pin_params["pullup"]:
-            raise ppins.error("Can not pullup/invert tmc virtual pin")
-        if self.diag_pin is None and not hasattr(self.mcu_tmc, "tmc_spi"):
-            raise ppins.error("tmc virtual endstop requires diag pin config")
-        # Setup for sensorless homing
+    def setup_endstop(self, mcu_endstop, diag_pin_field=None):
+        if self.mcu_endstop is not None:
+            if (
+                self.mcu_endstop is mcu_endstop
+                and self.diag_pin_field == diag_pin_field
+            ):
+                return self.mcu_endstop
+            raise self.printer.config_error("TMC endstop already configured")
+        self.mcu_endstop = mcu_endstop
+        self.diag_pin_field = diag_pin_field
         self.printer.register_event_handler(
             "homing:homing_move_begin", self.handle_homing_move_begin
         )
         self.printer.register_event_handler(
             "homing:homing_move_end", self.handle_homing_move_end
         )
-        if self.diag_pin is None:
-            self.mcu_endstop = TMCSpiEndstop(self.printer, self.mcu_tmc)
-        else:
-            self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
         return self.mcu_endstop
+
+    def setup_spi_endstop(self):
+        if self.mcu_endstop is not None:
+            if isinstance(self.mcu_endstop, TMCSpiEndstop):
+                return self.mcu_endstop
+            raise self.printer.config_error("TMC endstop already configured")
+        if not hasattr(self.mcu_tmc, "tmc_spi"):
+            raise self.printer.config_error(
+                "Sensorless homing via SPI requires an SPI TMC driver"
+            )
+        return self.setup_endstop(TMCSpiEndstop(self.printer, self.mcu_tmc))
 
     def _set_field(self, field_name, value):
         self._prev_state[field_name] = self.fields.get_field(field_name)
@@ -814,10 +828,10 @@ class TMCVirtualPinHelper:
             # TMC2240 using SG4, "stealthchop" must be enabled
             self._set_field("en_pwm_mode", 1)
             self._set_field("tpwmthrs", 0)
-            self._set_field(self.diag_pin_field, 1)
         else:
             # On earlier drivers, "stealthchop" must be disabled
             self._set_field("en_pwm_mode", 0)
+        if self.diag_pin_field is not None:
             self._set_field(self.diag_pin_field, 1)
         # Enable tcoolthrs (if not already)
         if self.fields.get_field("tcoolthrs") == 0:
@@ -838,11 +852,50 @@ class TMCVirtualPinHelper:
         self._prev_state.clear()
 
 
+class TMCVirtualPinHelper(TMCSensorlessHomingHelper):
+    def __init__(self, config, mcu_tmc):
+        super().__init__(config.get_printer(), mcu_tmc)
+        if self.fields.lookup_register("diag0_stall") is not None:
+            if config.get("diag0_pin", None) is not None:
+                self.diag_pin = config.get("diag0_pin")
+                self.diag_pin_field = "diag0_stall"
+            else:
+                self.diag_pin = config.get("diag1_pin", None)
+                self.diag_pin_field = "diag1_stall"
+        else:
+            self.diag_pin = config.get("diag_pin", None)
+            self.diag_pin_field = None
+        # Register virtual_endstop pin
+        name_parts = config.get_name().split()
+        ppins = self.printer.lookup_object("pins")
+        ppins.register_chip("%s_%s" % (name_parts[0], name_parts[-1]), self)
+
+    def setup_pin(self, pin_type, pin_params):
+        # Validate pin
+        ppins = self.printer.lookup_object("pins")
+        if pin_type != "endstop" or pin_params["pin"] != "virtual_endstop":
+            raise ppins.error("tmc virtual endstop only useful as endstop")
+        if pin_params["invert"] or pin_params["pullup"]:
+            raise ppins.error("Can not pullup/invert tmc virtual pin")
+        if self.diag_pin is None:
+            if not hasattr(self.mcu_tmc, "tmc_spi"):
+                raise ppins.error(
+                    "tmc virtual endstop requires diag pin config"
+                )
+            return self.setup_spi_endstop()
+        if self.mcu_endstop is not None:
+            raise self.printer.config_error("TMC endstop already configured")
+        return self.setup_endstop(
+            ppins.setup_pin("endstop", self.diag_pin),
+            self.diag_pin_field,
+        )
+
+
 # Sensorless homing by polling the stallguard flag over spi
 class TMCSpiEndstop:
     POLL_TIME = 0.001
     # Stallguard needs some time at speed before its flag is valid
-    SETTLE_TIME = 0.150
+    DEFAULT_SETTLE_TIME = 0.150
     # Matches MAX_DATA_LEN in src/tmc_spi_endstop.c
     MAX_CHAIN_LEN = 8
 
@@ -854,6 +907,8 @@ class TMCSpiEndstop:
                 " in a daisy chain" % (self.MAX_CHAIN_LEN,)
             )
         self._printer = printer
+        self._settle_time = self.DEFAULT_SETTLE_TIME
+        self._accel = None
         self._mutex = mcu_tmc.mutex
         self._mcu_tmc = mcu_tmc
         self._mcu = tmc_spi.get_mcu()
@@ -900,13 +955,25 @@ class TMCSpiEndstop:
     def get_steppers(self):
         return self._dispatch.get_steppers()
 
+    def set_accel(self, accel):
+        self._accel = accel
+
+    def set_settle_time(self, settle_time):
+        self._settle_time = settle_time
+
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
         toolhead = self._printer.lookup_object("toolhead")
-        accel = toolhead.get_max_velocity()[1]
+        accel = self._accel
+        if accel is None:
+            accel = toolhead.get_max_velocity()[1]
         speed = self.get_steppers()[0].get_step_dist() / rest_time
-        guard_time = speed / accel + self.SETTLE_TIME
+        guard_time = max(speed / accel + self._settle_time, 0.005)
+        # This is assuming the current delay won't change. In the future, we should
+        # extend the homing interface such that the start time of the move is known!
+        guard_time += homing.HOMING_START_DELAY
+        guard_time += toolhead.motion_queuing.get_kin_flush_delay()
         # Host register reads must not interleave with the mcu polling
         self._mutex.lock()
         clock = self._mcu.print_time_to_clock(print_time + guard_time)
@@ -1139,6 +1206,22 @@ class BaseTMCCurrentHelper:
 
         self.set_actual_current(new_current)
         self.apply_current(print_time)
+
+    @contextlib.contextmanager
+    def push_current(self, new_current, hold_current):
+        previous, previous_hold, requested_hold, *_ = self.get_current()
+        if requested_hold is not None:
+            previous_hold = requested_hold
+        toolhead = self.printer.lookup_object("toolhead")
+        try:
+            self.set_current(
+                new_current, hold_current, toolhead.get_last_move_time()
+            )
+            yield
+        finally:
+            self.set_current(
+                previous, previous_hold, toolhead.get_last_move_time()
+            )
 
 
 # Helper to configure StallGuard and CoolStep minimum velocity
