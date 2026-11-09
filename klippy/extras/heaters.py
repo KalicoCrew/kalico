@@ -359,6 +359,22 @@ class Heater:
             return True
         return False
 
+    @contextlib.contextmanager
+    def push_cold_extrude(self, cold_extrude):
+        self.check_not_calibrating()
+        previous = self.cold_extrude
+        try:
+            self.cold_extrude = bool(cold_extrude)
+            self.can_extrude = (
+                self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
+            )
+            yield
+        finally:
+            self.cold_extrude = previous
+            self.can_extrude = (
+                self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
+            )
+
     def set_cold_extrude(self, cold_extrude, min_extrude_temp):
         self.check_not_calibrating()
         if cold_extrude is None and min_extrude_temp is None:
