@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import contextlib
 import logging
 
 from klippy import mcu, stepper
@@ -18,6 +19,25 @@ from . import bulk_sensor
 # Return the position of the first bit set in a mask
 def ffs(mask):
     return (mask & -mask).bit_length() - 1
+
+
+@contextlib.contextmanager
+def push_fields(mcu_tmc, fields, field_values):
+    previous = {name: fields.get_field(name) for name in field_values}
+
+    def apply(values):
+        registers = collections.OrderedDict()
+        for name, value in values.items():
+            reg = fields.lookup_register(name)
+            registers[reg] = fields.set_field(name, value)
+        for reg, value in registers.items():
+            mcu_tmc.set_register(reg, value)
+
+    try:
+        apply(field_values)
+        yield
+    finally:
+        apply(previous)
 
 
 class FieldHelper:
@@ -1139,6 +1159,22 @@ class BaseTMCCurrentHelper:
 
         self.set_actual_current(new_current)
         self.apply_current(print_time)
+
+    @contextlib.contextmanager
+    def push_current(self, new_current, hold_current):
+        previous, previous_hold, requested_hold, *_ = self.get_current()
+        if requested_hold is not None:
+            previous_hold = requested_hold
+        toolhead = self.printer.lookup_object("toolhead")
+        try:
+            self.set_current(
+                new_current, hold_current, toolhead.get_last_move_time()
+            )
+            yield
+        finally:
+            self.set_current(
+                previous, previous_hold, toolhead.get_last_move_time()
+            )
 
 
 # Helper to configure StallGuard and CoolStep minimum velocity

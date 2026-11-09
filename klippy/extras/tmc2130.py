@@ -382,6 +382,9 @@ class MCU_TMC_SPI:
     def get_fields(self):
         return self.fields
 
+    def push_fields(self, field_values):
+        return tmc.push_fields(self, self.fields, field_values)
+
     def get_register_raw(self, reg_name):
         reg = self.name_to_reg[reg_name]
         with self.mutex:
