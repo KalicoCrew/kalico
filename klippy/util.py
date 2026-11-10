@@ -6,6 +6,7 @@
 import fcntl
 import json
 import logging
+import multiprocessing
 import os
 import pty
 import signal
@@ -13,6 +14,8 @@ import subprocess
 import termios
 import time
 import traceback
+
+from . import queuelogger
 
 ######################################################################
 # Low-level Unix commands
@@ -59,6 +62,85 @@ def create_pty(ptyname):
     old[3] = old[3] & ~termios.ECHO
     termios.tcsetattr(mfd, termios.TCSADRAIN, old)
     return mfd
+
+
+######################################################################
+# Background processes
+######################################################################
+
+
+class BackgroundError(Exception):
+    pass
+
+
+class BackgroundTimeout(BackgroundError):
+    pass
+
+
+def run_in_background(
+    printer,
+    func,
+    *args,
+    timeout=None,
+    progress_msg=None,
+    progress_interval=5.0,
+):
+    """Run func(*args) in a forked process and return its result.
+
+    The reactor keeps running while this waits, so slow calculations or
+    imports do not stall MCU communication or timers. The result must be
+    picklable.
+
+    Raises BackgroundError with the child's traceback if func raises or
+    the process exits without a result. Raises BackgroundTimeout, after
+    killing the process, if timeout seconds pass first. When progress_msg
+    is set it is sent to the G-code terminal every progress_interval
+    seconds.
+    """
+    # func is usually a closure, which only a forked child can run.
+    ctx = multiprocessing.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+
+    def wrapper():
+        queuelogger.clear_bg_logging()
+        try:
+            child_conn.send((False, func(*args)))
+        except Exception:
+            child_conn.send((True, traceback.format_exc()))
+        child_conn.close()
+
+    proc = ctx.Process(target=wrapper, daemon=True)
+    proc.start()
+    # Without the parent's copy of the write end, a child that dies
+    # without sending makes the pipe report EOF instead of staying silent.
+    child_conn.close()
+    reactor = printer.get_reactor()
+    gcode = printer.lookup_object("gcode")
+    eventtime = start_time = last_report = reactor.monotonic()
+    try:
+        while not parent_conn.poll():
+            if timeout is not None and eventtime >= start_time + timeout:
+                proc.kill()
+                raise BackgroundTimeout(
+                    f"Did not finish within {timeout:.0f} seconds"
+                )
+            if progress_msg and eventtime >= last_report + progress_interval:
+                last_report = eventtime
+                gcode.respond_info(progress_msg, log=False)
+            eventtime = reactor.pause(eventtime + 0.1)
+        try:
+            is_err, res = parent_conn.recv()
+        except EOFError:
+            proc.join()
+            raise BackgroundError(
+                f"Process exited without a result (exit code {proc.exitcode})"
+            )
+    finally:
+        proc.join()
+        parent_conn.close()
+    if is_err:
+        raise BackgroundError(res)
+    return res
 
 
 ######################################################################
