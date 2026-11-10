@@ -10,16 +10,14 @@
 from __future__ import annotations
 
 import logging
-import multiprocessing
 import os
 import socket
 import threading
 import time
-import traceback
 
 import numpy as np
 
-from klippy import Printer, queuelogger
+from klippy import Printer, util
 from klippy.configfile import ConfigWrapper, PrinterConfig
 from klippy.extras.heaters import Heater, PrinterHeaters
 from klippy.extras.probe import ProbeList
@@ -380,63 +378,39 @@ class NozzleCalibration:
         filename = f"nozzle_elongation_{timestamp}.png"
         path = os.path.join(os.path.dirname(log_file), filename)
         self.gcmd.respond_info("Plotting results...")
-        status, detail = self._run_plot_process(
-            path, self.temperatures, self.z_values, slope, intercept
-        )
-        if status == "ok":
-            self.gcmd.respond_info(
-                "View the Nozzle elongation results: "
-                f"http://{socket.gethostname()}/server/files/logs/{filename}"
+        # Importing matplotlib can stall for a long time on slow hosts, so it
+        # must never run in the klippy process.
+        try:
+            import_error = util.run_in_background(
+                self.printer,
+                _write_plot,
+                path,
+                self.temperatures,
+                self.z_values,
+                slope,
+                intercept,
+                timeout=self.plot_timeout,
             )
-        elif status == "no_matplotlib":
-            self.gcmd.respond_info(
-                "matplotlib could not be imported, cannot plot results: "
-                f"{detail}"
-            )
-        elif status == "timeout":
+        except util.BackgroundTimeout:
             self.gcmd.respond_info(
                 f"Plotting did not finish within {self.plot_timeout:.0f}s "
                 "and was skipped"
             )
-        else:
-            logging.error("Failed to save plot %s: %s", filename, detail)
+            return
+        except util.BackgroundError as e:
+            logging.error("Failed to save plot %s: %s", filename, e)
             self.gcmd.respond_info(f"Failed to save plot {filename}")
-
-    def _run_plot_process(self, *plot_args) -> tuple[str, str]:
-        # Importing matplotlib can stall for a long time on slow hosts, so it
-        # must never run in the klippy process.
-        parent_conn, child_conn = multiprocessing.Pipe()
-
-        def wrapper():
-            queuelogger.clear_bg_logging()
-            try:
-                _write_plot(*plot_args)
-            except ImportError as e:
-                child_conn.send(("no_matplotlib", str(e)))
-            except Exception:
-                child_conn.send(("error", traceback.format_exc()))
-            else:
-                child_conn.send(("ok", ""))
-            child_conn.close()
-
-        proc = multiprocessing.Process(target=wrapper)
-        proc.daemon = True
-        proc.start()
-        reactor = self.printer.get_reactor()
-        eventtime = reactor.monotonic()
-        deadline = eventtime + self.plot_timeout
-        while proc.is_alive() and eventtime < deadline:
-            eventtime = reactor.pause(eventtime + 0.1)
-        try:
-            if proc.is_alive():
-                proc.kill()
-                return "timeout", ""
-            if not parent_conn.poll():
-                return "error", "plot process exited unexpectedly"
-            return parent_conn.recv()
-        finally:
-            proc.join()
-            parent_conn.close()
+            return
+        if import_error:
+            self.gcmd.respond_info(
+                "matplotlib could not be imported, cannot plot results: "
+                f"{import_error}"
+            )
+            return
+        self.gcmd.respond_info(
+            "View the Nozzle elongation results: "
+            f"http://{socket.gethostname()}/server/files/logs/{filename}"
+        )
 
     def _calculate_and_report_coeff(self) -> tuple[float, float]:
         # I don't know that there is a lot of value in this:
@@ -476,9 +450,12 @@ def _write_plot(
     z_values: list[float],
     slope: float,
     intercept: float,
-):
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.figure import Figure
+) -> str | None:
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+    except ImportError as e:
+        return str(e)
 
     fig = Figure()
     FigureCanvasAgg(fig)
@@ -495,6 +472,7 @@ def _write_plot(
     ax.set_ylabel("Nozzle Elongation mm")
     ax.legend()
     fig.savefig(path, dpi=300)
+    return None
 
 
 def load_config_prefix(config):

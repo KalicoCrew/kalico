@@ -5,10 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import math
-import multiprocessing
-import traceback
 
-from . import queuelogger
+from . import util
 
 
 def safe_float(v: str) -> float:
@@ -64,39 +62,17 @@ def coordinate_descent(adj_params, params, error_func):
 # Helper to run the coordinate descent function in a background
 # process so that it does not block the main thread.
 def background_coordinate_descent(printer, adj_params, params, error_func):
-    parent_conn, child_conn = multiprocessing.Pipe()
-
-    def wrapper():
-        queuelogger.clear_bg_logging()
-        try:
-            res = coordinate_descent(adj_params, params, error_func)
-        except:
-            child_conn.send((True, traceback.format_exc()))
-            child_conn.close()
-            return
-        child_conn.send((False, res))
-        child_conn.close()
-
-    # Start a process to perform the calculation
-    calc_proc = multiprocessing.Process(target=wrapper)
-    calc_proc.daemon = True
-    calc_proc.start()
-    # Wait for the process to finish
-    reactor = printer.get_reactor()
-    gcode = printer.lookup_object("gcode")
-    eventtime = last_report_time = reactor.monotonic()
-    while calc_proc.is_alive():
-        if eventtime > last_report_time + 5.0:
-            last_report_time = eventtime
-            gcode.respond_info("Working on calibration...", log=False)
-        eventtime = reactor.pause(eventtime + 0.1)
-    # Return results
-    is_err, res = parent_conn.recv()
-    if is_err:
-        raise Exception("Error in coordinate descent: %s" % (res,))
-    calc_proc.join()
-    parent_conn.close()
-    return res
+    try:
+        return util.run_in_background(
+            printer,
+            coordinate_descent,
+            adj_params,
+            params,
+            error_func,
+            progress_msg="Working on calibration...",
+        )
+    except util.BackgroundError as e:
+        raise Exception("Error in coordinate descent: %s" % (e,))
 
 
 ######################################################################

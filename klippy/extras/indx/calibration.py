@@ -1,8 +1,6 @@
 import math
-import multiprocessing
-import traceback
 
-from klippy import queuelogger
+from klippy import util
 
 # Thermal-model calibration (INDX_CALIBRATE) defaults / limits.
 MODEL_CAL_MIN_TEMP_DEFAULT = 60.0  # start heatup from below this (deg C)
@@ -309,40 +307,13 @@ def fit_fan_model(samples, thermal_capacity, to_ambient_r):
 
 def run_fit_in_background(printer, func, *fit_args):
     # Run a CPU-bound fit in a separate process so the reactor (MCU comms,
-    # heater safety timers) is never stalled. Mirrors
-    # mathutil.background_coordinate_descent.
-    parent_conn, child_conn = multiprocessing.Pipe()
-
-    def wrapper():
-        queuelogger.clear_bg_logging()
-        try:
-            res = func(*fit_args)
-        except Exception:
-            child_conn.send((True, traceback.format_exc()))
-            child_conn.close()
-            return
-        child_conn.send((False, res))
-        child_conn.close()
-
-    proc = multiprocessing.Process(target=wrapper)
-    proc.daemon = True
-    proc.start()
-    reactor = printer.get_reactor()
-    gcode = printer.lookup_object("gcode")
-    eventtime = last_report = reactor.monotonic()
-    while proc.is_alive():
-        if eventtime > last_report + 5.0:
-            last_report = eventtime
-            gcode.respond_info("INDX: fitting thermal model...", log=False)
-        eventtime = reactor.pause(eventtime + 0.1)
+    # heater safety timers) is never stalled.
     try:
-        is_err, res = parent_conn.recv()
-    except EOFError:
-        # Child died without sending (e.g. killed/segfault): surface it as a
-        # normal fit error rather than an opaque EOFError.
-        is_err, res = True, "fit process died unexpectedly"
-    proc.join()
-    parent_conn.close()
-    if is_err:
-        raise Exception("Error in thermal model fit: %s" % (res,))
-    return res
+        return util.run_in_background(
+            printer,
+            func,
+            *fit_args,
+            progress_msg="INDX: fitting thermal model...",
+        )
+    except util.BackgroundError as e:
+        raise Exception("Error in thermal model fit: %s" % (e,))

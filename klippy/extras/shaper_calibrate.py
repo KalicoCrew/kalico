@@ -6,9 +6,8 @@
 import collections
 import importlib
 import math
-import multiprocessing
-import traceback
 
+from .. import util
 from . import shaper_defs
 
 MIN_FREQ = 5.0
@@ -94,41 +93,15 @@ class ShaperCalibrate:
     def background_process_exec(self, method, args):
         if self.printer is None:
             return method(*args)
-        import queuelogger
-
-        parent_conn, child_conn = multiprocessing.Pipe()
-
-        def wrapper():
-            queuelogger.clear_bg_logging()
-            try:
-                res = method(*args)
-            except:
-                child_conn.send((True, traceback.format_exc()))
-                child_conn.close()
-                return
-            child_conn.send((False, res))
-            child_conn.close()
-
-        # Start a process to perform the calculation
-        calc_proc = multiprocessing.Process(target=wrapper)
-        calc_proc.daemon = True
-        calc_proc.start()
-        # Wait for the process to finish
-        reactor = self.printer.get_reactor()
-        gcode = self.printer.lookup_object("gcode")
-        eventtime = last_report_time = reactor.monotonic()
-        while calc_proc.is_alive():
-            if eventtime > last_report_time + 5.0:
-                last_report_time = eventtime
-                gcode.respond_info("Wait for calculations..", log=False)
-            eventtime = reactor.pause(eventtime + 0.1)
-        # Return results
-        is_err, res = parent_conn.recv()
-        if is_err:
-            raise self.error("Error in remote calculation: %s" % (res,))
-        calc_proc.join()
-        parent_conn.close()
-        return res
+        try:
+            return util.run_in_background(
+                self.printer,
+                method,
+                *args,
+                progress_msg="Wait for calculations..",
+            )
+        except util.BackgroundError as e:
+            raise self.error("Error in remote calculation: %s" % (e,))
 
     def _split_into_windows(self, x, window_size, overlap):
         # Memory-efficient algorithm to split an input 'x' into a series
