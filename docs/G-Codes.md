@@ -860,8 +860,10 @@ clears any error state from the micro-controller.
 #### HEATER_INTERRUPT
 `HEATER_INTERRUPT`: Interrupts active temperature waits, MPC
 calibration waits, and Python macro `wait_while`, `wait_until`, and
-`sleep` helpers. Commands started after `HEATER_INTERRUPT` are not
-affected.
+`sleep` helpers. It also stops calculations that run in a background
+process, such as the analysis step of `SHAPER_CALIBRATE` and
+`DELTA_CALIBRATE`, and the `Z_THERMAL_ADJUST_CALIBRATE` results plot.
+Commands started after `HEATER_INTERRUPT` are not affected.
 
 #### LOG_ROLLOVER
 `LOG_ROLLOVER`: Trigger a klippy.log rollover and generate a new log file.

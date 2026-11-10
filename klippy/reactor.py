@@ -38,6 +38,7 @@ class ReactorCompletion:
         self.reactor = reactor
         self.result = self.sentinel
         self.waiting = []
+        self.callbacks = []
 
     def test(self):
         return self.result is not self.sentinel
@@ -46,6 +47,20 @@ class ReactorCompletion:
         self.result = result
         for wait in self.waiting:
             self.reactor.update_timer(wait.timer, self.reactor.NOW)
+        callbacks, self.callbacks = self.callbacks, []
+        for callback in callbacks:
+            callback(result)
+
+    def add_callback(self, callback):
+        """Call callback(result) once this completes, or now if it has."""
+        if self.test():
+            callback(self.result)
+        else:
+            self.callbacks.append(callback)
+
+    def remove_callback(self, callback):
+        if callback in self.callbacks:
+            self.callbacks.remove(callback)
 
     def wait(self, waketime=_NEVER, waketime_result=None):
         if self.result is self.sentinel:

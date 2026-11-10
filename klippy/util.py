@@ -8,6 +8,7 @@ import json
 import logging
 import multiprocessing
 import os
+import pickle
 import pty
 import signal
 import subprocess
@@ -77,6 +78,10 @@ class BackgroundTimeout(BackgroundError):
     pass
 
 
+_EXITED = object()
+_TIMED_OUT = object()
+
+
 def run_in_background(
     printer,
     func,
@@ -84,6 +89,7 @@ def run_in_background(
     timeout=None,
     progress_msg=None,
     progress_interval=5.0,
+    interrupt_token=None,
 ):
     """Run func() in a forked process and return its result.
 
@@ -96,48 +102,93 @@ def run_in_background(
     killing the process, if timeout seconds pass first. When progress_msg
     is set it is sent to the G-code terminal every progress_interval
     seconds.
+
+    If interrupt_token (by default the G-code interrupt token current at
+    the call) is interrupted, for example by HEATER_INTERRUPT or a
+    shutdown, the process is killed and the token's error, or a
+    WaitInterruption, is raised.
     """
-    # func is usually a closure, which only a forked child can run.
-    ctx = multiprocessing.get_context("fork")
-    parent_conn, child_conn = ctx.Pipe(duplex=False)
-
-    def wrapper():
-        queuelogger.clear_bg_logging()
-        try:
-            child_conn.send((False, func()))
-        except Exception:
-            child_conn.send((True, traceback.format_exc()))
-        child_conn.close()
-
-    proc = ctx.Process(target=wrapper, daemon=True)
-    proc.start()
-    # Without the parent's copy of the write end, a child that dies
-    # without sending makes the pipe report EOF instead of staying silent.
-    child_conn.close()
     reactor = printer.get_reactor()
     gcode = printer.lookup_object("gcode")
-    eventtime = start_time = last_report = reactor.monotonic()
-    try:
-        while not parent_conn.poll():
-            if timeout is not None and eventtime >= start_time + timeout:
-                proc.kill()
-                raise BackgroundTimeout(
-                    f"Did not finish within {timeout:.0f} seconds"
-                )
-            if progress_msg and eventtime >= last_report + progress_interval:
-                last_report = eventtime
-                gcode.respond_info(progress_msg, log=False)
-            eventtime = reactor.pause(eventtime + 0.1)
+    if interrupt_token is None:
+        interrupt_token = gcode.get_interrupt_token()
+    # func is usually a closure, which only a forked child can run.
+    ctx = multiprocessing.get_context("fork")
+    read_fd, write_fd = os.pipe()
+
+    def child():
+        queuelogger.clear_bg_logging()
+        os.close(read_fd)
         try:
-            is_err, res = parent_conn.recv()
-        except EOFError:
-            proc.join()
-            raise BackgroundError(
-                f"Process exited without a result (exit code {proc.exitcode})"
-            )
+            data = pickle.dumps((False, func()))
+        except Exception:
+            data = pickle.dumps((True, traceback.format_exc()))
+        with os.fdopen(write_fd, "wb") as f:
+            f.write(data)
+
+    proc = ctx.Process(target=child, daemon=True)
+    proc.start()
+    # Without the parent's copy of the write end, the pipe reports EOF as
+    # soon as the child exits, whether or not it wrote a result.
+    os.close(write_fd)
+    set_nonblock(read_fd)
+    chunks = []
+    done = reactor.completion()
+
+    def read_result(eventtime):
+        try:
+            data = os.read(read_fd, 65536)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if data:
+            chunks.append(data)
+        elif not done.test():
+            done.complete(_EXITED)
+
+    def interrupted(result):
+        if not done.test():
+            done.complete(result)
+
+    def report_progress(eventtime):
+        gcode.respond_info(progress_msg, log=False)
+        return eventtime + progress_interval
+
+    start_time = reactor.monotonic()
+    fd_handler = reactor.register_fd(read_fd, read_result)
+    interrupt_token.add_callback(interrupted)
+    progress_timer = None
+    if progress_msg:
+        progress_timer = reactor.register_timer(
+            report_progress, start_time + progress_interval
+        )
+    deadline = reactor.NEVER if timeout is None else start_time + timeout
+    try:
+        outcome = done.wait(deadline, _TIMED_OUT)
     finally:
+        interrupt_token.remove_callback(interrupted)
+        if progress_timer is not None:
+            reactor.unregister_timer(progress_timer)
+        reactor.unregister_fd(fd_handler)
+        os.close(read_fd)
+        if done.result is not _EXITED:
+            proc.kill()
         proc.join()
-        parent_conn.close()
+    if outcome is _TIMED_OUT:
+        raise BackgroundTimeout(f"Did not finish within {timeout:.0f} seconds")
+    if outcome is not _EXITED:
+        from .gcode import WaitInterruption
+
+        if isinstance(outcome, Exception):
+            raise outcome
+        raise WaitInterruption("Command interrupted")
+    try:
+        is_err, res = pickle.loads(b"".join(chunks))
+    except Exception:
+        raise BackgroundError(
+            f"Process exited without a result (exit code {proc.exitcode})"
+        )
     if is_err:
         raise BackgroundError(res)
     return res

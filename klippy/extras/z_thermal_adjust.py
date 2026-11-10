@@ -387,6 +387,7 @@ class NozzleCalibration:
                     path, self.temperatures, self.z_values, slope, intercept
                 ),
                 timeout=self.plot_timeout,
+                interrupt_token=self.gcmd.get_interrupt_token(),
             )
         except util.BackgroundTimeout:
             self.gcmd.respond_info(
