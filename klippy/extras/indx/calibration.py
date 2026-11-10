@@ -311,8 +311,7 @@ def run_fit_in_background(printer, func, *fit_args):
     try:
         return util.run_in_background(
             printer,
-            func,
-            *fit_args,
+            lambda: func(*fit_args),
             progress_msg="INDX: fitting thermal model...",
         )
     except util.BackgroundError as e:

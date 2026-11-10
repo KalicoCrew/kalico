@@ -80,12 +80,12 @@ class BackgroundTimeout(BackgroundError):
 def run_in_background(
     printer,
     func,
-    *args,
+    *,
     timeout=None,
     progress_msg=None,
     progress_interval=5.0,
 ):
-    """Run func(*args) in a forked process and return its result.
+    """Run func() in a forked process and return its result.
 
     The reactor keeps running while this waits, so slow calculations or
     imports do not stall MCU communication or timers. The result must be
@@ -104,7 +104,7 @@ def run_in_background(
     def wrapper():
         queuelogger.clear_bg_logging()
         try:
-            child_conn.send((False, func(*args)))
+            child_conn.send((False, func()))
         except Exception:
             child_conn.send((True, traceback.format_exc()))
         child_conn.close()

@@ -383,12 +383,9 @@ class NozzleCalibration:
         try:
             import_error = util.run_in_background(
                 self.printer,
-                _write_plot,
-                path,
-                self.temperatures,
-                self.z_values,
-                slope,
-                intercept,
+                lambda: _write_plot(
+                    path, self.temperatures, self.z_values, slope, intercept
+                ),
                 timeout=self.plot_timeout,
             )
         except util.BackgroundTimeout:

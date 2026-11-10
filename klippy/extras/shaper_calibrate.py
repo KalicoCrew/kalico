@@ -96,8 +96,7 @@ class ShaperCalibrate:
         try:
             return util.run_in_background(
                 self.printer,
-                method,
-                *args,
+                lambda: method(*args),
                 progress_msg="Wait for calculations..",
             )
         except util.BackgroundError as e:

@@ -65,10 +65,7 @@ def background_coordinate_descent(printer, adj_params, params, error_func):
     try:
         return util.run_in_background(
             printer,
-            coordinate_descent,
-            adj_params,
-            params,
-            error_func,
+            lambda: coordinate_descent(adj_params, params, error_func),
             progress_msg="Working on calibration...",
         )
     except util.BackgroundError as e:

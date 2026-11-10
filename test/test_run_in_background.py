@@ -45,14 +45,13 @@ def printer():
 
 def test_returns_result_of_closure(printer):
     offset = 10
-    assert util.run_in_background(printer, lambda x: x + offset, 5) == 15
+    assert util.run_in_background(printer, lambda: 5 + offset) == 15
 
 
 def test_reports_progress(printer):
     util.run_in_background(
         printer,
-        time.sleep,
-        0.5,
+        lambda: time.sleep(0.5),
         progress_msg="working",
         progress_interval=0.1,
     )
@@ -70,13 +69,13 @@ def test_exception_carries_child_traceback(printer):
 
 def test_child_exit_without_result(printer):
     with pytest.raises(util.BackgroundError, match="exit code 3"):
-        util.run_in_background(printer, os._exit, 3, timeout=10.0)
+        util.run_in_background(printer, lambda: os._exit(3), timeout=10.0)
 
 
 def test_timeout_kills_child(printer):
     start = time.monotonic()
     with pytest.raises(util.BackgroundTimeout):
-        util.run_in_background(printer, time.sleep, 3600, timeout=0.5)
+        util.run_in_background(printer, lambda: time.sleep(3600), timeout=0.5)
     assert time.monotonic() - start < 5.0
 
 
