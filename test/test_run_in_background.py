@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import threading
 import time
 
 import pytest
@@ -87,4 +88,4 @@ def test_result_larger_than_pipe_buffer(printer):
 
 def test_unpicklable_result(printer):
     with pytest.raises(util.BackgroundError, match="pickle"):
-        util.run_in_background(printer, lambda: lambda: None, timeout=10.0)
+        util.run_in_background(printer, threading.Lock, timeout=10.0)
