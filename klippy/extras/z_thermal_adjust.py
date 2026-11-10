@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import socket
 import threading
@@ -17,7 +18,7 @@ import time
 
 import numpy as np
 
-from klippy import Printer
+from klippy import Printer, queuelogger
 from klippy.configfile import ConfigWrapper, PrinterConfig
 from klippy.extras.heaters import Heater, PrinterHeaters
 from klippy.extras.probe import ProbeList
@@ -327,6 +328,7 @@ class NozzleCalibration:
         return temps
 
     def calibrate(self):
+        plot_timeout = self.gcmd.get_float("PLOT_TIMEOUT", 120.0, above=0.0)
         self.gcmd.respond_info("Starting thermal coefficient measurement...")
         temps_range = self._calibration_temperatures()
 
@@ -349,8 +351,13 @@ class NozzleCalibration:
             self.pheaters.set_temperature(self.heater, 0)
 
         # Perform linear regression
-        temp_coeff = self._calculate_and_report_coeff()
+        slope, intercept = self._calculate_and_report_coeff()
+        temp_coeff = -1.0 * slope
+        self.gcmd.respond_info(f"Temperature Coefficient: {temp_coeff}")
         self._save_config(temp_coeff)
+        self.gcmd.respond_info(
+            self._run_plot_process(slope, intercept, plot_timeout)
+        )
 
     def _change_temp(self, temp: float):
         self.pheaters.set_temperature(self.heater, temp, wait=True)
@@ -362,21 +369,17 @@ class NozzleCalibration:
         probe_result[2] += self.z_lift
         self.toolhead.manual_move(probe_result, speed=self.z_lift_speed)
 
-    def _plot_results(self, slope: float, intercept: float):
+    def _plot_results(self, slope: float, intercept: float) -> str:
         try:
             import matplotlib.pyplot as plt
         except:
-            self.gcmd.respond_info(
-                "matplotlib not installed, cannot plot results!"
-            )
-            return
+            return "matplotlib not installed, cannot plot results!"
 
         # Save into the logs directory, which Moonraker serves
         start_args = self.printer.get_start_args()
         log_file = start_args.get("log_file")
         if not log_file:
-            self.gcmd.respond_info("Logging not enabled, cannot plot results!")
-            return
+            return "Logging not enabled, cannot plot results!"
 
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"nozzle_elongation_{timestamp}.png"
@@ -396,18 +399,55 @@ class NozzleCalibration:
             ax.legend()
             klippy_logs_dir: str = os.path.dirname(log_file)
             fig.savefig(os.path.join(klippy_logs_dir, filename), dpi=300)
-            self.gcmd.respond_info(
+            return (
                 "View the Nozzle elongation results: "
                 f"http://{socket.gethostname()}/server/files/logs/{filename}"
             )
         except Exception as ex:
             logging.error(f"Failed to save plot {filename}")
             logging.error(ex)
-            self.gcmd.respond_info(f"Failed to save plot {filename}")
+            return f"Failed to save plot {filename}"
         finally:
             plt.close(fig)
 
-    def _calculate_and_report_coeff(self) -> float:
+    def _run_plot_process(
+        self, slope: float, intercept: float, timeout: float
+    ) -> str:
+        # Importing matplotlib can stall for a long time on slow hosts, so it
+        # must never run in the klippy process.
+        parent_conn, child_conn = multiprocessing.Pipe()
+
+        def wrapper():
+            queuelogger.clear_bg_logging()
+            child_conn.send(self._plot_results(slope, intercept))
+            child_conn.close()
+
+        self.gcmd.respond_info("Plotting results...")
+        proc = multiprocessing.Process(target=wrapper)
+        proc.daemon = True
+        proc.start()
+        reactor = self.printer.get_reactor()
+        eventtime = reactor.monotonic()
+        deadline = eventtime + timeout
+        while proc.is_alive() and eventtime < deadline:
+            eventtime = reactor.pause(eventtime + 0.1)
+        try:
+            if proc.is_alive():
+                proc.kill()
+                return (
+                    f"Plotting did not finish within {timeout:.0f}s "
+                    "and was skipped"
+                )
+            if not parent_conn.poll():
+                return (
+                    f"Plotting failed, process exited with code {proc.exitcode}"
+                )
+            return parent_conn.recv()
+        finally:
+            proc.join()
+            parent_conn.close()
+
+    def _calculate_and_report_coeff(self) -> tuple[float, float]:
         # I don't know that there is a lot of value in this:
         # A picture would be worth 1000 words here
         # self.gcmd.respond_info(f"Temperatures: {self.temperatures}")
@@ -426,11 +466,7 @@ class NozzleCalibration:
         a = np.vstack([temps, np.ones(len(temps))]).T
         slope, intercept = np.linalg.lstsq(a, z_vals, rcond=None)[0]
         slope = round(slope, 8)
-        temp_coeff = -1.0 * slope
-
-        self._plot_results(slope, intercept)
-        self.gcmd.respond_info(f"Temperature Coefficient: {temp_coeff}")
-        return temp_coeff
+        return slope, intercept
 
     def _save_config(self, temp_coeff: float):
         self.z_thermal_adjust.save_temp_coeff(temp_coeff)
