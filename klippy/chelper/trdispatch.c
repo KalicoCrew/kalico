@@ -112,7 +112,7 @@ handle_trsync_state(struct fastreader *fr, uint8_t *data, int len)
     list_for_each_entry(m, &td->tdm_list, node) {
         double status_time = m == min_tdm ? next_min_time : min_time;
         uint64_t expire=clock_from_time(&m->ce, status_time) + m->expire_ticks;
-        if ((int64_t)(expire - m->expire_clock) >= m->min_extend_ticks) {
+        if (expire >= m->expire_clock + m->min_extend_ticks) {
             m->expire_clock = expire;
             send_trsync_set_timeout(m);
         }
