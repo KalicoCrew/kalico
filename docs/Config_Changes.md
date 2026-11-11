@@ -8,6 +8,14 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261111: The `per_move_pressure_advance` option in the `[extruder]` and
+`[extruder_stepper]` config sections is deprecated and has no effect.
+Pressure advance changes are always applied at the time they are
+requested. Steppers synced to an extruder with `[extruder_stepper]` now
+apply their own `pressure_advance` even when the main extruder has no
+stepper or a `pressure_advance` of 0; previously they got no pressure
+advance in that case.
+
 20261021: The temporary acceleration and velocity limits applied during
 `TEST_RESONANCES` and `SHAPER_CALIBRATE` are now derived from the actual
 test sequence instead of only the configured `accel_per_hz`. Previously an

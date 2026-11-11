@@ -1182,10 +1182,9 @@ max_temp:
 #   heater and sensor hardware failures. Set this range just wide
 #   enough so that reasonable temperatures do not result in an error.
 #   These parameters must be provided.
-per_move_pressure_advance: False
-#   If true, uses pressure advance constant from trapq when processing moves
-#   This causes changes to pressure advance be taken into account immediately,
-#   for all moves in the current queue, rather than ~250ms later once the queue gets flushed
+#per_move_pressure_advance: False
+#   Deprecated. Pressure advance changes are always applied at the time
+#   they are requested, so this option no longer has any effect.
 #
 #   If: control: dual_loop_pid
 #inner_sensor_name:
