@@ -244,6 +244,26 @@ max_accel:
 #   decelerate to zero at each corner. The value specified here may be
 #   changed at runtime using the SET_VELOCITY_LIMIT command. The
 #   default is 5mm/s.
+#unified_planner: False
+#   Enable experimental jerk-limited motion for normal queued moves. Homing and
+#   probing drip moves continue to use the standard trapezoid profile. Enabling
+#   it requires a notch frequency (unified_notch_freq). See
+#   docs/Jerk_Limiting.md for details. The default is False.
+#unified_notch_freq: 0
+#   Resonance frequency in Hz for the per-ramp notch law
+#   J = dv * unified_notch_freq^2. This applies one scalar path-speed notch to
+#   both X and Y. If that triangular law would exceed max_accel, the planner
+#   uses a saturated ramp with J = max_accel * unified_notch_freq and a
+#   constant-acceleration plateau. 0 disables the notch law. Values other than 0
+#   must be at least 5 Hz: every ramp lasts 2 / unified_notch_freq seconds, so a
+#   very low frequency stalls the toolhead rather than shaping it gently. Note
+#   that this frequency also caps throughput on short-segment geometry - see the
+#   Throughput section of docs/Jerk_Limiting.md. Setting this also means
+#   pressure_advance_smooth_time should usually be LOWERED: its 0.040 default
+#   smooths a discontinuity a notched ramp does not produce, and once the window
+#   approaches the ramp duration it blurs pressure advance across the whole
+#   acceleration event - see the Pressure advance section of
+#   docs/Jerk_Limiting.md. The default is 0.
 ```
 
 ### [stepper]

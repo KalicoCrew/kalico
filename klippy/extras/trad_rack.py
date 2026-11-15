@@ -2377,6 +2377,8 @@ class TradRackToolHead(toolhead.ToolHead, object):
         self.square_corner_velocity = tr_config.getfloat(
             "square_corner_velocity", 0.0, minval=0.0
         )
+        self.unified_emit = False
+        self.unified_notch_freq = 0.0
         self.junction_deviation = self.mcr_pseudo_accel = 0.0
         self._calc_junction_deviation()
         # Input stall detection
