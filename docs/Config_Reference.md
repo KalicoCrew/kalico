@@ -247,8 +247,9 @@ max_accel:
 #unified_planner: False
 #   Enable experimental jerk-limited motion for normal queued moves. Homing and
 #   probing drip moves continue to use the standard trapezoid profile. Enabling
-#   it requires a notch frequency (unified_notch_freq). See
-#   docs/Jerk_Limiting.md for details. The default is False.
+#   it requires a notch frequency: set unified_notch_freq, or both
+#   unified_notch_freq_x and unified_notch_freq_y. See docs/Jerk_Limiting.md for
+#   details. The default is False.
 #unified_notch_freq: 0
 #   Resonance frequency in Hz for the per-ramp notch law
 #   J = dv * unified_notch_freq^2. This applies one scalar path-speed notch to
@@ -264,6 +265,19 @@ max_accel:
 #   approaches the ramp duration it blurs pressure advance across the whole
 #   acceleration event - see the Pressure advance section of
 #   docs/Jerk_Limiting.md. The default is 0.
+#unified_notch_freq_x: 0
+#unified_notch_freq_y: 0
+#   Optional per-axis resonance frequencies in Hz. These must be set together,
+#   and are subject to the same 5 Hz minimum. Naming two different modes selects
+#   a two-zero ramp: the accel pulse becomes a trapezoid whose spectrum nulls
+#   BOTH frequencies, on both axes, in every direction - there is no separate
+#   enable, and no diagonal compromise. Each ramp then lasts
+#   1/f_x + 1/f_y seconds instead of 2 / unified_notch_freq, and its peak
+#   acceleration is set by the LOWER of the two. If that peak would exceed
+#   max_accel, only one zero fits and the planner keeps whichever of the two
+#   modes it helps more, reporting the loss. Setting the two equal is identical
+#   to setting unified_notch_freq. The default is to use unified_notch_freq for
+#   both axes.
 ```
 
 ### [stepper]

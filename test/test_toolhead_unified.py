@@ -108,6 +108,8 @@ def make_unified_toolhead(**over):
     th.max_accel_to_decel = 50000.0
     th.unified_emit = True
     th.unified_notch_freq = 55.0
+    th.unified_notch_freq_x = 55.0
+    th.unified_notch_freq_y = 55.0
     th.extra_axes = []
     th.printer = FakePrinter()
     for k, v in over.items():
@@ -135,17 +137,24 @@ def test_notch_freq_floor():
 
 def test_unified_settings_require_notch():
     err = lambda msg: RuntimeError(msg)  # noqa: E731
-    th = make_unified_toolhead(unified_notch_freq=0.0)
+    th = make_unified_toolhead(
+        unified_notch_freq=0.0,
+        unified_notch_freq_x=0.0,
+        unified_notch_freq_y=0.0,
+    )
     try:
         th._check_unified_settings(err)
     except RuntimeError as e:
         assert "requires unified_notch_freq" in str(e), e
     else:
         raise AssertionError("enabled planner without a notch was accepted")
-    th = make_unified_toolhead()
+    th = make_unified_toolhead(
+        unified_notch_freq_x=55.0,
+        unified_notch_freq_y=75.0,
+    )
     th._check_unified_settings(err)
     th.unified_emit = False
-    th.unified_notch_freq = 0.0
+    th.unified_notch_freq_x = th.unified_notch_freq_y = 0.0
     th._check_unified_settings(err)
     print("  enabled planner requires a notch OK")
 
@@ -160,12 +169,54 @@ def test_low_max_accel_is_accepted_and_renders():
     cons = toolhead.pathplan.Constraints(
         a_const=th.max_accel,
         v_ceil=th.max_velocity + 1.0,
-        notch_freq=th.unified_notch_freq,
+        notch_freq=th.unified_notch_freq_x,
     )
     toolhead.pathplan.validate_cubic_profile(0.0, 400.0, 0.0, 1e6, cons)
     segs = toolhead.pathplan.render_cubic_profile(0.0, 400.0, 0.0, 1e6, cons)
     assert len(segs) == 7, segs  # 3 up + cruise + 3 down
     print("  a very low max_accel is accepted and renders OK")
+
+
+def test_set_unified_pair_rule_and_rollback():
+    # Setting only NOTCH_FREQ_X must hit the same X/Y pair rule that is a hard
+    # config error at startup, and rejection must leave every unified field
+    # untouched.
+    th = make_unified_toolhead(
+        unified_notch_freq_x=0.0,
+        unified_notch_freq_y=0.0,
+        unified_notch_freq=0.0,
+    )
+    th.flush_step_generation = lambda: None
+    before = th._unified_state()
+    gcmd = FakeGCmd()
+    gcmd.get_int = lambda n, d, **kw: d
+    vals = {"NOTCH_FREQ_X": 55.0}
+    gcmd.get_float = lambda n, d, **kw: vals.get(n, d)
+    gcmd.respond_info = lambda msg: None
+    try:
+        th.cmd_SET_UNIFIED(gcmd)
+    except RuntimeError as e:
+        assert "both" in str(e), e
+    else:
+        raise AssertionError("one-sided NOTCH_FREQ_X was accepted")
+    assert th._unified_state() == before, (th._unified_state(), before)
+    print("  SET_UNIFIED enforces the X/Y pair rule and rolls back OK")
+
+
+def test_set_unified_rearms_profile_warnings():
+    th = make_unified_toolhead()
+    th.flush_step_generation = lambda: None
+    th._unified_warned = set(toolhead.pathplan.LOSS_REASONS)
+    th._unified_all_warned = True
+    gcmd = FakeGCmd()
+    vals = {"NOTCH_FREQ": 60.0}
+    gcmd.get_int = lambda n, d, **kw: d
+    gcmd.get_float = lambda n, d, **kw: vals.get(n, d)
+    gcmd.respond_info = lambda msg: None
+    th.cmd_SET_UNIFIED(gcmd)
+    assert th._unified_warned == set()
+    assert not th._unified_all_warned
+    print("  SET_UNIFIED re-arms profile-loss diagnostics OK")
 
 
 def test_reach_cache_tracks_start_v2():
@@ -264,6 +315,8 @@ def test_infeasible_batch_fails_before_emission():
     th.trapq_append = lambda *args: emitted.append(("trapq", args))
     th.trapq_append_jerk = lambda *args: emitted.append(("trapq", args))
     th._calc_print_time = lambda: emitted.append(("calc_print_time", ()))
+    th._unified_all_warned = False
+    th._unified_warned = set()
 
     try:
         th._process_lookahead()
@@ -284,6 +337,8 @@ def main():
     test_notch_freq_floor()
     test_unified_settings_require_notch()
     test_low_max_accel_is_accepted_and_renders()
+    test_set_unified_pair_rule_and_rollback()
+    test_set_unified_rearms_profile_warnings()
     test_reach_cache_tracks_start_v2()
     test_no_velocity_step_at_move_boundaries()
     test_infeasible_batch_fails_before_emission()

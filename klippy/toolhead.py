@@ -346,9 +346,29 @@ class ToolHead:
         self.unified_notch_freq = config.getfloat(
             "unified_notch_freq", 0.0, minval=0.0
         )
-        self._check_notch_freq(
-            self.unified_notch_freq, "unified_notch_freq", config.error
-        )
+        # Optional PER-AXIS notch. A jerk-limited accel ramp shapes the SCALAR
+        # path speed, so a_x and a_y are the same a(t) scaled by the move's unit
+        # direction -- one pulse serving both axes. That still admits TWO zeros,
+        # because zeros multiply under convolution: a trapezoidal a(t) built as
+        # rect(1/f_hi) * rect(1/f_lo) nulls both modes on every axis regardless
+        # of heading (see _move_notch_pair / pathplan.Constraints.ramp_jerk).
+        #   - unified_notch_freq alone notches BOTH axes at that frequency.
+        #   - unified_notch_freq_x AND _y set the per-axis modes; they must be
+        #     given together (setting exactly one is a config error).
+        nfx = config.getfloat("unified_notch_freq_x", None, minval=0.0)
+        nfy = config.getfloat("unified_notch_freq_y", None, minval=0.0)
+        for name, f in (
+            ("unified_notch_freq", self.unified_notch_freq),
+            ("unified_notch_freq_x", nfx),
+            ("unified_notch_freq_y", nfy),
+        ):
+            self._check_notch_freq(f, name, config.error)
+        try:
+            self.unified_notch_freq_x, self.unified_notch_freq_y = (
+                self._resolve_notch(self.unified_notch_freq, nfx, nfy)
+            )
+        except ValueError as e:
+            raise config.error(str(e))
         self._check_unified_settings(config.error)
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
@@ -357,6 +377,10 @@ class ToolHead:
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
         self.orig_cfg["unified_emit"] = self.unified_emit
         self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
+        self.orig_cfg["unified_notch_freq_x"] = self.unified_notch_freq_x
+        self.orig_cfg["unified_notch_freq_y"] = self.unified_notch_freq_y
+        self._unified_warned = set()
+        self._unified_all_warned = False
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -527,6 +551,16 @@ class ToolHead:
                     )
                     or None
                 )
+                if segs and not self._unified_all_warned:
+                    self._warn_unified_profile(
+                        move,
+                        pathplan.notch_loss_reasons(
+                            move.start_v,
+                            move.cruise_v,
+                            move.end_v,
+                            cons,
+                        ),
+                    )
             rendered_segs.append(segs)
         # Resync print_time if necessary
         if self.special_queuing_state:
@@ -898,50 +932,120 @@ class ToolHead:
                 % (name, cls.MIN_NOTCH_FREQ, freq)
             )
 
+    @staticmethod
+    def _resolve_notch(shared, nfx, nfy):
+        # Resolve the notch config into a per-axis pair (f_x, f_y).
+        #   shared   -> unified_notch_freq (0 = off), notches BOTH axes.
+        #   nfx/nfy  -> unified_notch_freq_x/_y, or None when absent.
+        # Per-axis values override `shared` but must be given as a pair: setting
+        # exactly one is ambiguous (which axis keeps the shared value?), so it is
+        # rejected. Raises ValueError on that case; the caller maps it to a
+        # config error.
+        if (nfx is None) != (nfy is None):
+            raise ValueError(
+                "unified_notch_freq_x and unified_notch_freq_y must be set"
+                " together. Use unified_notch_freq to notch both axes at one"
+                " frequency, or set BOTH unified_notch_freq_x and"
+                " unified_notch_freq_y."
+            )
+        if nfx is None:
+            return shared, shared
+        return nfx, nfy
+
     def _notch_on(self):
-        # True when a notch frequency is configured.
-        return bool(self.unified_notch_freq)
+        # True when a notch frequency is configured on either axis. The shared
+        # unified_notch_freq is folded into both at config time (_resolve_notch).
+        return bool(self.unified_notch_freq_x or self.unified_notch_freq_y)
 
     def _move_notch_freq(self, move):
-        # Notch frequency (Hz) for one move; 0.0 = off.
+        # Scalar notch frequency (Hz) for one move; 0.0 = off.
+        #
+        # This is the EQUIVALENT frequency of the move's notch pair -- their
+        # harmonic mean -- which is what governs ramp distance and runway
+        # ((v0+v1)/f_eq) everywhere in the planner. With one zero the pair is
+        # (f, f) and f_eq is just f, so every runway formula is unchanged.
+        f_lo, f_hi = self._move_notch_pair(move)
+        if not f_lo or f_lo == f_hi:
+            # Exact, not just close: 2/(1/f + 1/f) does not always round-trip
+            # to f.
+            return f_lo
+        return 2.0 / (1.0 / f_lo + 1.0 / f_hi)
+
+    def _move_notch_pair(self, move):
+        # The (f_lo, f_hi) pair of mode frequencies this move's ramp nulls;
+        # (0.0, 0.0) = off.
+        #
+        # A jerk-limited accel ramp shapes the SCALAR path speed, so the axes
+        # see a_x(t) = rx*a(t) and a_y(t) = ry*a(t) -- one pulse, scaled. That
+        # does NOT mean one zero: a(t) = rect(1/f_hi) * rect(1/f_lo) is a
+        # trapezoid with exact zeros at BOTH frequencies, and every axis
+        # inherits both. So naming two modes IS the request for two zeros:
+        # unified_notch_freq_x != unified_notch_freq_y selects the trapezoid,
+        # and the ramp shape then stops depending on heading entirely (see
+        # pathplan.Constraints.ramp_jerk).
+        #
+        # There is no separate enable. f_x == f_y collapses the trapezoid back
+        # to the triangle by construction, so the shared unified_notch_freq --
+        # folded into both axes at config time by _resolve_notch -- yields the
+        # single-zero ramp for every direction with no special case anywhere.
         #
         # Memoized on the move: this is called from _uses_unified_reach, which
         # runs on every lookahead reach probe (several per move per flush pass).
         # Safe because the notch config can only change via SET_UNIFIED, which
         # calls flush_step_generation() first and so retires every queued move.
-        f = getattr(move, "_unified_notch_freq", None)
+        pair = getattr(move, "_unified_notch_pair", None)
+        if pair is not None:
+            return pair
+        f = None
+        fx = self.unified_notch_freq_x
+        fy = self.unified_notch_freq_y
+        if not fx and not fy:
+            f = 0.0
+        else:
+            if abs(move.axes_r[0]) + abs(move.axes_r[1]) <= 1e-12:
+                # No XY motion (Z-only or extrude-only). Whether that means
+                # "nothing to cancel" depends on the kinematics.
+                #
+                # When Z has its own actuator (cartesian, CoreXY), the ramp
+                # shapes the scalar path speed and the axes see a_x = rx*a(t),
+                # a_y = ry*a(t) with rx = ry = 0 -- identically zero for ANY
+                # a(t). No ramp shape changes the XY excitation, so notching
+                # buys no quiet while costing the full 2/f_n ramp (36 ms at
+                # 55 Hz) and its (v0+v1)/f_n of runway, which a Z hop does not
+                # have. That is why notching a decoupled Z lift is wasteful.
+                #
+                # When Z shares actuators with X or Y -- CoreXZ and hybrid
+                # CoreXZ (A = x + z, B = x - z), deltesian, delta, rotary
+                # delta, cable winch -- a Z-only move accelerates the very
+                # belts whose compliance the notch is aimed at. Commanded X
+                # stays zero only to first order: belt-stiffness or motor-lag
+                # asymmetry leaves a residual common-mode term that couples
+                # straight into the XY mode. Keep shaping there.
+                if not self._z_couples_xy():
+                    f = 0.0
+                elif not (fx and fy):
+                    f = fx or fy
+                # else: fall through to the pair -- a coupled Z move excites
+                # whatever the belts carry, so null both modes.
+            elif not (fx and fy):
+                # Only one axis names a mode, so there is no second zero to
+                # place. (_resolve_notch rejects this at config time; SET_UNIFIED
+                # can transiently produce it before its own pair check runs.)
+                f = fx or fy
         if f is not None:
-            return f
-        f = self.unified_notch_freq
-        if f and abs(move.axes_r[0]) + abs(move.axes_r[1]) <= 1e-12:
-            # No XY motion (Z-only or extrude-only). Whether that means
-            # "nothing to cancel" depends on the kinematics.
-            #
-            # When Z has its own actuator (cartesian, CoreXY), the ramp
-            # shapes the scalar path speed and the axes see a_x = rx*a(t),
-            # a_y = ry*a(t) with rx = ry = 0 -- identically zero for ANY
-            # a(t). No ramp shape changes the XY excitation, so notching
-            # buys no quiet while costing the full 2/f_n ramp (36 ms at
-            # 55 Hz) and its (v0+v1)/f_n of runway, which a Z hop does not
-            # have. That is why notching a decoupled Z lift is wasteful.
-            #
-            # When Z shares actuators with X or Y -- CoreXZ and hybrid
-            # CoreXZ (A = x + z, B = x - z), deltesian, delta, rotary
-            # delta, cable winch -- a Z-only move accelerates the very
-            # belts whose compliance the notch is aimed at. Commanded X
-            # stays zero only to first order: belt-stiffness or motor-lag
-            # asymmetry leaves a residual common-mode term that couples
-            # straight into the XY mode. Keep shaping there.
-            if not self._z_couples_xy():
-                f = 0.0
-        move._unified_notch_freq = f
-        return f
+            pair = (f, f)
+        else:
+            pair = (min(fx, fy), max(fx, fy))
+        move._unified_notch_pair = pair
+        return pair
 
     def _pathplan_cons(self, move):
         # Build the pathplan.Constraints for one move. move.accel is the
         # constant acceleration ceiling; with a notch frequency the emitter
         # governs ordinary moves via a_peak = dv*f_n instead.
-        notch = self._move_notch_freq(move) or None
+        f_lo, f_hi = self._move_notch_pair(move)
+        notch = f_lo or None
+        notch2 = f_hi or None
         if hasattr(move, "cruise_v"):
             v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
         else:
@@ -953,6 +1057,7 @@ class ToolHead:
             a_const=move.accel,
             v_ceil=v_ceil,
             notch_freq=notch,
+            notch_freq2=notch2,
         )
 
     def _z_couples_xy(self):
@@ -1003,16 +1108,18 @@ class ToolHead:
         cached = getattr(move, "_unified_reach_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Reachability needs only the move's notch frequency and accel -- not a
+        # Reachability needs only the move's notch pair and accel -- not a
         # Constraints object, and not the emitter's per-move v_ceil: it asks
         # how fast the toolhead could arrive, so it is bounded by the machine
         # limit; move.max_cruise_v2 is applied separately by the caller.
+        f_lo, f_hi = self._move_notch_pair(move)
         res = pathplan.notch_reach_v2(
             start_v2,
             move.move_d,
             move.accel,
             self.max_velocity,
-            notch_freq=self._move_notch_freq(move),
+            notch_freq=f_lo or None,
+            notch_freq2=f_hi or None,
         )
         move._unified_reach_cache = (key, res)
         return res
@@ -1020,6 +1127,8 @@ class ToolHead:
     _UNIFIED_FIELDS = (
         "unified_emit",
         "unified_notch_freq",
+        "unified_notch_freq_x",
+        "unified_notch_freq_y",
     )
 
     def _unified_state(self):
@@ -1048,17 +1157,51 @@ class ToolHead:
         if not self.unified_emit:
             return
         if not self._notch_on():
-            raise error_factory("unified_planner requires unified_notch_freq")
+            raise error_factory(
+                "unified_planner requires unified_notch_freq or both"
+                " unified_notch_freq_x and unified_notch_freq_y"
+            )
+
+    def _reset_unified_warnings(self):
+        self._unified_warned = set()
+        self._unified_all_warned = False
+
+    def _warn_unified_profile(self, move, reasons):
+        if not reasons:
+            return
+        if not hasattr(self, "_unified_warned"):
+            self._unified_warned = set()
+        for reason in reasons:
+            if reason in self._unified_warned:
+                continue
+            self._unified_warned.add(reason)
+            logging.warning(
+                "unified_planner: target notch not preserved on move ending"
+                " at %.3f %.3f %.3f: %s",
+                move.end_pos[0],
+                move.end_pos[1],
+                move.end_pos[2],
+                reason,
+            )
+        # Once every possible reason has been reported there is nothing left to
+        # learn, so the caller can stop paying for the diagnostic entirely.
+        if self._unified_warned >= pathplan.LOSS_REASONS:
+            self._unified_all_warned = True
 
     cmd_SET_UNIFIED_help = (
         "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
         "NOTCH_FREQ parks the jerk ramp's shaper zero on a mode frequency "
-        "(Hz, 0 = disabled). No args = report state."
+        "(Hz, 0 = disabled); "
+        "NOTCH_FREQ_X / NOTCH_FREQ_Y set per-axis notch modes, nulled together "
+        "in one trapezoidal ramp (0 = fall back to NOTCH_FREQ). "
+        "No args = report state."
     )
 
     def cmd_SET_UNIFIED(self, gcmd):
         en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
         notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
+        notch_x = gcmd.get_float("NOTCH_FREQ_X", None, minval=0.0)
+        notch_y = gcmd.get_float("NOTCH_FREQ_Y", None, minval=0.0)
         # Flush pending moves so the change only affects moves planned after
         # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
         self.flush_step_generation()
@@ -1066,17 +1209,48 @@ class ToolHead:
         try:
             if en is not None:
                 self.unified_emit = bool(en)
-            self._check_notch_freq(notch, "NOTCH_FREQ", gcmd.error)
+            for name, f in (
+                ("NOTCH_FREQ", notch),
+                ("NOTCH_FREQ_X", notch_x),
+                ("NOTCH_FREQ_Y", notch_y),
+            ):
+                self._check_notch_freq(f, name, gcmd.error)
             if notch is not None:
+                # NOTCH_FREQ notches both axes; explicit NOTCH_FREQ_X/Y below
+                # win.
                 self.unified_notch_freq = notch
+                self.unified_notch_freq_x = notch
+                self.unified_notch_freq_y = notch
+            if notch_x is not None:
+                self.unified_notch_freq_x = notch_x
+            if notch_y is not None:
+                self.unified_notch_freq_y = notch_y
+            # Enforce the same X/Y pair rule the config parser applies at
+            # startup (_resolve_notch): notching one axis but not the other is
+            # ambiguous.
+            if bool(self.unified_notch_freq_x) != bool(
+                self.unified_notch_freq_y
+            ):
+                raise gcmd.error(
+                    "NOTCH_FREQ_X and NOTCH_FREQ_Y must both be set or both be"
+                    " 0. Use NOTCH_FREQ to notch both axes at one frequency."
+                )
             self._check_unified_settings(gcmd.error)
             self._check_unified_extra_axis_support()
         except:
             self._restore_unified_state(old)
             raise
+        if self._unified_state() != old:
+            self._reset_unified_warnings()
         gcmd.respond_info(
             "unified_planner=%d unified_notch_freq=%.2f"
-            % (self.unified_emit, self.unified_notch_freq)
+            " notch_freq_x=%.2f notch_freq_y=%.2f"
+            % (
+                self.unified_emit,
+                self.unified_notch_freq,
+                self.unified_notch_freq_x,
+                self.unified_notch_freq_y,
+            )
         )
 
     def reset_unified_settings(self):
@@ -1097,9 +1271,13 @@ class ToolHead:
         except:
             self._restore_unified_state(old_unified)
             raise
+        if self._unified_state() != old_unified:
+            self._reset_unified_warnings()
         return [
             "unified_planner: %d" % self.unified_emit,
             "unified_notch_freq: %.6f" % self.unified_notch_freq,
+            "unified_notch_freq_x: %.6f" % self.unified_notch_freq_x,
+            "unified_notch_freq_y: %.6f" % self.unified_notch_freq_y,
         ]
 
     def set_max_velocities(

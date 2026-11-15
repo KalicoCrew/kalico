@@ -2073,11 +2073,16 @@ available if the kinematic supports it.
 
 #### SET_UNIFIED
 `SET_UNIFIED [ENABLE=<0|1>]
-[NOTCH_FREQ=<value>]`:
+[NOTCH_FREQ=<value>] [NOTCH_FREQ_X=<value>] [NOTCH_FREQ_Y=<value>]`:
 This command changes the experimental jerk-limited planner settings at
 runtime. Pending moves are flushed before changes are applied. `ENABLE`
-toggles jerk-limited emission for normal queued moves. `NOTCH_FREQ` sets the
-notch frequency in Hz; non-zero values must be at least 5 Hz.
+toggles jerk-limited emission for normal queued moves. `NOTCH_FREQ` sets one scalar notch frequency in Hz. `NOTCH_FREQ_X` and
+`NOTCH_FREQ_Y` set per-axis frequencies; they must end up either both non-zero
+or both zero, matching the config-time rule. Setting them to two *different*
+values makes each ramp a trapezoid that nulls both modes at once, on both axes
+and in every direction; setting them equal is identical to `NOTCH_FREQ`, which
+makes flipping between the two a direct A/B. Non-zero notch frequencies must be
+at least 5 Hz.
 If any parameter is rejected, none of the settings change. With
 no parameters, the command reports the current settings. See
 [Jerk_Limiting.md](Jerk_Limiting.md) and the
