@@ -169,6 +169,15 @@ def test_emitted_notch_response():
     print("  emitted spectrum has an exact zero at f_n OK")
 
 
+def test_notch_loss_reasons():
+    clean = make_cons()
+    # A feasible, uncapped move reports NOTHING.
+    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, clean) == []
+    saturated = make_cons(notch=55.0, a_const=3000.0)
+    assert pathplan.notch_loss_reasons(0.0, 100.0, 0.0, saturated) == []
+    print("  notch loss diagnostics report emitted-profile limits OK")
+
+
 def test_notch_saturated_trapezoid_reaches_requested_peak():
     cons = make_cons(notch=55.0, a_const=3000.0)
     segs = render(0.0, 200.0, 0.0, 30.0, cons)
@@ -177,6 +186,7 @@ def test_notch_saturated_trapezoid_reaches_requested_peak():
     peak_a = max(max(abs(s[2]), abs(s[2] + s[3] * s[0])) for s in segs)
     assert peak_v >= 199.0, peak_v
     assert peak_a <= cons.a_const + 1e-6, (peak_a, cons.a_const)
+    assert pathplan.notch_loss_reasons(0.0, 200.0, 0.0, cons) == []
     print("  saturated notch reaches requested peak while capping accel OK")
 
 
@@ -288,6 +298,21 @@ def test_short_chain_degrades_cleanly():
         assert segs, ("empty on short chain", i)
         check_segs(segs, move_d[i], vs[i], ve[i], "short_chain[%d]" % i)
     print("  sub-runway chain emits valid profiles (degrades, no hang) OK")
+
+
+def test_loss_reasons_are_declared():
+    # The toolhead stops calling the diagnostic once it has logged
+    # every reason in pathplan.LOSS_REASONS, so any reason the function can
+    # actually emit MUST be listed there or it would be silently unreportable.
+    cases = [
+        (0.0, 100.0, 0.0, 20.0, make_cons()),
+        (0.0, 100.0, 0.0, 20.0, make_cons(notch=55.0, a_const=3000.0)),
+        (0.0, 200.0, 0.0, 0.5, make_cons()),
+    ]
+    for vs, vc, ve, move_d, cons in cases:
+        for reason in pathplan.notch_loss_reasons(vs, vc, ve, cons):
+            assert reason in pathplan.LOSS_REASONS, reason
+    print("  every emitted loss reason is declared in LOSS_REASONS OK")
 
 
 def test_low_accel_renders_one_plateau_segment():
@@ -403,6 +428,8 @@ def main():
     test_lookahead_exact_across_saturation()
     test_reach_is_monotone_and_finite()
     test_emitted_notch_response()
+    test_notch_loss_reasons()
+    test_loss_reasons_are_declared()
     test_low_accel_renders_one_plateau_segment()
     test_reach_runway_floor_short_circuit()
     test_infeasible_notch_fails_closed()

@@ -20,11 +20,12 @@ import pathplan  # noqa: E402
 ACCEL = 20000.0
 
 
-def cons_for(f1=55.0, a_const=ACCEL, v_ceil=1e9):
+def cons_for(f1=55.0, f2=None, a_const=ACCEL, v_ceil=1e9):
     return pathplan.Constraints(
         a_const=a_const,
         v_ceil=v_ceil,
         notch_freq=f1,
+        notch_freq2=f2,
     )
 
 
@@ -77,51 +78,54 @@ def check_invariants(segs, vs, ve, move_d):
 
 
 def test_ramp_nulls_exactly():
-    # Unsaturated ramps: the zero is exact up to float rounding, at ANY speed
-    # change.
-    for f1 in (55.0, 48.0):
-        cons = cons_for(f1)
+    # Unsaturated single and two-zero ramps: the zeros are exact up to float
+    # rounding, at ANY speed change.
+    for f1, f2 in ((55.0, None), (55.0, 65.0), (48.0, 56.0)):
+        cons = cons_for(f1, f2)
         for v0, v1 in ((0.0, 20.0), (0.0, 100.0), (5.0, 10.0), (100.0, 300.0)):
             segs = pathplan._cubic_ramp_up(v0, v1, cons)
             assert len(segs) <= 3
-            r = residual(segs, f1)
-            assert r < 1e-12, (f1, v0, v1, r)
+            for f in {f1, f2 or f1}:
+                r = residual(segs, f)
+                assert r < 1e-12, (f1, f2, v0, v1, f, r)
 
 
 def test_ramp_matches_planning_model():
     # The lookahead plans with notch_dist; the cubic render IS that model.
-    for f1 in (55.0, 65.0):
-        cons = cons_for(f1, a_const=5000.0)
+    for f1, f2 in ((55.0, None), (55.0, 65.0)):
+        cons = cons_for(f1, f2, a_const=5000.0)
         for v0, v1 in ((0.0, 20.0), (0.0, 400.0), (50.0, 60.0)):
             segs = pathplan._cubic_ramp_up(v0, v1, cons)
             d = math.fsum(s[4] for s in segs)
-            ref = pathplan.notch_dist(v0, v1, 5000.0, f1)
+            ref = pathplan.notch_dist(v0, v1, 5000.0, f1, f2)
             assert abs(d - ref) < 1e-9 * max(1.0, ref), (v0, v1, d, ref)
 
 
 def test_saturated_keeps_rise_zero():
-    # Past saturation the plateau widens; the rise edges keep the zero.
-    cons = cons_for(55.0, a_const=3000.0)
+    # Past saturation only the rise-edge zero is placeable (documented loss).
+    cons = cons_for(55.0, 65.0, a_const=3000.0)
     segs = pathplan._cubic_ramp_up(0.0, 400.0, cons)
-    assert residual(segs, 55.0) < 1e-12
+    f_rise = pathplan.sat_rise_freq(400.0, 3000.0, 55.0, 65.0)
+    assert residual(segs, f_rise) < 1e-12
     peak = max(abs(s[2]) for s in segs)
     assert peak <= 3000.0 * (1 + 1e-12)
 
 
 def test_decel_is_time_reverse():
-    cons = cons_for(55.0)
+    cons = cons_for(55.0, 65.0)
     up = pathplan._cubic_ramp_up(10.0, 200.0, cons)
     dn = pathplan._cubic_reverse(up)
     check_invariants(dn, 200.0, 10.0, math.fsum(s[4] for s in up))
-    assert residual(dn, 55.0) < 1e-12
+    assert residual(dn, 55.0) < 1e-12 and residual(dn, 65.0) < 1e-12
 
 
 def test_random_profiles():
     rng = random.Random(1234)
     for _ in range(3000):
         f1 = rng.uniform(30.0, 90.0)
+        f2 = rng.choice([None, f1 * rng.uniform(1.0, 1.5)])
         a = rng.uniform(2000.0, 40000.0)
-        cons = cons_for(f1, a_const=a, v_ceil=rng.uniform(50.0, 700.0))
+        cons = cons_for(f1, f2, a_const=a, v_ceil=rng.uniform(50.0, 700.0))
         vs = rng.uniform(0.0, cons.v_ceil * 0.5)
         ve = rng.uniform(0.0, cons.v_ceil * 0.5)
         vc = rng.uniform(max(vs, ve), cons.v_ceil)
@@ -136,11 +140,10 @@ def test_random_profiles():
 
 def test_segment_count():
     # The point of the exercise for a slow host: trapq traffic per ramp. An
-    # unsaturated ramp has no hold, so its triangle is two segments; a
-    # saturated one adds the max-accel plateau.
+    # unsaturated two-zero ramp is rise / hold / fall; a single notch has no
+    # hold, so its triangle is two segments.
+    assert len(pathplan._cubic_ramp_up(0.0, 200.0, cons_for(55.0, 65.0))) == 3
     assert len(pathplan._cubic_ramp_up(0.0, 200.0, cons_for(55.0))) == 2
-    sat = cons_for(55.0, a_const=3000.0)
-    assert len(pathplan._cubic_ramp_up(0.0, 400.0, sat)) == 3
 
 
 if __name__ == "__main__":

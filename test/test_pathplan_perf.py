@@ -72,10 +72,29 @@ def bench_emit_short(iterations=400):
     return time.perf_counter() - start, seg_count
 
 
+def bench_loss_reasons(iterations=400):
+    # The diagnostic the toolhead calls alongside every rendered profile. It
+    # must stay CHEAPER than the emit it annotates.
+    cons = _cons()
+    start = time.perf_counter()
+    count = 0
+    for i in range(iterations):
+        vs = float((i * 7) % 40)
+        ve = float((i * 11) % 40)
+        vc = max(vs, ve) + 20.0 + float(i % 120)
+        move_d = 8.0 + float(i % 80) * 0.35
+        reasons = pathplan.notch_loss_reasons(vs, vc, ve, cons)
+        for r in reasons:
+            assert r in pathplan.LOSS_REASONS, r
+        count += len(reasons)
+    return time.perf_counter() - start, count
+
+
 def main():
     reach_t, reach_acc = bench_reach()
     emit_t, seg_count, dist_sum = bench_emit()
     short_t, short_segs = bench_emit_short()
+    loss_t, loss_count = bench_loss_reasons()
     assert math.isfinite(reach_acc)
     assert seg_count > 0
     assert dist_sum > 0.0
@@ -86,11 +105,17 @@ def main():
         "short: %.4fs for 400 sub-mm profiles (%d segments)"
         % (short_t, short_segs)
     )
+    print(
+        "loss:  %.4fs for 400 diagnostics (%d reasons)" % (loss_t, loss_count)
+    )
     # Loose guardrail: this is a regression tripwire, not a machine-specific
     # microbenchmark target.
     assert reach_t < 2.0, ("reach benchmark too slow", reach_t)
     assert emit_t < 5.0, ("emit benchmark too slow", emit_t)
     assert short_t < 8.0, ("short-move benchmark too slow", short_t)
+    # Relative guardrail: the diagnostic must never again cost more than the
+    # emit it describes.
+    assert loss_t < emit_t, ("loss diagnostic slower than emit", loss_t, emit_t)
     print("ALL PASS")
 
 
