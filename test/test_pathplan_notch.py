@@ -420,6 +420,36 @@ def test_render_refuses_an_unvalidated_infeasible_profile():
     print("  rendering an unvalidated infeasible profile fails loudly OK")
 
 
+def test_split_never_empties_a_bucket():
+    # _process_lookahead asserts that a validated span never splits into an
+    # empty per-move bucket, because an empty bucket would emit a move with no
+    # motion and desynchronise print_time from the trapq. Assert the property
+    # directly, across uneven splits and a span whose ramp is far shorter than
+    # the run, which is where a bucket could plausibly come up empty.
+    cons = make_cons(notch=55.0)
+    for vs, vc, ve, lengths in (
+        (0.0, 200.0, 0.0, [5.0, 5.0, 5.0, 5.0]),
+        (50.0, 300.0, 50.0, [0.2, 0.2, 30.0, 0.2, 0.2]),
+        (100.0, 100.0, 100.0, [1.0, 0.05, 1.0]),
+        (11.0, 220.0, 11.0, [0.2] * 40),
+    ):
+        move_d = math.fsum(lengths)
+        pathplan.validate_cubic_profile(vs, vc, ve, move_d, cons)
+        segs = pathplan.render_cubic_profile(vs, vc, ve, move_d, cons)
+        buckets = pathplan.split_cubic_segments(segs, lengths)
+        assert len(buckets) == len(lengths)
+        for i, (bucket, want_d) in enumerate(zip(buckets, lengths)):
+            assert bucket, ("empty bucket", i, lengths)
+            got_d = math.fsum(s[4] for s in bucket)
+            assert abs(got_d - want_d) < 1e-9, (
+                "bucket distance drifted",
+                i,
+                got_d,
+                want_d,
+            )
+    print("  split_cubic_segments never produces an empty bucket OK")
+
+
 def main():
     test_zero_is_parked()
     test_apeak_linear_in_dv()
@@ -441,6 +471,7 @@ def main():
     test_chain_no_sharp_fallback()
     test_short_chain_degrades_cleanly()
     test_render_refuses_an_unvalidated_infeasible_profile()
+    test_split_never_empties_a_bucket()
     print("ALL PASS")
 
 

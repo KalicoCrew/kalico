@@ -231,7 +231,9 @@ def run_checks():
     # 0.5*(v0+v1)*(1/f_lo + 1/f_hi) = (v0+v1)/f_eq, the single-notch formula.
     check(failures, "f_eq is the harmonic mean", f(o, 1, 0), f_eq(55.0, 60.0))
 
-    print("== the pair is heading-independent ==")
+    print(
+        "== the pair is heading-independent (this is what lets spans link) =="
+    )
     o = mk(60.0, 55.0)
     vals = set()
     bad = None
@@ -247,7 +249,7 @@ def run_checks():
     print("== f_x == f_y degenerates to the single-zero triangle ==")
     o = mk(55.0, 55.0)
     check_true(failures, "equal pair", pair(o, s2, s2) == (55.0, 55.0))
-    # Exactly f, not 2/(1/f+1/f).
+    # Exactly f, not 2/(1/f+1/f): span linking compares this between moves.
     check_true(failures, "f_eq is exactly f", f(o, s2, s2) == 55.0)
     return failures
 

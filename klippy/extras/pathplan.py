@@ -603,6 +603,66 @@ def render_cubic_profile(vs, vc, ve, move_d, cons):
     return out
 
 
+def _cubic_time_at(seg, d1):
+    # Time at which segment `seg` has covered distance d1. Distance is
+    # monotonic (speed never goes negative inside a ramp), so safeguarded
+    # Newton on a bracket always converges.
+    t, sv, a0, j, dist = seg
+    lo, hi = 0.0, t
+    x = t * d1 / dist if dist > 0.0 else 0.0
+    for _ in range(60):
+        f = ((j / 6.0 * x + 0.5 * a0) * x + sv) * x - d1
+        if f > 0.0:
+            hi = x
+        else:
+            lo = x
+        v = (0.5 * j * x + a0) * x + sv
+        nx = x - f / v if v > 0.0 else 0.5 * (lo + hi)
+        if not (lo < nx < hi):
+            nx = 0.5 * (lo + hi)
+        if abs(nx - x) <= 1e-15 * max(t, 1e-9):
+            x = nx
+            break
+        x = nx
+    return min(max(x, 0.0), t)
+
+
+def split_cubic_segments(segs, lengths):
+    """Cut one profile into per-move buckets at cumulative `lengths`.
+
+    A ramp that spans several moves is rendered ONCE, over the run's total
+    distance, so the accel pulse keeps its shape (and therefore its zeros)
+    across move boundaries. The toolhead still needs the segments bucketed per
+    move, because each move carries its own direction and extra-axis ratios.
+    A segment straddling a boundary is cut at the time it covers the
+    remaining distance, so every bucket sums to exactly that move's length.
+    """
+    out = [[] for _ in lengths]
+    if not lengths:
+        return out
+    i = 0
+    remaining = lengths[0]
+    for seg in segs:
+        d = seg[4]
+        while d > 0.0:
+            if d <= remaining + 1e-12 or i >= len(out) - 1:
+                out[i].append(seg)
+                remaining -= d
+                d = 0.0
+            else:
+                t, sv, a0, j, dist = seg
+                t1 = _cubic_time_at(seg, remaining)
+                out[i].append((t1, sv, a0, j, remaining))
+                v1 = (0.5 * j * t1 + a0) * t1 + sv
+                seg = (t - t1, v1, a0 + j * t1, j, dist - remaining)
+                d = seg[4]
+                remaining = 0.0
+            if remaining <= 1e-12 and i < len(out) - 1:
+                i += 1
+                remaining = lengths[i]
+    return out
+
+
 # Every reason notch_loss_reasons() can ever return. The toolhead uses this to
 # stop calling the diagnostic once it has reported all of them.
 LOSS_REASONS = frozenset(("second_notch_saturated",))
@@ -631,7 +691,8 @@ def notch_loss_reasons(vs, vc, ve, cons):
             # and only one zero is ours to place (sat_rise_freq). Report it
             # only when a mode is genuinely left excited -- the forced A/dv
             # zero sometimes covers the other mode anyway. Fixable by raising
-            # max_accel.
+            # max_accel, or by spanning the ramp across more moves so each dv
+            # is smaller.
             _f, worst = _sat_rise(
                 dv, cons.a_const, cons.notch_lo, cons.notch_hi
             )

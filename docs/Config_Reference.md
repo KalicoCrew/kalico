@@ -278,6 +278,32 @@ max_accel:
 #   modes it helps more, reporting the loss. Setting the two equal is identical
 #   to setting unified_notch_freq. The default is to use unified_notch_freq for
 #   both axes.
+#unified_span_ramps: True
+#   Allow one jerk-limited ramp to span a run of consecutive near-collinear
+#   moves instead of starting and ending at zero acceleration inside every move.
+#   A move too short to ramp at unified_notch_freq cannot change speed at all,
+#   which pins a chain of L-mm segments to about unified_notch_freq * L mm/s.
+#   Spanning fixes that WITHOUT moving the spectral zero: the ramp keeps its
+#   shape and its rise time, so it still
+#   cancels unified_notch_freq exactly. The runway becomes the run's length
+#   rather than one segment's, which lifts a 0.2 mm segment chain at 55 Hz from
+#   about 11 mm/s to the requested feedrate. A run breaks at any direction
+#   change beyond unified_span_max_angle, at a notch-target change, and wherever
+#   a corner or feedrate limit would be exceeded. Acceleration limits may vary
+#   inside a run; the emitter uses the lowest limit of all member moves.
+#   Boundary speeds are additionally capped by the stock constant-acceleration
+#   reach, so every move stays individually feasible at max_accel. The default
+#   is True.
+#unified_span_max_angle: 2.0
+#   Largest heading change in degrees that one ramp may span. The ramp shapes
+#   the scalar path speed, so the axes see it scaled by the move direction;
+#   turning part-way through a ramp leaves the turning axis a truncated pulse,
+#   which has no null at the mode. The residual it leaves there is about
+#   2 * sin(angle / 2) * 0.159 of the turning axis's pulse: 0.14% at 0.5
+#   degrees, 0.55% at 2, 1.4% at 5 and 5.0% at 18. A run that does not turn
+#   keeps an exact null, because the emitted ramp is the ideal pulse itself
+#   (see the Emission section of docs/Jerk_Limiting.md). Raise this only to
+#   span coarser geometry, and expect ringing in return. The default is 2.0.
 ```
 
 ### [stepper]

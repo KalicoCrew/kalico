@@ -4,7 +4,7 @@
 # sends that pulse itself, as at most three trapq_append_jerk segments per
 # ramp. These tests pin down that the rendered
 # profile is the designed one: exact zeros, the planning model's own duration
-# and distance, and continuity.
+# and distance, continuity, and correct splitting across a spanned run.
 #
 # Run: klippy-env/bin/python test/test_pathplan_cubic.py
 import cmath
@@ -136,6 +136,31 @@ def test_random_profiles():
             continue
         segs = pathplan.render_cubic_profile(vs, vc, ve, move_d, cons)
         check_invariants(segs, vs, ve, move_d)
+
+
+def test_split_preserves_profile():
+    rng = random.Random(99)
+    cons = cons_for(55.0, 65.0)
+    segs = pathplan.render_cubic_profile(0.0, 250.0, 0.0, 30.0, cons)
+    for _ in range(200):
+        n = rng.randint(1, 8)
+        cuts = sorted(rng.uniform(0.0, 30.0) for _ in range(n - 1))
+        edges = [0.0] + cuts + [30.0]
+        lengths = [b - a for a, b in zip(edges, edges[1:])]
+        lengths = [d for d in lengths if d > 1e-6]
+        lengths[-1] += 30.0 - math.fsum(lengths)
+        buckets = pathplan.split_cubic_segments(segs, lengths)
+        flat = [s for b in buckets for s in b]
+        for b, d in zip(buckets, lengths):
+            assert abs(math.fsum(s[4] for s in b) - d) < 1e-9
+        check_invariants(flat, 0.0, 0.0, 30.0)
+        # Splitting must not change total time or the spectrum.
+        assert (
+            abs(math.fsum(s[0] for s in flat) - math.fsum(s[0] for s in segs))
+            < 1e-12
+        )
+        for f in (55.0, 65.0):
+            assert abs(seg_spectrum(flat, f) - seg_spectrum(segs, f)) < 1e-9
 
 
 def test_segment_count():

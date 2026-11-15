@@ -2,6 +2,7 @@
 #
 # Run: klippy-env/bin/python test/test_toolhead_unified.py
 import importlib
+import math
 import os
 import sys
 import types
@@ -64,6 +65,8 @@ def make_toolhead_without_unified_fields():
     )
     th._pathplan_cons = toolhead.ToolHead._pathplan_cons.__get__(th, object)
     th._move_reach_v2 = toolhead.ToolHead._move_reach_v2.__get__(th, object)
+    th._span_reach_v2 = toolhead.ToolHead._span_reach_v2.__get__(th, object)
+    th._span_link_ok = toolhead.ToolHead._span_link_ok.__get__(th, object)
     return th
 
 
@@ -110,6 +113,9 @@ def make_unified_toolhead(**over):
     th.unified_notch_freq = 55.0
     th.unified_notch_freq_x = 55.0
     th.unified_notch_freq_y = 55.0
+    th.unified_span_ramps = True
+    th.unified_span_max_angle = toolhead.SPAN_MAX_ANGLE
+    th.unified_span_min_cos = math.cos(math.radians(th.unified_span_max_angle))
     th.extra_axes = []
     th.printer = FakePrinter()
     for k, v in over.items():
@@ -209,7 +215,7 @@ def test_set_unified_rearms_profile_warnings():
     th._unified_warned = set(toolhead.pathplan.LOSS_REASONS)
     th._unified_all_warned = True
     gcmd = FakeGCmd()
-    vals = {"NOTCH_FREQ": 60.0}
+    vals = {"SPAN_MAX_ANGLE": 1.5}
     gcmd.get_int = lambda n, d, **kw: d
     gcmd.get_float = lambda n, d, **kw: vals.get(n, d)
     gcmd.respond_info = lambda msg: None
@@ -274,8 +280,70 @@ def test_no_velocity_step_at_move_boundaries():
     print("  notch plan leaves no velocity step at move boundaries OK")
 
 
+def test_reset_velocity_limit_resyncs_derived_span_angle():
+    # unified_span_min_cos is DERIVED from unified_span_max_angle. Restoring
+    # the angle without re-deriving it leaves RESET_VELOCITY_LIMIT reporting
+    # the config value while the planner keeps honouring the live one -- it
+    # would report 2 degrees and go on accepting 18 degree turns.
+    th = make_unified_toolhead(min_cruise_ratio=0.5, square_corner_velocity=5.0)
+    th.kin = types.SimpleNamespace()
+    th.flush_step_generation = lambda: None
+    th.orig_cfg = {
+        "max_velocity": th.max_velocity,
+        "max_accel": th.max_accel,
+        "square_corner_velocity": th.square_corner_velocity,
+        "min_cruise_ratio": th.min_cruise_ratio,
+    }
+    for name in toolhead.ToolHead._UNIFIED_FIELDS:
+        th.orig_cfg[name] = getattr(th, name)
+
+    # Widen the angle live, the way SET_UNIFIED SPAN_MAX_ANGLE=18 would.
+    th.unified_span_max_angle = 18.0
+    th._sync_span_cos()
+    prev = toolhead.Move(th, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], 100.0)
+    ang = math.radians(18.0) * 0.5  # 9 degrees: inside 18, outside 2
+    move = toolhead.Move(
+        th,
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0 + math.cos(ang), math.sin(ang), 0.0, 0.0],
+        100.0,
+    )
+    cos_theta = -(math.cos(ang))
+    assert th._span_link_ok(prev, move, cos_theta), "18 deg should span at 18"
+
+    gcmd = FakeGCmd()
+    gcmd.respond_info = lambda msg: None
+    saved_danger = toolhead.get_danger_options
+    toolhead.get_danger_options = lambda: types.SimpleNamespace(
+        log_velocity_limit_changes=False
+    )
+    # The G-code handlers live on ToolHeadCommandHelper; build one around th.
+    helper = object.__new__(toolhead.ToolHeadCommandHelper)
+    helper.toolhead = th
+    helper.printer = getattr(th, "printer", None)
+    try:
+        helper.cmd_RESET_VELOCITY_LIMIT(gcmd)
+    finally:
+        toolhead.get_danger_options = saved_danger
+
+    assert th.unified_span_max_angle == toolhead.SPAN_MAX_ANGLE, (
+        th.unified_span_max_angle,
+    )
+    want = math.cos(math.radians(toolhead.SPAN_MAX_ANGLE))
+    assert abs(th.unified_span_min_cos - want) < 1e-12, (
+        "derived cos went stale after reset",
+        th.unified_span_min_cos,
+        want,
+    )
+    assert not th._span_link_ok(prev, move, cos_theta), (
+        "planner still accepts a 9 deg turn after resetting to"
+        " %.1f deg" % (toolhead.SPAN_MAX_ANGLE,)
+    )
+    print("  RESET_VELOCITY_LIMIT re-derives the span angle OK")
+
+
 def test_infeasible_batch_fails_before_emission():
-    th = make_unified_toolhead()
+    th = make_unified_toolhead(unified_span_ramps=False)
     first = toolhead.Move(
         th,
         [0.0, 0.0, 0.0, 0.0],
@@ -341,6 +409,7 @@ def main():
     test_set_unified_rearms_profile_warnings()
     test_reach_cache_tracks_start_v2()
     test_no_velocity_step_at_move_boundaries()
+    test_reset_velocity_limit_resyncs_derived_span_angle()
     test_infeasible_batch_fails_before_emission()
     print("ALL PASS")
 
