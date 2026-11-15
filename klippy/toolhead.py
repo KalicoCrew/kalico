@@ -852,6 +852,9 @@ class ToolHead:
         self.lookahead.reset()
 
     def _handle_connect(self):
+        # kin exists by now, so the Z/XY actuator coupling can be resolved.
+        self._z_couples_xy_cache = None
+        self._z_couples_xy()
         self._check_unified_extra_axis_support(self.printer.command_error)
 
     def get_kinematics(self):
@@ -899,7 +902,37 @@ class ToolHead:
 
     def _move_notch_freq(self, move):
         # Notch frequency (Hz) for one move; 0.0 = off.
-        return self.unified_notch_freq
+        #
+        # Memoized on the move: this is called from _uses_unified_reach, which
+        # runs on every lookahead reach probe (several per move per flush pass).
+        # Safe because the notch config is fixed at startup.
+        f = getattr(move, "_unified_notch_freq", None)
+        if f is not None:
+            return f
+        f = self.unified_notch_freq
+        if f and abs(move.axes_r[0]) + abs(move.axes_r[1]) <= 1e-12:
+            # No XY motion (Z-only or extrude-only). Whether that means
+            # "nothing to cancel" depends on the kinematics.
+            #
+            # When Z has its own actuator (cartesian, CoreXY), the ramp
+            # shapes the scalar path speed and the axes see a_x = rx*a(t),
+            # a_y = ry*a(t) with rx = ry = 0 -- identically zero for ANY
+            # a(t). No ramp shape changes the XY excitation, so notching
+            # buys no quiet while costing the full 2/f_n ramp (36 ms at
+            # 55 Hz) and its (v0+v1)/f_n of runway, which a Z hop does not
+            # have. That is why notching a decoupled Z lift is wasteful.
+            #
+            # When Z shares actuators with X or Y -- CoreXZ and hybrid
+            # CoreXZ (A = x + z, B = x - z), deltesian, delta, rotary
+            # delta, cable winch -- a Z-only move accelerates the very
+            # belts whose compliance the notch is aimed at. Commanded X
+            # stays zero only to first order: belt-stiffness or motor-lag
+            # asymmetry leaves a residual common-mode term that couples
+            # straight into the XY mode. Keep shaping there.
+            if not self._z_couples_xy():
+                f = 0.0
+        move._unified_notch_freq = f
+        return f
 
     def _pathplan_cons(self, move):
         # Build the pathplan.Constraints for one move. move.accel is the
@@ -918,6 +951,34 @@ class ToolHead:
             v_ceil=v_ceil,
             notch_freq=notch,
         )
+
+    def _z_couples_xy(self):
+        # Does a Z-only cartesian move drive the same actuators as X or Y?
+        # True for CoreXZ, hybrid CoreXZ, deltesian, delta, rotary delta and
+        # cable winch; False for cartesian, CoreXY and polar, where Z has a
+        # dedicated stepper. Resolved from the itersolve
+        # active-axis flags at connect time, so it needs no per-kinematics
+        # table and no config. Unknown kinematics answer True: keeping the
+        # shaping is the conservative direction, since the cost is throughput
+        # on Z moves rather than ringing.
+        coupled = getattr(self, "_z_couples_xy_cache", None)
+        if coupled is not None:
+            return coupled
+        coupled = True
+        rails = getattr(getattr(self, "kin", None), "rails", None)
+        if rails:
+            coupled = False
+            for rail in rails:
+                for s in rail.get_steppers():
+                    if s.is_active_axis("z") and (
+                        s.is_active_axis("x") or s.is_active_axis("y")
+                    ):
+                        coupled = True
+                        break
+                if coupled:
+                    break
+        self._z_couples_xy_cache = coupled
+        return coupled
 
     def _uses_unified_reach(self, move):
         if (
