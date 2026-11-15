@@ -355,6 +355,8 @@ class ToolHead:
         self.orig_cfg["max_accel"] = self.max_accel
         self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
+        self.orig_cfg["unified_emit"] = self.unified_emit
+        self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -905,7 +907,8 @@ class ToolHead:
         #
         # Memoized on the move: this is called from _uses_unified_reach, which
         # runs on every lookahead reach probe (several per move per flush pass).
-        # Safe because the notch config is fixed at startup.
+        # Safe because the notch config can only change via SET_UNIFIED, which
+        # calls flush_step_generation() first and so retires every queued move.
         f = getattr(move, "_unified_notch_freq", None)
         if f is not None:
             return f
@@ -1014,6 +1017,18 @@ class ToolHead:
         move._unified_reach_cache = (key, res)
         return res
 
+    _UNIFIED_FIELDS = (
+        "unified_emit",
+        "unified_notch_freq",
+    )
+
+    def _unified_state(self):
+        return tuple(getattr(self, n) for n in self._UNIFIED_FIELDS)
+
+    def _restore_unified_state(self, state):
+        for name, value in zip(self._UNIFIED_FIELDS, state):
+            setattr(self, name, value)
+
     def _check_unified_extra_axis_support(self, error_factory=None):
         if not self.unified_emit:
             return
@@ -1034,6 +1049,58 @@ class ToolHead:
             return
         if not self._notch_on():
             raise error_factory("unified_planner requires unified_notch_freq")
+
+    cmd_SET_UNIFIED_help = (
+        "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
+        "NOTCH_FREQ parks the jerk ramp's shaper zero on a mode frequency "
+        "(Hz, 0 = disabled). No args = report state."
+    )
+
+    def cmd_SET_UNIFIED(self, gcmd):
+        en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+        notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
+        # Flush pending moves so the change only affects moves planned after
+        # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
+        self.flush_step_generation()
+        old = self._unified_state()
+        try:
+            if en is not None:
+                self.unified_emit = bool(en)
+            self._check_notch_freq(notch, "NOTCH_FREQ", gcmd.error)
+            if notch is not None:
+                self.unified_notch_freq = notch
+            self._check_unified_settings(gcmd.error)
+            self._check_unified_extra_axis_support()
+        except:
+            self._restore_unified_state(old)
+            raise
+        gcmd.respond_info(
+            "unified_planner=%d unified_notch_freq=%.2f"
+            % (self.unified_emit, self.unified_notch_freq)
+        )
+
+    def reset_unified_settings(self):
+        # RESET_VELOCITY_LIMIT's unified half: restore the configured unified
+        # state and return its report lines.
+        #
+        # Restore under rollback: extra axes can be added after startup, so the
+        # support check can fail here even though the original config was valid.
+        # Leaving half-restored unified state behind would be worse than the
+        # error itself.
+        old_unified = self._unified_state()
+        self._restore_unified_state(
+            tuple(self.orig_cfg[n] for n in self._UNIFIED_FIELDS)
+        )
+        try:
+            self._check_unified_settings(self.printer.command_error)
+            self._check_unified_extra_axis_support()
+        except:
+            self._restore_unified_state(old_unified)
+            raise
+        return [
+            "unified_planner: %d" % self.unified_emit,
+            "unified_notch_freq: %.6f" % self.unified_notch_freq,
+        ]
 
     def set_max_velocities(
         self, max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
@@ -1079,6 +1146,11 @@ class ToolHeadCommandHelper:
             desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
+        gcode.register_command(
+            "SET_UNIFIED",
+            self.toolhead.cmd_SET_UNIFIED,
+            desc=self.toolhead.cmd_SET_UNIFIED_help,
+        )
 
     def cmd_G4(self, gcmd):
         # Dwell
@@ -1207,6 +1279,7 @@ class ToolHeadCommandHelper:
             kin.max_z_accel = orig_cfg["max_z_accel"]
             msg.append("max_z_accel: %.6f" % kin.max_z_accel)
 
+        msg.extend(self.toolhead.reset_unified_settings())
         msg.extend(
             (
                 "minimum_cruise_ratio: %.6f" % mcr,
