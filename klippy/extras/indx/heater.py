@@ -529,6 +529,11 @@ class IndxToolboardHeater:
         return sum(t * w for (t, w) in components) / w_total
 
     def handle_report_nozzle_temp(self, params):
+        self.toolboard.printer.get_reactor().register_async_callback(
+            lambda _et, p=params: self._process_report_nozzle_temp(p)
+        )
+
+    def _process_report_nozzle_temp(self, params):
         clock = self.toolboard.mcu.clock32_to_clock64(params["clock"])
         time = self.toolboard.mcu.clock_to_print_time(clock)
         nozzle_temp = params["nozzle"] / 100.0 - KELVIN_OFFSET
