@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from . import tmc
 
 ######################################################################
 # TMC uart analog mux support
@@ -282,6 +283,9 @@ class MCU_TMC_uart:
 
     def get_fields(self):
         return self.fields
+
+    def push_fields(self, field_values):
+        return tmc.push_fields(self, self.fields, field_values)
 
     def _do_get_register(self, reg_name):
         reg = self.name_to_reg[reg_name]
