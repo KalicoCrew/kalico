@@ -24,7 +24,10 @@ move_alloc(void)
 inline double
 move_get_distance(const struct move *m, double move_time)
 {
-    return (m->start_v + m->half_accel * move_time) * move_time;
+    // Cubic in time. With sixth_jerk == 0 this is bit-identical to the
+    // constant-accel form, so moves from trapq_append are unchanged.
+    return ((m->sixth_jerk * move_time + m->half_accel) * move_time
+            + m->start_v) * move_time;
 }
 
 // Return the XYZ coordinates given a time in a move
@@ -164,6 +167,29 @@ trapq_append(struct trapq *tq, double print_time
     }
 }
 
+// Add one constant-jerk segment: acceleration varies linearly from `accel`
+// at the start of the segment, so a jerk-limited ramp is represented exactly
+// instead of as a staircase of constant-accel slices.
+void __visible
+trapq_append_jerk(struct trapq *tq, double print_time, double move_t
+                  , double start_pos_x, double start_pos_y, double start_pos_z
+                  , double axes_r_x, double axes_r_y, double axes_r_z
+                  , double start_v, double accel, double jerk)
+{
+    if (!move_t)
+        return;
+    struct move *m = move_alloc();
+    m->print_time = print_time;
+    m->move_t = move_t;
+    m->start_v = start_v;
+    m->half_accel = .5 * accel;
+    m->sixth_jerk = jerk / 6.;
+    m->start_pos = (struct coord) {
+        .x=start_pos_x, .y=start_pos_y, .z=start_pos_z };
+    m->axes_r = (struct coord) { .x=axes_r_x, .y=axes_r_y, .z=axes_r_z };
+    trapq_add_move(tq, m);
+}
+
 // Expire any moves older than `print_time` from the trapezoid velocity queue
 void __visible
 trapq_finalize_moves(struct trapq *tq, double print_time
@@ -181,7 +207,7 @@ trapq_finalize_moves(struct trapq *tq, double print_time
         if (m->print_time + m->move_t > print_time)
             break;
         list_del(&m->node);
-        if (m->start_v || m->half_accel)
+        if (m->start_v || m->half_accel || m->sixth_jerk)
             list_add_head(&m->node, &tq->history);
         else
             free(m);
@@ -250,6 +276,7 @@ trapq_extract_old(struct trapq *tq, struct pull_move *p, int max
         p->x_r = m->axes_r.x;
         p->y_r = m->axes_r.y;
         p->z_r = m->axes_r.z;
+        p->jerk = 6. * m->sixth_jerk;
         p++;
         res++;
     }
