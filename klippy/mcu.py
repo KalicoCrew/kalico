@@ -205,6 +205,13 @@ class MCU_trsync:
         mcu.register_config_callback(self._build_config)
         printer = mcu.get_printer()
         printer.register_event_handler("klippy:shutdown", self._shutdown)
+        if mcu.is_non_critical:
+            # A reconnect with a matching config crc skips _build_config(),
+            # but the old serialqueue is gone - rebind to the new one
+            printer.register_event_handler(
+                f"danger:non_critical_mcu_{mcu.get_name()}:reconnected",
+                self._alloc_trdispatch_mcu,
+            )
 
     def get_mcu(self):
         return self._mcu
@@ -253,7 +260,10 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        # Create trdispatch_mcu object
+        self._alloc_trdispatch_mcu()
+
+    def _alloc_trdispatch_mcu(self):
+        mcu = self._mcu
         set_timeout_tag = mcu.lookup_command(
             "trsync_set_timeout oid=%c clock=%u"
         ).get_command_tag()
@@ -264,8 +274,8 @@ class MCU_trsync:
         )
         state_tag = state_cmd.get_command_tag()
         ffi_main, ffi_lib = chelper.get_ffi()
-        # Not ffi.gc() - lifetime is managed explicitly.  _build_config() runs
-        # again when a non-critical mcu reconnects; free the previous object
+        # Not ffi.gc() - lifetime is managed explicitly.  This runs again
+        # when a non-critical mcu reconnects; free the previous object
         # first so it is unlinked from td->tdm_list.  Any object still attached
         # at teardown is released by trdispatch_free().
         if self._trdispatch_mcu is not None:
@@ -390,6 +400,13 @@ class TriggerDispatch:
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
     def start(self, print_time):
+        for trsync in self._trsyncs:
+            mcu = trsync.get_mcu()
+            if mcu.non_critical_disconnected:
+                raise mcu.get_printer().command_error(
+                    f"Cannot start homing on disconnected MCU "
+                    f"'{mcu.get_name()}'"
+                )
         reactor = self._mcu.get_printer().get_reactor()
         self._trigger_completion = reactor.completion()
         expire_timeout = get_danger_options().multi_mcu_trsync_timeout
