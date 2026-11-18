@@ -30,7 +30,9 @@ class ControlMPC:
         self.last_temp_time = 0.0
 
         self.printer = heater.printer
+        self.reactor = self.printer.get_reactor()
         self.toolhead = None
+        self.extrude_speed = 0.0
 
         if not register:
             return
@@ -165,6 +167,23 @@ class ControlMPC:
             * self.const_filament_heat_capacity  # J/g/K
         )
 
+    # Extruder speed over the period after read_time. This reads the step
+    # history, so it must run on the reactor thread.
+    def _update_extrude_speed(self, read_time, dt):
+        if self.toolhead is None:
+            self.toolhead = self.printer.lookup_object("toolhead")
+        extruder = self.toolhead.get_extruder()
+        if (
+            not hasattr(extruder, "find_past_position")
+            or extruder.get_heater() != self.heater
+        ):
+            self.extrude_speed = 0.0
+            return
+        pos = extruder.find_past_position(read_time)
+        pos_next = extruder.find_past_position(read_time + dt)
+        pos_moved = max(-self.const_maximum_retract, pos_next - pos)
+        self.extrude_speed = pos_moved / dt
+
     # Control interface
 
     def temperature_update(self, read_time, temp, target_temp):
@@ -176,27 +195,17 @@ class ControlMPC:
         if self.last_temp_time == 0.0 or dt < 0.0 or dt > 1.0:
             dt = 0.1
 
-        # Extruder position
+        # Extruder speed. This runs on the serial thread, so use the speed
+        # looked up on the reactor thread after the previous sample.
         extrude_speed_prev = 0.0
         extrude_speed_next = 0.0
         if target_temp != 0.0:
-            if self.toolhead is None:
-                self.toolhead = self.printer.lookup_object("toolhead")
-            if self.toolhead is not None:
-                extruder = self.toolhead.get_extruder()
-                if (
-                    hasattr(extruder, "find_past_position")
-                    and extruder.get_heater() == self.heater
-                ):
-                    pos = extruder.find_past_position(read_time)
-
-                    pos_prev = extruder.find_past_position(read_time - dt)
-                    pos_moved = max(-self.const_maximum_retract, pos - pos_prev)
-                    extrude_speed_prev = pos_moved / dt
-
-                    pos_next = extruder.find_past_position(read_time + dt)
-                    pos_move = max(-self.const_maximum_retract, pos_next - pos)
-                    extrude_speed_next = pos_move / dt
+            extrude_speed_prev = extrude_speed_next = self.extrude_speed
+            self.reactor.register_async_callback(
+                lambda e: self._update_extrude_speed(read_time, dt)
+            )
+        else:
+            self.extrude_speed = 0.0
 
         # Modulate ambient transfer coefficient with fan speed
         ambient_transfer = self.const_ambient_transfer
