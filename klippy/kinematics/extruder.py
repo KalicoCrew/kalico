@@ -23,9 +23,8 @@ class ExtruderStepper:
             above=0.0,
             maxval=get_danger_options().override_pressure_advance_smooth_time_max,
         )
-        self.per_move_pressure_advance = config.getboolean(
-            "per_move_pressure_advance", False
-        )
+        config.getboolean("per_move_pressure_advance", False)
+        config.deprecate("per_move_pressure_advance")
         # Setup stepper
         self.stepper = stepper.PrinterStepper(config)
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -369,13 +368,9 @@ class PrinterExtruder:
         accel = move.accel * axis_r
         start_v = move.start_v * axis_r
         cruise_v = move.cruise_v * axis_r
-        pressure_advance = 0.0
-        use_pa_from_trapq = 0.0
-        if self.extruder_stepper:
-            if self.extruder_stepper.per_move_pressure_advance:
-                use_pa_from_trapq = 1.0
-            if axis_r > 0.0 and (move.axes_d[0] or move.axes_d[1]):
-                pressure_advance = self.extruder_stepper.pressure_advance
+        can_pressure_advance = 0.0
+        if axis_r > 0.0 and (move.axes_d[0] or move.axes_d[1]):
+            can_pressure_advance = 1.0
         # Queue movement (x is extruder movement, y is pressure advance flag)
         self.trapq_append(
             self.trapq,
@@ -387,8 +382,8 @@ class PrinterExtruder:
             0.0,
             0.0,
             1.0,
-            pressure_advance,
-            use_pa_from_trapq,
+            can_pressure_advance,
+            0.0,
             start_v,
             cruise_v,
             accel,
