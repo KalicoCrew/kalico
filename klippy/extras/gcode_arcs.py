@@ -28,6 +28,7 @@ class ArcSupport:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.mm_per_arc_segment = config.getfloat("resolution", 1.0, above=0.0)
+        self.max_deviation = config.getfloat("max_deviation", 0.05, minval=0.0)
 
         self.gcode_move = self.printer.load_object(config, "gcode_move")
         self.gcode = self.printer.lookup_object("gcode")
@@ -101,6 +102,18 @@ class ArcSupport:
             *axes,
         )
 
+    # Length alone does not bound how far a segment strays from the arc: a
+    # 5.6mm arc looping 340 degrees at resolution 3.0 became ONE 0.33mm chord
+    # carrying the whole loop's extrusion. A chord spanning angle t sits
+    # r*(1-cos(t/2)) inside the arc, so cap t to keep that within
+    # max_deviation.
+    def _deviation_segments(self, radius, angular_travel):
+        if self.max_deviation >= 2.0 * radius:
+            max_theta = math.pi
+        else:
+            max_theta = 2.0 * math.acos(1.0 - self.max_deviation / radius)
+        return math.ceil(abs(angular_travel) / max_theta)
+
     # function planArc() originates from marlin plan_arc()
     # https://github.com/MarlinFirmware/Marlin
     #
@@ -158,6 +171,10 @@ class ArcSupport:
         else:
             mm_of_travel = math.fabs(flat_mm)
         segments = max(1.0, math.floor(mm_of_travel / self.mm_per_arc_segment))
+        if self.max_deviation:
+            segments = max(
+                segments, self._deviation_segments(radius, angular_travel)
+            )
 
         # Generate coordinates
         theta_per_segment = angular_travel / segments
