@@ -179,13 +179,19 @@ class DumpTrapQ:
             return None, None
         move = data[0]
         move_time = max(0.0, min(move.move_t, print_time - move.print_time))
-        dist = (move.start_v + 0.5 * move.accel * move_time) * move_time
+        dist = (
+            (move.jerk / 6.0 * move_time + 0.5 * move.accel) * move_time
+            + move.start_v
+        ) * move_time
         pos = (
             move.start_x + move.x_r * dist,
             move.start_y + move.y_r * dist,
             move.start_z + move.z_r * dist,
         )
-        velocity = move.start_v + move.accel * move_time
+        velocity = (
+            move.start_v
+            + (move.accel + 0.5 * move.jerk * move_time) * move_time
+        )
         return pos, velocity
 
     def _process_batch(self, eventtime):
