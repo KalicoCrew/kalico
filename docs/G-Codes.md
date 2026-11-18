@@ -2422,7 +2422,7 @@ automatically upon homing.
 `Z_THERMAL_ADJUST_CALIBRATE CALIBRATION=NOZZLE HEATER=<heater>
  [COMPONENT=name] [PROBE=<probe>] [MIN_TEMP=<value>] [MAX_TEMP=<value>]
  [MEASUREMENTS=<count>] [SOAK_TIME=<seconds>]
- [Z_LIFT=<mm>] [Z_LIFT_SPEED=<mm/s>]`: Measures the
+ [Z_LIFT=<mm>] [Z_LIFT_SPEED=<mm/s>] [PLOT_TIMEOUT=<seconds>]`: Measures the
 thermal expansion of the nozzle and calculates the `temp_coeff` for the
 `[z_thermal_adjust]` section. The printer must be homed and the nozzle must be
 positioned over a clean spot on the bed where probing is possible.
@@ -2454,6 +2454,9 @@ let the nozzle and heatbreak reach thermal equilibrium. The default is 20.
 - `Z_LIFT`: Distance in mm to raise the toolhead after each probe. The default
 is 10.
 - `Z_LIFT_SPEED`: Speed in mm/s of the lift move. The default is 5.
+- `PLOT_TIMEOUT`: Seconds to wait for the results plot before skipping it.
+The default is 120. Increase it on slow hosts where the first `matplotlib`
+import takes longer.
 
 When the calculation completes the command reports the total elongation and
 temperature range measured and the resulting temperature coefficient. It also
@@ -2462,7 +2465,9 @@ saves a plot of the measurements and fitted line as
 Klipper log file, and prints a link to it (the link assumes
 [Moonraker](https://github.com/Arksine/moonraker) serves the `logs` root).
 Plotting requires `matplotlib` and a configured log file; if there is no log
-file the plot is skipped.
+file the plot is skipped. The coefficient is stored before plotting starts.
+The plot is drawn in a separate process and is skipped if it does not finish
+within `PLOT_TIMEOUT`.
 
 ### ⚠️ [z_calibration]
 
