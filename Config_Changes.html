@@ -2750,6 +2750,13 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20261111: The <code>per_move_pressure_advance</code> option in the <code>[extruder]</code> and
+<code>[extruder_stepper]</code> config sections is deprecated and has no effect.
+Pressure advance changes are always applied at the time they are
+requested. Steppers synced to an extruder with <code>[extruder_stepper]</code> now
+apply their own <code>pressure_advance</code> even when the main extruder has no
+stepper or a <code>pressure_advance</code> of 0; previously they got no pressure
+advance in that case.</p>
 <p>20261021: The temporary acceleration and velocity limits applied during
 <code>TEST_RESONANCES</code> and <code>SHAPER_CALIBRATE</code> are now derived from the actual
 test sequence instead of only the configured <code>accel_per_hz</code>. Previously an
