@@ -41,6 +41,8 @@ communication with the Kalico developers.
   reduce ringing in prints.
   - [Measuring resonances](Measuring_Resonances.md): Information on
     using adxl345 accelerometer hardware to measure resonance.
+- [Jerk limiting](Jerk_Limiting.md): Optional jerk-limited motion that
+  can park a shaper zero on a fixed resonance to reduce ringing.
 - [Pressure advance](Pressure_Advance.md): Calibrate extruder
   pressure.
 - [G-Codes](G-Codes.md): Information on commands supported by Kalico.
