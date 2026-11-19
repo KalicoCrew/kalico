@@ -2,11 +2,11 @@
 #define INTEGRATE_H
 
 typedef struct {
-    double it0, it1, it2;
+    double it0, it1, it2, it3;
 } smoother_antiderivatives;
 
 struct smoother {
-    double c0[12], c1[12], c2[12];
+    double c0[12], c1[12], c2[12], c3[12];
     double hst, t_offs;
     smoother_antiderivatives m_hst, p_hst, pm_diff;
     int n, symm;
