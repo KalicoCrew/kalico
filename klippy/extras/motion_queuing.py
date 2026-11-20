@@ -79,6 +79,10 @@ class PrinterMotionQueuing:
         ffi_main, ffi_lib = chelper.get_ffi()
         return ffi_lib.trapq_append
 
+    def lookup_trapq_append_jerk(self):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        return ffi_lib.trapq_append_jerk
+
     # C steppersync tracking
     def _lookup_steppersync(self, mcu):
         for ss_mcu, ss in self.steppersyncs:

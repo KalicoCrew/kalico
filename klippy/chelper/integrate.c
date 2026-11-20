@@ -27,15 +27,18 @@ calc_antiderivatives(const struct smoother* sm, double t)
     double it0 = (sm->c0[0] * t + sm->c0[1]) * t;
     double it1 = (sm->c1[0] * t + sm->c1[1]) * t;
     double it2 = (sm->c2[0] * t + sm->c2[1]) * t;
+    double it3 = (sm->c3[0] * t + sm->c3[1]) * t;
     for (i = 2; i < n; ++i) {
         it0 = (it0 + sm->c0[i]) * t;
         it1 = (it1 + sm->c1[i]) * t;
         it2 = (it2 + sm->c2[i]) * t;
+        it3 = (it3 + sm->c3[i]) * t;
     }
     it1 *= t;
     it2 *= t * t;
+    it3 *= t * t * t;
     return (smoother_antiderivatives) {
-        .it0 = it0, .it1 = it1, .it2 = it2 };
+        .it0 = it0, .it1 = it1, .it2 = it2, .it3 = it3 };
 }
 
 inline smoother_antiderivatives
@@ -45,7 +48,8 @@ diff_antiderivatives(const smoother_antiderivatives* ad1
     return (smoother_antiderivatives) {
         .it0 = ad2->it0 - ad1->it0,
         .it1 = ad2->it1 - ad1->it1,
-        .it2 = ad2->it2 - ad1->it2 };
+        .it2 = ad2->it2 - ad1->it2,
+        .it3 = ad2->it3 - ad1->it3 };
 }
 
 inline double
@@ -55,11 +59,14 @@ integrate_move(const struct move* m, int axis, double base, double t0
     double axis_r = m->axes_r.axis[axis - 'x'];
     double start_v = m->start_v * axis_r;
     double half_accel = m->half_accel * axis_r;
-    // Substitute the integration variable tnew = t0 - t to simplify integrals
-    double accel = 2. * half_accel;
-    base += (half_accel * t0 + start_v) * t0;
-    start_v += accel * t0;
-    return base * s->it0 - start_v * s->it1 + half_accel * s->it2;
+    double sixth_jerk = m->sixth_jerk * axis_r;
+    // Substitute the integration variable tnew = t0 - t to simplify integrals:
+    // x(t0 - tnew) = x(t0) - v(t0)*tnew + a(t0)/2*tnew^2 - j/6*tnew^3
+    base += ((sixth_jerk * t0 + half_accel) * t0 + start_v) * t0;
+    start_v += (3. * sixth_jerk * t0 + 2. * half_accel) * t0;
+    half_accel += 3. * sixth_jerk * t0;
+    return (base * s->it0 - start_v * s->it1 + half_accel * s->it2
+            - sixth_jerk * s->it3);
 }
 
 inline double
@@ -69,8 +76,11 @@ integrate_velocity(const struct move* m, int axis, double t0
     double axis_r = m->axes_r.axis[axis - 'x'];
     double start_v = m->start_v * axis_r;
     double accel = 2. * m->half_accel * axis_r;
-    start_v += accel * t0;
-    return start_v * s->it0 - accel * s->it1;
+    double half_jerk = 3. * m->sixth_jerk * axis_r;
+    // v(t0 - tnew) = v(t0) - a(t0)*tnew + j/2*tnew^2
+    start_v += (half_jerk * t0 + accel) * t0;
+    accel += 2. * half_jerk * t0;
+    return start_v * s->it0 - accel * s->it1 + half_jerk * s->it2;
 }
 
 /****************************************************************
@@ -95,6 +105,7 @@ init_smoother(int n, const double a[], double t_sm, struct smoother* sm)
         sm->c0[n-1-i] = c * coeffs[i];
         sm->c1[n-1-i] = c * coeffs[i+1];
         sm->c2[n-1-i] = c * coeffs[i+2];
+        sm->c3[n-1-i] = c * coeffs[i+3];
         inv_t_sm_n *= inv_t_sm;
     }
     sm->symm = symm;
@@ -104,6 +115,7 @@ init_smoother(int n, const double a[], double t_sm, struct smoother* sm)
         sm->c0[i] *= inv_norm;
         sm->c1[i] *= inv_norm;
         sm->c2[i] *= inv_norm;
+        sm->c3[i] *= inv_norm;
     }
     sm->p_hst = calc_antiderivatives(sm, sm->hst);
     sm->m_hst = calc_antiderivatives(sm, -sm->hst);
