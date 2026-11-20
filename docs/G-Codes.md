@@ -2071,11 +2071,24 @@ description of each parameter.
 X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
 available if the kinematic supports it.
 
+#### SET_UNIFIED
+`SET_UNIFIED [ENABLE=<0|1>]
+[NOTCH_FREQ=<value>]`:
+This command changes the experimental jerk-limited planner settings at
+runtime. Pending moves are flushed before changes are applied. `ENABLE`
+toggles jerk-limited emission for normal queued moves. `NOTCH_FREQ` sets the
+notch frequency in Hz; non-zero values must be at least 5 Hz.
+If any parameter is rejected, none of the settings change. With
+no parameters, the command reports the current settings. See
+[Jerk_Limiting.md](Jerk_Limiting.md) and the
+[printer config section](Config_Reference.md#printer) for details.
+
 ### RESET_VELOCITY_LIMIT
 `RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
 specified in the printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
-description of each parameter.
+description of each parameter. This also restores the unified planner settings
+to their configured values.
 
 #### ⚠️ SET_KINEMATICS_LIMIT
 

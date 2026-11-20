@@ -482,6 +482,7 @@ class PrinterExtruder:
         self.motion_queuing = self.printer.load_object(config, "motion_queuing")
         self.trapq = self.motion_queuing.allocate_trapq()
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
+        self.trapq_append_jerk = self.motion_queuing.lookup_trapq_append_jerk()
 
         # Setup extruder stepper
         self.extruder_steppers = []
@@ -637,6 +638,44 @@ class PrinterExtruder:
             accel,
         )
         extr_d = abs(move.axes_d[ea_index])
+        for i in range(3):
+            self.last_position[i] += extr_d * extr_r[i]
+
+    def process_move_cubic(self, print_time, move, ea_index, seg):
+        # One exact constant-jerk segment of a notched `move`, mirrored onto the
+        # extruder trapq at the same print_time so the extruder stays
+        # time-synced with the (non-trapezoidal) XY profile and pressure
+        # advance integrates the real one.
+        #
+        # Pressure advance rides in the direction ratios extr_r =
+        # copysign(r*r, axis_r) that kin_extruder reads, and last_position is a
+        # 3-vector in that same space. extr_r depends only on the MOVE's
+        # direction, so it is identical for every segment of the move; summing
+        # abs(axis_r)*seg_dist across them lands last_position exactly where
+        # process_move would have left it.
+        move_t, start_v, accel, jerk, seg_dist = seg
+        axis_r = move.axes_r[ea_index]
+        abs_axis_r = abs(axis_r)
+        extr_pos = self.last_position
+        if move.is_kinematic_move:
+            extr_r = [math.copysign(r * r, axis_r) for r in move.axes_r[:3]]
+        else:
+            extr_r = [0.0, 0.0, axis_r]
+        self.trapq_append_jerk(
+            self.trapq,
+            print_time,
+            move_t,
+            extr_pos[0],
+            extr_pos[1],
+            extr_pos[2],
+            extr_r[0],
+            extr_r[1],
+            extr_r[2],
+            start_v * abs_axis_r,
+            accel * abs_axis_r,
+            jerk * abs_axis_r,
+        )
+        extr_d = abs(axis_r * seg_dist)
         for i in range(3):
             self.last_position[i] += extr_d * extr_r[i]
 

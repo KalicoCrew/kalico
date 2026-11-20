@@ -8,6 +8,7 @@ import logging
 import math
 
 from . import chelper
+from .extras import pathplan
 from .extras.danger_options import get_danger_options
 from .kinematics import extruder as kinematics_extruder
 
@@ -88,7 +89,7 @@ class Move:
                 self.max_cruise_v2,
                 prev_move.max_cruise_v2,
                 prev_move.next_junction_v2,
-                prev_move.max_start_v2 + prev_move.delta_v2,
+                self.toolhead._move_reach_v2(prev_move, prev_move.max_start_v2),
             ]
             + ea_v2
         )
@@ -174,9 +175,12 @@ class LookAheadQueue:
         # after the last move.
         delayed = []
         next_end_v2 = next_smoothed_v2 = peak_cruise_v2 = 0.0
+        # The toolhead is reached via any queued move.
+        th = queue[0].toolhead if queue else None
+        unified = th is not None and getattr(th, "unified_emit", False)
         for i in range(flush_count - 1, -1, -1):
             move = queue[i]
-            reachable_start_v2 = next_end_v2 + move.delta_v2
+            reachable_start_v2 = th._move_reach_v2(move, next_end_v2)
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
@@ -188,7 +192,33 @@ class LookAheadQueue:
                 ):
                     # This move can decelerate or this is a full accel
                     # move after a full decel move
-                    if update_flush_count and peak_cruise_v2:
+                    if (
+                        update_flush_count
+                        and peak_cruise_v2
+                        and (
+                            not unified or start_v2 >= move.max_start_v2 - 1e-9
+                        )
+                    ):
+                        # A lazy flush emits queue[:i] now and replans the rest
+                        # once more moves arrive, so the split is only sound if
+                        # THIS move's start speed can no longer change. Adding
+                        # moves can only push the eventual stop further away,
+                        # which only ever RAISES reachable_start_v2, while
+                        # max_start_v2 was fixed at add_move() time -- so the
+                        # speed is settled exactly when it has already reached
+                        # that cap.
+                        #
+                        # Stock gets this for free: it picks the split from the
+                        # smoothed chain, which uses the same constant-accel law
+                        # as the real one, so "smoothed and settled" implies
+                        # "settled". Under the notch law the real chain
+                        # decelerates far more slowly than smooth_delta_v2
+                        # suggests, so the smoothed proxy declares a move
+                        # settled while it is still reach-limited hundreds of
+                        # moves deep in a decel ramp. Splitting there emitted a
+                        # boundary at 264 mm/s that the replan then raised to
+                        # 300 -- a 36 mm/s step, i.e. an infinite-accel impulse
+                        # in exactly the band the notch exists to keep quiet.
                         flush_count = i
                         update_flush_count = False
                     peak_cruise_v2 = min(
@@ -196,7 +226,14 @@ class LookAheadQueue:
                         (smoothed_v2 + reachable_smoothed_v2) * 0.5,
                     )
                     if delayed:
-                        # Propagate peak_cruise_v2 to any delayed moves
+                        # Propagate peak_cruise_v2 to any delayed moves.
+                        #
+                        # No unified cruise clamp is needed here (unlike the
+                        # branch below): mc_v2 is min()'d with each delayed
+                        # move's own ms_v2, so cruise == start and the move has
+                        # no accel ramp to make jerk-feasible. Its decel to
+                        # min(me_v2, mc_v2) was already bounded by the reverse
+                        # sweep, which took me_v2 from _move_reach_v2().
                         if not update_flush_count and i < flush_count:
                             mc_v2 = peak_cruise_v2
                             for m, ms_v2, me_v2 in reversed(delayed):
@@ -211,6 +248,36 @@ class LookAheadQueue:
                         move.max_cruise_v2,
                         peak_cruise_v2,
                     )
+                    if th._uses_unified_reach(move):
+                        # Jerk S-curve peak is below the constant-accel midpoint;
+                        # clamp cruise to what is jerk-reachable from each end so
+                        # the emitted profile stays jerk-feasible. Must use the
+                        # SAME jerk law as the emitter or the clamp lets through
+                        # a cruise the emitter cannot ramp to.
+                        cruise_v2 = min(
+                            cruise_v2,
+                            th._move_reach_v2(move, start_v2),
+                            reachable_start_v2,
+                        )
+                        # Restore the identity the stock planner gets for free.
+                        # With constant accel, reachable_start_v2 is exactly
+                        # next_end_v2 + delta_v2 and start_v2 is next_end_v2 -
+                        # delta_v2 on a full-accel move, so the midpoint above
+                        # lands EXACTLY on next_end_v2 and this move's end_v
+                        # equals the next move's start_v. The notch law breaks
+                        # that algebra -- reach is not start + delta -- and the
+                        # midpoint then lands BELOW next_end_v2, which
+                        # set_junction turns into a hard velocity step at the
+                        # move boundary: 80 mm/s on 5 mm segments at 55 Hz, an
+                        # infinite-accel impulse in the exact band the notch
+                        # exists to keep quiet. next_end_v2 is jerk-reachable
+                        # from start_v2 (notch_reach_v2 is direction-symmetric,
+                        # and start_v2 was itself clamped to reach of
+                        # next_end_v2), so lifting the cruise back onto it is
+                        # always feasible.
+                        cruise_v2 = max(
+                            cruise_v2, min(next_end_v2, move.max_cruise_v2)
+                        )
                     move.set_junction(
                         min(start_v2, cruise_v2),
                         cruise_v2,
@@ -240,6 +307,11 @@ class LookAheadQueue:
 
 BUFFER_TIME_HIGH = 2.0
 BUFFER_TIME_START = 0.250
+# Restart lead with the unified planner on. Rendering now happens before the
+# resync, so what follows it (trapq appends + step generation) is no heavier
+# than stock; the extra lead is margin for slow hosts whose CPU governor is
+# still at its idle clock when motion restarts after an M400.
+BUFFER_TIME_START_UNIFIED = 1.0
 
 
 # Main code to track events (and their timing) on the printer toolhead
@@ -261,11 +333,30 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
+        # Jerk-limited motion (opt-in). When enabled, each notched ramp is
+        # rendered as exact constant-jerk (cubic) trapq segments -- at most
+        # three per ramp -- instead of one hard accel step, and the lookahead
+        # plans the boundary speeds that ramp can reach. See pathplan "Cubic
+        # emitter".
+        self.unified_emit = config.getboolean("unified_planner", False)
+        # Per-ramp notch law: park the jerk ramp's shaper zero on a fixed mode
+        # frequency (Hz) via J = dv*f_n^2, instead of a fixed jerk. Peak accel
+        # then self-scales as a_peak = dv*f_n. See pathplan.Constraints.ramp_jerk.
+        # 0 disables the notch law.
+        self.unified_notch_freq = config.getfloat(
+            "unified_notch_freq", 0.0, minval=0.0
+        )
+        self._check_notch_freq(
+            self.unified_notch_freq, "unified_notch_freq", config.error
+        )
+        self._check_unified_settings(config.error)
         self.orig_cfg = {}
         self.orig_cfg["max_velocity"] = self.max_velocity
         self.orig_cfg["max_accel"] = self.max_accel
         self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
         self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
+        self.orig_cfg["unified_emit"] = self.unified_emit
+        self.orig_cfg["unified_notch_freq"] = self.unified_notch_freq
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -288,6 +379,7 @@ class ToolHead:
         )
         self.trapq = self.motion_queuing.allocate_trapq()
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
+        self.trapq_append_jerk = self.motion_queuing.lookup_trapq_append_jerk()
         # Create kinematics class
         gcode = self.printer.lookup_object("gcode")
         self.Coord = gcode.Coord
@@ -330,6 +422,9 @@ class ToolHead:
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
+        self.printer.register_event_handler(
+            "klippy:connect", self._handle_connect
+        )
 
     def get_active_rails_for_axis(self, axis):
         # axis is 'x,y,z'
@@ -350,7 +445,12 @@ class ToolHead:
         curtime = self.reactor.monotonic()
         est_print_time = self.mcu.estimated_print_time(curtime)
         kin_time = self.motion_queuing.calc_step_gen_restart(est_print_time)
-        min_print_time = max(est_print_time + BUFFER_TIME_START, kin_time)
+        start_lead = (
+            BUFFER_TIME_START_UNIFIED
+            if self.unified_emit
+            else BUFFER_TIME_START
+        )
+        min_print_time = max(est_print_time + start_lead, kin_time)
         if min_print_time > self.print_time:
             self.print_time = min_print_time
             self.printer.send_event(
@@ -360,10 +460,74 @@ class ToolHead:
                 self.print_time,
             )
 
+    def _emit_segments(self, move, segs, next_move_time):
+        # Push one move's exact constant-jerk segments into the toolhead trapq
+        # and every extra axis, and return the time the move ends at.
+        t = next_move_time
+        pos = 0.0
+        sp = move.start_pos
+        r = move.axes_r
+        append = self.trapq_append_jerk
+        for seg in segs:
+            move_t, sv, a0, j, dist = seg
+            append(
+                self.trapq,
+                t,
+                move_t,
+                sp[0] + r[0] * pos,
+                sp[1] + r[1] * pos,
+                sp[2] + r[2] * pos,
+                r[0],
+                r[1],
+                r[2],
+                sv,
+                a0,
+                j,
+            )
+            for e_index, ea in enumerate(self.extra_axes):
+                if not move.axes_d[e_index + 3]:
+                    continue
+                if not hasattr(ea, "process_move_cubic"):
+                    raise self.printer.command_error(
+                        "unified_planner requires extra axis '%s' to"
+                        " implement process_move_cubic"
+                        % (ea.get_axis_gcode_id(),)
+                    )
+                ea.process_move_cubic(t, move, e_index + 3, seg)
+            t += move_t
+            pos += dist
+        for e_index, ea in enumerate(self.extra_axes):
+            if move.axes_d[e_index + 3] and hasattr(ea, "sync_position"):
+                ea.sync_position(move, e_index + 3)
+        return t
+
     def _process_lookahead(self, lazy=False):
         moves = self.lookahead.flush(lazy=lazy)
         if not moves:
             return
+        # Render every unified profile BEFORE touching print_time or any motion
+        # queue. Rendering is closed form and also the feasibility check
+        # (plan_cubic_profile raises InfeasibleProfile), so an impossible plan
+        # still fails before anything is emitted. Doing it ahead of the resync
+        # matters for timing too: after a resync from idle the MCU lead is
+        # only the restart lead, and rendering a full first batch (~280 moves
+        # after an M400) inside it put "Timer too close" on a CB1 host.
+        rendered_segs = []
+        for move in moves:
+            segs = None
+            if self.unified_emit and move.is_kinematic_move:
+                cons = self._pathplan_cons(move)
+                segs = (
+                    pathplan.plan_cubic_profile(
+                        move.start_v,
+                        move.cruise_v,
+                        move.end_v,
+                        move.move_d,
+                        cons,
+                    )
+                    or None
+                )
+            rendered_segs.append(segs)
         # Resync print_time if necessary
         if self.special_queuing_state:
             # Transition from "NeedPrime"/"Priming" state to main state
@@ -373,30 +537,49 @@ class ToolHead:
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
         with self.reactor.assert_no_pause():
-            for move in moves:
-                if move.is_kinematic_move:
-                    self.trapq_append(
-                        self.trapq,
-                        next_move_time,
-                        move.accel_t,
-                        move.cruise_t,
-                        move.decel_t,
-                        move.start_pos[0],
-                        move.start_pos[1],
-                        move.start_pos[2],
-                        move.axes_r[0],
-                        move.axes_r[1],
-                        move.axes_r[2],
-                        move.start_v,
-                        move.cruise_v,
-                        move.accel,
+            for move, segs in zip(moves, rendered_segs):
+                if segs is not None:
+                    # Emit the notched profile as exact constant-jerk segments,
+                    # driving the toolhead trapq and each extra axis (the extruder)
+                    # in lock-step so pressure advance integrates the real profile.
+                    # The profile's duration differs from the nominal trapezoid
+                    # (a_peak = dv*f_n < max_accel), so advance next_move_time by
+                    # the ACTUAL emitted duration.
+                    next_move_time = self._emit_segments(
+                        move, segs, next_move_time
                     )
-                for e_index, ea in enumerate(self.extra_axes):
-                    if move.axes_d[e_index + 3]:
-                        ea.process_move(next_move_time, move, e_index + 3)
-                next_move_time = (
-                    next_move_time + move.accel_t + move.cruise_t + move.decel_t
-                )
+                else:
+                    if move.is_kinematic_move:
+                        self.trapq_append(
+                            self.trapq,
+                            next_move_time,
+                            move.accel_t,
+                            move.cruise_t,
+                            move.decel_t,
+                            move.start_pos[0],
+                            move.start_pos[1],
+                            move.start_pos[2],
+                            move.axes_r[0],
+                            move.axes_r[1],
+                            move.axes_r[2],
+                            move.start_v,
+                            move.cruise_v,
+                            move.accel,
+                        )
+                    for e_index, ea in enumerate(self.extra_axes):
+                        if move.axes_d[e_index + 3]:
+                            ea.process_move(next_move_time, move, e_index + 3)
+                    # Keep this sum grouped EXACTLY as upstream computes it. Folding
+                    # it into a precomputed duration regroups the float addition to
+                    # nmt + (a+c+d) instead of ((nmt+a)+c)+d, which shifts
+                    # print_time by an ULP and trips "Internal error in
+                    # stepcompress" on long extruder-only runs.
+                    next_move_time = (
+                        next_move_time
+                        + move.accel_t
+                        + move.cruise_t
+                        + move.decel_t
+                    )
                 for cb in move.timing_callbacks:
                     cb(next_move_time)
         # Generate steps for moves
@@ -547,6 +730,11 @@ class ToolHead:
 
     def set_extruder(self, extruder, extrude_pos):
         # XXX - should use add_extra_axis
+        if self.unified_emit and not hasattr(extruder, "process_move_cubic"):
+            raise self.printer.command_error(
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_cubic" % (extruder.get_axis_gcode_id(),)
+            )
         self.extra_axes[0] = extruder
         self.commanded_pos[3] = extrude_pos
 
@@ -555,6 +743,11 @@ class ToolHead:
 
     def add_extra_axis(self, ea, axis_pos):
         self._flush_lookahead()
+        if self.unified_emit and not hasattr(ea, "process_move_cubic"):
+            raise self.printer.command_error(
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_cubic" % (ea.get_axis_gcode_id(),)
+            )
         self.extra_axes.append(ea)
         self.commanded_pos.append(axis_pos)
         self.printer.send_event("toolhead:update_extra_axes")
@@ -660,6 +853,12 @@ class ToolHead:
         self.can_pause = False
         self.lookahead.reset()
 
+    def _handle_connect(self):
+        # kin exists by now, so the Z/XY actuator coupling can be resolved.
+        self._z_couples_xy_cache = None
+        self._z_couples_xy()
+        self._check_unified_extra_axis_support(self.printer.command_error)
+
     def get_kinematics(self):
         return self.kin
 
@@ -680,6 +879,228 @@ class ToolHead:
         scv2 = self.square_corner_velocity**2
         self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
+
+    # A notched ramp always lasts 2/f_n seconds and eats (v0+v1)/f_n of path
+    # distance, so a very low f_n does not just shape gently -- it stalls the
+    # machine. At 1 Hz a ramp is 2 s long and needs 100 mm of runway to reach
+    # 50 mm/s. No printer structural mode sits below this floor, and the values
+    # that land here in practice are typos (0.55 for 55).
+    MIN_NOTCH_FREQ = 5.0
+
+    @classmethod
+    def _check_notch_freq(cls, freq, name, error_factory):
+        if freq is None or freq <= 0.0:
+            return  # 0/unset = notch disabled
+        if freq < cls.MIN_NOTCH_FREQ:
+            raise error_factory(
+                "%s must be 0 or at least %.0f Hz (got %.4f); a notch below"
+                " that stalls the toolhead -- each ramp takes 2/f_n seconds"
+                % (name, cls.MIN_NOTCH_FREQ, freq)
+            )
+
+    def _notch_on(self):
+        # True when a notch frequency is configured.
+        return bool(self.unified_notch_freq)
+
+    def _move_notch_freq(self, move):
+        # Notch frequency (Hz) for one move; 0.0 = off.
+        #
+        # Memoized on the move: this is called from _uses_unified_reach, which
+        # runs on every lookahead reach probe (several per move per flush pass).
+        # Safe because the notch config can only change via SET_UNIFIED, which
+        # calls flush_step_generation() first and so retires every queued move.
+        f = getattr(move, "_unified_notch_freq", None)
+        if f is not None:
+            return f
+        f = self.unified_notch_freq
+        if f and abs(move.axes_r[0]) + abs(move.axes_r[1]) <= 1e-12:
+            # No XY motion (Z-only or extrude-only). Whether that means
+            # "nothing to cancel" depends on the kinematics.
+            #
+            # When Z has its own actuator (cartesian, CoreXY), the ramp
+            # shapes the scalar path speed and the axes see a_x = rx*a(t),
+            # a_y = ry*a(t) with rx = ry = 0 -- identically zero for ANY
+            # a(t). No ramp shape changes the XY excitation, so notching
+            # buys no quiet while costing the full 2/f_n ramp (36 ms at
+            # 55 Hz) and its (v0+v1)/f_n of runway, which a Z hop does not
+            # have. That is why notching a decoupled Z lift is wasteful.
+            #
+            # When Z shares actuators with X or Y -- CoreXZ and hybrid
+            # CoreXZ (A = x + z, B = x - z), deltesian, delta, rotary
+            # delta, cable winch -- a Z-only move accelerates the very
+            # belts whose compliance the notch is aimed at. Commanded X
+            # stays zero only to first order: belt-stiffness or motor-lag
+            # asymmetry leaves a residual common-mode term that couples
+            # straight into the XY mode. Keep shaping there.
+            if not self._z_couples_xy():
+                f = 0.0
+        move._unified_notch_freq = f
+        return f
+
+    def _pathplan_cons(self, move):
+        # Build the pathplan.Constraints for one move. move.accel is the
+        # constant acceleration ceiling; with a notch frequency the emitter
+        # governs ordinary moves via a_peak = dv*f_n instead.
+        notch = self._move_notch_freq(move) or None
+        if hasattr(move, "cruise_v"):
+            v_ceil = max(move.cruise_v, move.start_v, move.end_v) + 1.0
+        else:
+            # Reverse lookahead calls this before set_junction() has created
+            # start_v/cruise_v/end_v. Use the move's configured cruise limit
+            # as the conservative ceiling for reach calculations.
+            v_ceil = math.sqrt(move.max_cruise_v2) + 1.0
+        return pathplan.Constraints(
+            a_const=move.accel,
+            v_ceil=v_ceil,
+            notch_freq=notch,
+        )
+
+    def _z_couples_xy(self):
+        # Does a Z-only cartesian move drive the same actuators as X or Y?
+        # True for CoreXZ, hybrid CoreXZ, deltesian, delta, rotary delta and
+        # cable winch; False for cartesian, CoreXY and polar, where Z has a
+        # dedicated stepper. Resolved from the itersolve
+        # active-axis flags at connect time, so it needs no per-kinematics
+        # table and no config. Unknown kinematics answer True: keeping the
+        # shaping is the conservative direction, since the cost is throughput
+        # on Z moves rather than ringing.
+        coupled = getattr(self, "_z_couples_xy_cache", None)
+        if coupled is not None:
+            return coupled
+        coupled = True
+        rails = getattr(getattr(self, "kin", None), "rails", None)
+        if rails:
+            coupled = False
+            for rail in rails:
+                for s in rail.get_steppers():
+                    if s.is_active_axis("z") and (
+                        s.is_active_axis("x") or s.is_active_axis("y")
+                    ):
+                        coupled = True
+                        break
+                if coupled:
+                    break
+        self._z_couples_xy_cache = coupled
+        return coupled
+
+    def _uses_unified_reach(self, move):
+        if (
+            not getattr(self, "unified_emit", False)
+            or not move.is_kinematic_move
+        ):
+            return False
+        return self._move_notch_freq(move) > 0.0
+
+    def _move_reach_v2(self, move, start_v2):
+        # Max v^2 reachable from start_v2 over this move under its ramp law.
+        if not self._uses_unified_reach(move):
+            return start_v2 + move.delta_v2
+        # Memoize the last solve for this move. LookAheadQueue.flush probes the
+        # same move up to three times per pass (once in the reverse sweep, twice
+        # more in the unified cruise clamp) and repeats next_end_v2, so a
+        # one-entry cache removes most of the calls.
+        key = start_v2
+        cached = getattr(move, "_unified_reach_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # Reachability needs only the move's notch frequency and accel -- not a
+        # Constraints object, and not the emitter's per-move v_ceil: it asks
+        # how fast the toolhead could arrive, so it is bounded by the machine
+        # limit; move.max_cruise_v2 is applied separately by the caller.
+        res = pathplan.notch_reach_v2(
+            start_v2,
+            move.move_d,
+            move.accel,
+            self.max_velocity,
+            notch_freq=self._move_notch_freq(move),
+        )
+        move._unified_reach_cache = (key, res)
+        return res
+
+    _UNIFIED_FIELDS = (
+        "unified_emit",
+        "unified_notch_freq",
+    )
+
+    def _unified_state(self):
+        return tuple(getattr(self, n) for n in self._UNIFIED_FIELDS)
+
+    def _restore_unified_state(self, state):
+        for name, value in zip(self._UNIFIED_FIELDS, state):
+            setattr(self, name, value)
+
+    def _check_unified_extra_axis_support(self, error_factory=None):
+        if not self.unified_emit:
+            return
+        for ea in self.extra_axes:
+            if hasattr(ea, "process_move_cubic"):
+                continue
+            axis = ea.get_axis_gcode_id()
+            msg = (
+                "unified_planner requires extra axis '%s' to implement"
+                " process_move_cubic" % (axis,)
+            )
+            if error_factory is not None:
+                raise error_factory(msg)
+            raise self.printer.command_error(msg)
+
+    def _check_unified_settings(self, error_factory):
+        if not self.unified_emit:
+            return
+        if not self._notch_on():
+            raise error_factory("unified_planner requires unified_notch_freq")
+
+    cmd_SET_UNIFIED_help = (
+        "Toggle jerk-limited motion live. ENABLE=0/1 flips the jerk emitter; "
+        "NOTCH_FREQ parks the jerk ramp's shaper zero on a mode frequency "
+        "(Hz, 0 = disabled). No args = report state."
+    )
+
+    def cmd_SET_UNIFIED(self, gcmd):
+        en = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+        notch = gcmd.get_float("NOTCH_FREQ", None, minval=0.0)
+        # Flush pending moves so the change only affects moves planned after
+        # this point (same live-mutation contract as SET_VELOCITY_LIMIT).
+        self.flush_step_generation()
+        old = self._unified_state()
+        try:
+            if en is not None:
+                self.unified_emit = bool(en)
+            self._check_notch_freq(notch, "NOTCH_FREQ", gcmd.error)
+            if notch is not None:
+                self.unified_notch_freq = notch
+            self._check_unified_settings(gcmd.error)
+            self._check_unified_extra_axis_support()
+        except:
+            self._restore_unified_state(old)
+            raise
+        gcmd.respond_info(
+            "unified_planner=%d unified_notch_freq=%.2f"
+            % (self.unified_emit, self.unified_notch_freq)
+        )
+
+    def reset_unified_settings(self):
+        # RESET_VELOCITY_LIMIT's unified half: restore the configured unified
+        # state and return its report lines.
+        #
+        # Restore under rollback: extra axes can be added after startup, so the
+        # support check can fail here even though the original config was valid.
+        # Leaving half-restored unified state behind would be worse than the
+        # error itself.
+        old_unified = self._unified_state()
+        self._restore_unified_state(
+            tuple(self.orig_cfg[n] for n in self._UNIFIED_FIELDS)
+        )
+        try:
+            self._check_unified_settings(self.printer.command_error)
+            self._check_unified_extra_axis_support()
+        except:
+            self._restore_unified_state(old_unified)
+            raise
+        return [
+            "unified_planner: %d" % self.unified_emit,
+            "unified_notch_freq: %.6f" % self.unified_notch_freq,
+        ]
 
     def set_max_velocities(
         self, max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
@@ -725,6 +1146,11 @@ class ToolHeadCommandHelper:
             desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
+        gcode.register_command(
+            "SET_UNIFIED",
+            self.toolhead.cmd_SET_UNIFIED,
+            desc=self.toolhead.cmd_SET_UNIFIED_help,
+        )
 
     def cmd_G4(self, gcmd):
         # Dwell
@@ -853,6 +1279,7 @@ class ToolHeadCommandHelper:
             kin.max_z_accel = orig_cfg["max_z_accel"]
             msg.append("max_z_accel: %.6f" % kin.max_z_accel)
 
+        msg.extend(self.toolhead.reset_unified_settings())
         msg.extend(
             (
                 "minimum_cruise_ratio: %.6f" % mcr,
