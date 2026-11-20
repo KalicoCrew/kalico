@@ -51,18 +51,53 @@ static const struct i2c_info i2c_bus[] = {
 #endif
 };
 
-// Work around stm32 errata causing busy bit to be stuck
+static void
+i2c_delay_us(uint32_t us)
+{
+    uint32_t end = timer_read_time() + timer_from_us(us);
+    while (timer_is_before(timer_read_time(), end))
+        ;
+}
+
+// Work around stm32f1 errata 2.9.7 (ES0340 "I2C analog filter may
+// provide wrong value, locking BUSY flag and preventing master mode
+// entry") by manually toggling SCL/SDA before resetting the peripheral.
 static void
 i2c_busy_errata(uint8_t scl_pin, uint8_t sda_pin)
 {
     if (! CONFIG_MACH_STM32F1)
         return;
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, -1);
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, -1);
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
+    uint32_t mode = GPIO_OUTPUT | GPIO_OPEN_DRAIN;
+    gpio_peripheral(scl_pin, mode, 1);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
+    gpio_peripheral(sda_pin, mode, -1);
+    i2c_delay_us(10);
+    gpio_peripheral(scl_pin, mode, -1);
+    i2c_delay_us(10);
+    gpio_peripheral(scl_pin, mode, 1);
+    i2c_delay_us(10);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
+
+    // The sequence above is a START, a single clock, and a STOP.  Some
+    // devices (eg, ldc1612) don't reset on a STOP in the middle of a
+    // byte and are left out of sync.  Clock out a full frame with SDA
+    // released and finish with a clean STOP so all devices end up idle.
+    for (int i = 0; i < 9; i++) {
+        gpio_peripheral(scl_pin, mode, -1);
+        i2c_delay_us(5);
+        gpio_peripheral(scl_pin, mode, 1);
+        i2c_delay_us(5);
+    }
+    gpio_peripheral(scl_pin, mode, -1);
+    i2c_delay_us(5);
+    gpio_peripheral(sda_pin, mode, -1);
+    i2c_delay_us(5);
+    gpio_peripheral(scl_pin, mode, 1);
+    i2c_delay_us(5);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
 }
 
 struct i2c_config
@@ -103,8 +138,11 @@ i2c_wait(I2C_TypeDef *i2c, uint32_t set, uint32_t clear, uint32_t timeout)
             return I2C_BUS_SUCCESS;
         if (sr1 & I2C_SR1_AF)
             return I2C_BUS_NACK;
-        if (!timer_is_before(timer_read_time(), timeout))
+        if (!timer_is_before(timer_read_time(), timeout)) {
+            if (sr1 & I2C_SR1_BERR)
+                return I2C_BUS_ERR;
             return I2C_BUS_TIMEOUT;
+        }
     }
 }
 
@@ -113,11 +151,15 @@ i2c_start(I2C_TypeDef *i2c, uint8_t addr, uint8_t xfer_len,
           uint32_t timeout)
 {
     i2c->CR1 = I2C_CR1_START | I2C_CR1_PE;
-    i2c_wait(i2c, I2C_SR1_SB, 0, timeout);
+    int ret = i2c_wait(i2c, I2C_SR1_SB, 0, timeout);
+    if (ret != I2C_BUS_SUCCESS)
+        return ret;
     i2c->DR = addr;
     if (addr & 0x01)
         i2c->CR1 |= I2C_CR1_ACK;
-    int ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, timeout);
+    ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, timeout);
+    if (ret != I2C_BUS_SUCCESS)
+        return ret;
     irqstatus_t flag = irq_save();
     uint32_t sr2 = i2c->SR2;
     if (addr & 0x01 && xfer_len == 1)
@@ -136,9 +178,11 @@ i2c_send_byte(I2C_TypeDef *i2c, uint8_t b, uint32_t timeout)
 }
 
 static uint8_t
-i2c_read_byte(I2C_TypeDef *i2c, uint32_t timeout, uint8_t remaining)
+i2c_read_byte(I2C_TypeDef *i2c, uint32_t timeout, uint8_t remaining, int *ret)
 {
-    i2c_wait(i2c, I2C_SR1_RXNE, 0, timeout);
+    *ret = i2c_wait(i2c, I2C_SR1_RXNE, 0, timeout);
+    if (*ret != I2C_BUS_SUCCESS)
+        return 0;
     irqstatus_t flag = irq_save();
     uint8_t b = i2c->DR;
     if (remaining == 1)
@@ -197,9 +241,10 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
         ret = I2C_BUS_START_READ_NACK;
     if (ret != I2C_BUS_SUCCESS)
         goto abrt;
-    while(read_len--) {
-        *read = i2c_read_byte(i2c, timeout, read_len);
-        read++;
+    while (read_len--) {
+        *read++ = i2c_read_byte(i2c, timeout, read_len, &ret);
+        if (ret != I2C_BUS_SUCCESS)
+            goto abrt;
     }
     // covers read timeout
     return i2c_wait(i2c, 0, I2C_SR1_RXNE, timeout);
