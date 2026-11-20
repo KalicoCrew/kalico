@@ -105,7 +105,7 @@ def ldc_coil_sensor(toolboard, config):
         },
         config,
     )
-    return CustomThermistor(config_thermistor).create(config_sensor)
+    return CustomThermistor(config_thermistor).create_sensor(config_sensor)
 
 
 class IndxTempSensorWrapper:
