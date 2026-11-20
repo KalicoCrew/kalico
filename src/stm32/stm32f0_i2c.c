@@ -93,6 +93,24 @@ struct i2c_info {
   DECL_CONSTANT_STR("BUS_PINS_i2c2_PB10_PB11", "PB10,PB11");
   DECL_ENUMERATION("i2c_bus", "i2c3_PA8_PC9", 3);
   DECL_CONSTANT_STR("BUS_PINS_i2c3_PA8_PC9", "PA8,PC9");
+#elif CONFIG_MACH_STM32H503
+  DECL_ENUMERATION("i2c_bus", "i2c1_PB6_PB7", 0);
+  DECL_CONSTANT_STR("BUS_PINS_i2c1_PB6_PB7", "PB6,PB7");
+  DECL_ENUMERATION("i2c_bus", "i2c2_PB10_PB13", 1);
+  DECL_CONSTANT_STR("BUS_PINS_i2c2_PB10_PB13", "PB10,PB13");
+  DECL_ENUMERATION("i2c_bus", "i2c2_PB3_PB4", 2);
+  DECL_CONSTANT_STR("BUS_PINS_i2c2_PB3_PB4", "PB3,PB4");
+#elif CONFIG_MACH_STM32H562
+  DECL_ENUMERATION("i2c_bus", "i2c1_PB6_PB7", 0);
+  DECL_CONSTANT_STR("BUS_PINS_i2c1_PB6_PB7", "PB6,PB7");
+  DECL_ENUMERATION("i2c_bus", "i2c1_PB8_PB9", 1);
+  DECL_CONSTANT_STR("BUS_PINS_i2c1_PB8_PB9", "PB8,PB9");
+  DECL_ENUMERATION("i2c_bus", "i2c2_PB10_PB11", 2);
+  DECL_CONSTANT_STR("BUS_PINS_i2c2_PB10_PB11", "PB10,PB11");
+  DECL_ENUMERATION("i2c_bus", "i2c3_PA8_PC9", 3);
+  DECL_CONSTANT_STR("BUS_PINS_i2c3_PA8_PC9", "PA8,PC9");
+  DECL_ENUMERATION("i2c_bus", "i2c3_PH7_PH8", 4);
+  DECL_CONSTANT_STR("BUS_PINS_i2c3_PH7_PH8", "PH7,PH8");
 #endif
 
 static const struct i2c_info i2c_bus[] = {
@@ -136,6 +154,16 @@ static const struct i2c_info i2c_bus[] = {
     { I2C1, GPIO('B', 8), GPIO('B', 9), GPIO_FUNCTION(4) },
     { I2C2, GPIO('B', 10), GPIO('B', 11), GPIO_FUNCTION(4) },
     { I2C3, GPIO('A', 8), GPIO('C', 9), GPIO_FUNCTION(4) },
+#elif CONFIG_MACH_STM32H503
+    { I2C1, GPIO('B', 6), GPIO('B', 7), GPIO_FUNCTION(4) },
+    { I2C2, GPIO('B', 10), GPIO('B', 13), GPIO_FUNCTION(4) },
+    { I2C2, GPIO('B', 3), GPIO('B', 4), GPIO_FUNCTION(8) },
+#elif CONFIG_MACH_STM32H562
+    { I2C1, GPIO('B', 6), GPIO('B', 7), GPIO_FUNCTION(4) },
+    { I2C1, GPIO('B', 8), GPIO('B', 9), GPIO_FUNCTION(4) },
+    { I2C2, GPIO('B', 10), GPIO('B', 11), GPIO_FUNCTION(4) },
+    { I2C3, GPIO('A', 8), GPIO('C', 9), GPIO_FUNCTION(4) },
+    { I2C3, GPIO('H', 7), GPIO('H', 8), GPIO_FUNCTION(4) },
 #endif
 };
 
@@ -154,8 +182,9 @@ i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr)
         gpio_peripheral(ii->scl_pin, ii->function | GPIO_OPEN_DRAIN, 1);
         gpio_peripheral(ii->sda_pin, ii->function | GPIO_OPEN_DRAIN, 1);
 
-        // Set 100Khz frequency and enable
-        uint32_t nom_i2c_clock = 12000000; // 12mhz internal clock (83.3ns tick)
+        // Set 100Khz frequency and enable. Counts below assume an
+        // 83.3 ns tick. H5's 64 MHz HSI still fits: presc = 6.
+        uint32_t nom_i2c_clock = 12000000;
         uint32_t scll = 60; // 60 * 83.3ns = 5us
         uint32_t sclh = 48; // 48 * 83.3ns = 4us
         uint32_t sdadel = 6; // 6 * 83.3ns = 500ns
@@ -168,7 +197,8 @@ i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr)
             scldel = 6; // 6 * 83.3 = 500ns
         }
 
-        uint32_t pclk = get_pclock_frequency((uint32_t)i2c);
+        uint32_t pclk = CONFIG_MACH_STM32H5 ? 64000000 :
+            get_pclock_frequency((uint32_t)i2c);
         uint32_t presc = DIV_ROUND_UP(pclk, nom_i2c_clock);
         i2c->TIMINGR = (((presc - 1) << I2C_TIMINGR_PRESC_Pos)
                         | ((scll - 1) << I2C_TIMINGR_SCLL_Pos)

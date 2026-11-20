@@ -251,6 +251,87 @@ static const struct gpio_pwm_info pwm_regs[] = {
     {TIM2,  GPIO('B', 11), 4, GPIO_FUNCTION(1)},
     {TIM15,  GPIO('B', 14), 1, GPIO_FUNCTION(1)},
     {TIM15,  GPIO('B', 15), 2, GPIO_FUNCTION(1)},
+#elif CONFIG_MACH_STM32H503
+    // DS14053 Table 11. AF1 is TIM1/TIM2, AF2 is TIM3. No complementary pins.
+    {TIM2, GPIO('A', 0), 1, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 1), 2, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 2), 3, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 3), 4, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 5), 1, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 15), 1, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('B', 3), 2, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('B', 10), 3, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 8), 1, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 9), 2, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 10), 3, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 11), 4, GPIO_FUNCTION(1)},
+    {TIM3, GPIO('A', 6), 1, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('A', 7), 2, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 0), 3, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 1), 4, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 4), 1, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 5), 2, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 6), 1, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 7), 2, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 8), 3, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 9), 4, GPIO_FUNCTION(2)},
+#elif CONFIG_MACH_STM32H562
+    // AF1 = TIM1/TIM2, AF2 = TIM3/TIM4/TIM5/TIM12, AF3 = TIM8.
+    // TIM15 is AF2 on PC12 and AF4 on PA2, PE5, and PE6.
+    {TIM1, GPIO('A', 8), 1, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 9), 2, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 10), 3, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('A', 11), 4, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('E', 9), 1, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('E', 11), 2, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('E', 13), 3, GPIO_FUNCTION(1)},
+    {TIM1, GPIO('E', 14), 4, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 0), 1, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 1), 2, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 2), 3, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 3), 4, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('A', 5), 1, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('B', 3), 2, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('B', 10), 3, GPIO_FUNCTION(1)},
+    {TIM2, GPIO('B', 11), 4, GPIO_FUNCTION(1)},
+    {TIM3, GPIO('A', 6), 1, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('A', 7), 2, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 0), 3, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('B', 1), 4, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 6), 1, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 7), 2, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 8), 3, GPIO_FUNCTION(2)},
+    {TIM3, GPIO('C', 9), 4, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('B', 6), 1, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('B', 7), 2, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('B', 8), 3, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('B', 9), 4, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('D', 12), 1, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('D', 13), 2, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('D', 14), 3, GPIO_FUNCTION(2)},
+    {TIM4, GPIO('D', 15), 4, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('A', 0), 1, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('A', 1), 2, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('A', 2), 3, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('A', 3), 4, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('H', 10), 1, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('H', 11), 2, GPIO_FUNCTION(2)},
+    {TIM5, GPIO('H', 12), 3, GPIO_FUNCTION(2)},
+    {TIM8, GPIO('C', 6), 1, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('C', 7), 2, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('C', 8), 3, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('C', 9), 4, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('I', 5), 1, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('I', 6), 2, GPIO_FUNCTION(3)},
+    {TIM8, GPIO('I', 7), 3, GPIO_FUNCTION(3)},
+    {TIM12, GPIO('B', 14), 1, GPIO_FUNCTION(2)},
+    {TIM12, GPIO('B', 15), 2, GPIO_FUNCTION(2)},
+    {TIM12, GPIO('H', 6), 1, GPIO_FUNCTION(2)},
+    {TIM12, GPIO('H', 9), 2, GPIO_FUNCTION(2)},
+    {TIM15, GPIO('A', 2), 1, GPIO_FUNCTION(4)},
+    {TIM15, GPIO('E', 5), 1, GPIO_FUNCTION(4)},
+    {TIM15, GPIO('E', 6), 2, GPIO_FUNCTION(4)},
+    {TIM15, GPIO('C', 12), 1, GPIO_FUNCTION(2)},
 #elif CONFIG_MACH_STM32H7
     {TIM1, GPIO('A', 8),  1, GPIO_FUNCTION(1)},
     {TIM1, GPIO('E', 9),  1, GPIO_FUNCTION(1)},
@@ -438,8 +519,18 @@ gpio_timer_setup(uint8_t pin, uint32_t cycle_time, uint32_t val,
     // Enable PWM output
     p->timer->CR1 |= TIM_CR1_CEN;
 
-    // Advanced timers need MOE enabled.  On standard timers this is a
-    // write to reserved memory, but that seems harmless in practice.
+    // Advanced timers need MOE. TIM15 has BDTR too. Other H5 timers
+    // do not, so do not write BDTR there.
+#if CONFIG_MACH_STM32H5
+    if (p->timer == TIM1
+#ifdef TIM8
+        || p->timer == TIM8
+#endif
+#ifdef TIM15
+        || p->timer == TIM15
+#endif
+        )
+#endif
     p->timer->BDTR = TIM_BDTR_MOE;
 
     return channel;
