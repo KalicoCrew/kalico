@@ -100,6 +100,11 @@ The stm32l4 directory contains code from:
 version v1.17.0 (5e1553e07706491bd11f4edd304e093b6e4b83a4). Contents
 taken from the Drivers/CMSIS/Device/ST/STM32L4xx/ directory.
 
+The stm32h5 directory contains code from:
+  https://github.com/STMicroelectronics/STM32CubeH5
+version v1.3.0 (a6a936dfaf382c83b73be5e46c3c1c28e8d0caa0). Contents
+taken from the Drivers/CMSIS/Device/ST/STM32H5xx/ directory.
+
 The stm32h7 directory contains code from:
   https://github.com/STMicroelectronics/STM32CubeH7
 version v1.9.0 (ccb11556044540590ca6e45056e6b65cdca2deb2). Contents

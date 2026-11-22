@@ -18,6 +18,8 @@
 #include "stm32g0xx.h"
 #elif CONFIG_MACH_STM32G4
 #include "stm32g4xx.h"
+#elif CONFIG_MACH_STM32H5
+#include "stm32h5xx.h"
 #elif CONFIG_MACH_STM32H7
 #include "stm32h7xx.h"
 #elif CONFIG_MACH_STM32L4
