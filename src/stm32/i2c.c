@@ -51,18 +51,53 @@ static const struct i2c_info i2c_bus[] = {
 #endif
 };
 
-// Work around stm32 errata causing busy bit to be stuck
+static void
+i2c_delay_us(uint32_t us)
+{
+    uint32_t end = timer_read_time() + timer_from_us(us);
+    while (timer_is_before(timer_read_time(), end))
+        ;
+}
+
+// Work around stm32f1 errata 2.9.7 (ES0340 "I2C analog filter may
+// provide wrong value, locking BUSY flag and preventing master mode
+// entry") by manually toggling SCL/SDA before resetting the peripheral.
 static void
 i2c_busy_errata(uint8_t scl_pin, uint8_t sda_pin)
 {
     if (! CONFIG_MACH_STM32F1)
         return;
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, -1);
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, -1);
-    gpio_peripheral(scl_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
-    gpio_peripheral(sda_pin, GPIO_OUTPUT | GPIO_OPEN_DRAIN, 1);
+    uint32_t mode = GPIO_OUTPUT | GPIO_OPEN_DRAIN;
+    gpio_peripheral(scl_pin, mode, 1);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
+    gpio_peripheral(sda_pin, mode, -1);
+    i2c_delay_us(10);
+    gpio_peripheral(scl_pin, mode, -1);
+    i2c_delay_us(10);
+    gpio_peripheral(scl_pin, mode, 1);
+    i2c_delay_us(10);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
+
+    // The sequence above is a START, a single clock, and a STOP.  Some
+    // devices (eg, ldc1612) don't reset on a STOP in the middle of a
+    // byte and are left out of sync.  Clock out a full frame with SDA
+    // released and finish with a clean STOP so all devices end up idle.
+    for (int i = 0; i < 9; i++) {
+        gpio_peripheral(scl_pin, mode, -1);
+        i2c_delay_us(5);
+        gpio_peripheral(scl_pin, mode, 1);
+        i2c_delay_us(5);
+    }
+    gpio_peripheral(scl_pin, mode, -1);
+    i2c_delay_us(5);
+    gpio_peripheral(sda_pin, mode, -1);
+    i2c_delay_us(5);
+    gpio_peripheral(scl_pin, mode, 1);
+    i2c_delay_us(5);
+    gpio_peripheral(sda_pin, mode, 1);
+    i2c_delay_us(10);
 }
 
 struct i2c_config
