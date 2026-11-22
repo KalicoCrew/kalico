@@ -142,6 +142,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
 
+- [danger_options: fallback endstop states for disconnected non-critical mcus](https://docs.kalico.gg/Config_Reference.html#non_critical_endstop_disconnect_values)
+
 - [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
 
 - [extruder: cold_extrude](https://github.com/KalicoCrew/kalico/pull/750)
