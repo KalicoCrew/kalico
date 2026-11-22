@@ -97,6 +97,9 @@ class AxisInputShaper:
             )
         return success
 
+    def is_enabled(self):
+        return self.n > 0
+
     def disable_shaping(self):
         if self.saved is None and self.n:
             self.saved = (self.n, self.A, self.T)
