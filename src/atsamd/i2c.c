@@ -57,7 +57,7 @@ i2c_setup(uint32_t bus, uint32_t rate, uint8_t addr)
     return (struct i2c_config){ .si=si, .addr=addr<<1 };
 }
 
-static void
+static int
 i2c_wait(SercomI2cm *si)
 {
     for (;;) {
@@ -69,22 +69,27 @@ i2c_wait(SercomI2cm *si)
         }
         if (intflag & SERCOM_I2CM_INTFLAG_ERROR)
             shutdown("i2c error");
-        break;
+        if (si->STATUS.reg & SERCOM_I2CM_STATUS_RXNACK)
+            return I2C_BUS_NACK;
+        return I2C_BUS_SUCCESS;
     }
 }
 
-static void
+static int
 i2c_start(SercomI2cm *si, uint8_t addr)
 {
     si->ADDR.reg = addr;
-    i2c_wait(si);
+    int ret = i2c_wait(si);
+    if (ret == I2C_BUS_NACK)
+        ret = I2C_BUS_START_NACK;
+    return ret;
 }
 
-static void
+static int
 i2c_send_byte(SercomI2cm *si, uint8_t b)
 {
     si->DATA.reg = b;
-    i2c_wait(si);
+    return i2c_wait(si);
 }
 
 static void
@@ -97,12 +102,12 @@ int
 i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write)
 {
     SercomI2cm *si = (SercomI2cm *)config.si;
-    i2c_start(si, config.addr);
-    while (write_len--)
-        i2c_send_byte(si, *write++);
+    int ret = i2c_start(si, config.addr);
+    while (write_len-- && ret == I2C_BUS_SUCCESS)
+        ret = i2c_send_byte(si, *write++);
     i2c_stop(si);
 
-    return I2C_BUS_SUCCESS;
+    return ret;
 }
 
 int
@@ -113,14 +118,12 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
 
     // start in write mode and write register if provided
     if(reg_len) {
-        // start in write mode
-        si->ADDR.reg = config.addr;
-        while (!(si->INTFLAG.reg & SERCOM_I2CM_INTFLAG_MB));
-
-        // write registers
-        while (reg_len--){
-            si->DATA.reg = *reg++;
-            while (!(si->INTFLAG.reg & SERCOM_I2CM_INTFLAG_MB));
+        int ret = i2c_start(si, config.addr);
+        while (reg_len-- && ret == I2C_BUS_SUCCESS)
+            ret = i2c_send_byte(si, *reg++);
+        if (ret != I2C_BUS_SUCCESS) {
+            i2c_stop(si);
+            return ret;
         }
     }
 
@@ -129,7 +132,17 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
 
     // read bytes from slave
     while (read_len--){
-        while (!(si->INTFLAG.reg & SERCOM_I2CM_INTFLAG_SB));
+        for (;;) {
+            uint32_t intflag = si->INTFLAG.reg;
+            if (intflag & SERCOM_I2CM_INTFLAG_SB)
+                break;
+            // A NACKed read address sets MB instead of SB
+            if ((intflag & SERCOM_I2CM_INTFLAG_MB)
+                && (si->STATUS.reg & SERCOM_I2CM_STATUS_RXNACK)) {
+                i2c_stop(si);
+                return I2C_BUS_START_READ_NACK;
+            }
+        }
 
         if (read_len){
             // set ACK response
