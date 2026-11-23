@@ -54,15 +54,15 @@ class Thermistor:
         self.c2 = 1.0 / beta
         self.c1 = inv_t1 - self.c2 * ln_r1
 
-    def calc_temp(self, adc):
-        # Calculate temperature from adc
-        adc = max(0.00001, min(0.99999, adc))
-        r = self.pullup * adc / (1.0 - adc)
-        ln_r = math.log(r - self.inline_resistor)
+    def r_to_temp(self, resistance):
+        diff = max(0.00001, resistance - self.inline_resistor)
+        ln_r = math.log(diff)
         inv_t = self.c1 + self.c2 * ln_r + self.c3 * ln_r**3
+        if not inv_t:
+            return 999999.0
         return 1.0 / inv_t + KELVIN_TO_CELSIUS
 
-    def calc_adc(self, temp):
+    def temp_to_r(self, temp):
         # Calculate adc reading from a temperature
         if temp <= KELVIN_TO_CELSIUS:
             return 1.0
@@ -74,12 +74,20 @@ class Thermistor:
             ln_r = math.pow(x - y, 1.0 / 3.0) - math.pow(x + y, 1.0 / 3.0)
         else:
             ln_r = (inv_t - self.c1) / self.c2
-        r = math.exp(ln_r) + self.inline_resistor
+        return math.exp(ln_r) + self.inline_resistor
+
+    def calc_temp(self, adc):
+        # Calculate temperature from adc
+        adc = max(0.00001, min(0.99999, adc))
+        r = self.pullup * adc / (1.0 - adc)
+        return self.r_to_temp(r)
+
+    def calc_adc(self, temp):
+        r = self.temp_to_r(temp)
         return r / (self.pullup + r)
 
 
-# Create an ADC converter with a thermistor
-def PrinterThermistor(config, params):
+def create_thermistor(config, params):
     pullup = config.getfloat("pullup_resistor", 4700.0, above=0.0)
     inline_resistor = config.getfloat("inline_resistor", 0.0, minval=0.0)
     thermistor = Thermistor(pullup, inline_resistor)
@@ -97,6 +105,12 @@ def PrinterThermistor(config, params):
             params["r3"],
             name=config.get_name(),
         )
+    return thermistor
+
+
+# Create an ADC converter with a thermistor
+def create_sensor(config, params):
+    thermistor = create_thermistor(config, params)
     return adc_temperature.PrinterADCtoTemperature(config, thermistor)
 
 
@@ -124,11 +138,17 @@ class CustomThermistor:
             "r3": r3,
         }
 
-    def create(self, config):
-        return PrinterThermistor(config, self.params)
+    def create_sensor(self, config):
+        return create_sensor(config, self.params)
+
+    def create_thermistor(self, config):
+        return create_thermistor(config, self.params)
 
 
 def load_config_prefix(config):
     thermistor = CustomThermistor(config)
     pheaters = config.get_printer().load_object(config, "heaters")
-    pheaters.add_sensor_factory(thermistor.name, thermistor.create)
+    pheaters.add_sensor_factory(thermistor.name, thermistor.create_sensor)
+    pheaters.add_thermistor_factory(
+        thermistor.name, thermistor.create_thermistor
+    )
