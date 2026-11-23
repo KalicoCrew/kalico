@@ -138,8 +138,11 @@ i2c_wait(I2C_TypeDef *i2c, uint32_t set, uint32_t clear, uint32_t timeout)
             return I2C_BUS_SUCCESS;
         if (sr1 & I2C_SR1_AF)
             return I2C_BUS_NACK;
-        if (!timer_is_before(timer_read_time(), timeout))
+        if (!timer_is_before(timer_read_time(), timeout)) {
+            if (sr1 & I2C_SR1_BERR)
+                return I2C_BUS_ERR;
             return I2C_BUS_TIMEOUT;
+        }
     }
 }
 
@@ -148,11 +151,15 @@ i2c_start(I2C_TypeDef *i2c, uint8_t addr, uint8_t xfer_len,
           uint32_t timeout)
 {
     i2c->CR1 = I2C_CR1_START | I2C_CR1_PE;
-    i2c_wait(i2c, I2C_SR1_SB, 0, timeout);
+    int ret = i2c_wait(i2c, I2C_SR1_SB, 0, timeout);
+    if (ret != I2C_BUS_SUCCESS)
+        return ret;
     i2c->DR = addr;
     if (addr & 0x01)
         i2c->CR1 |= I2C_CR1_ACK;
-    int ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, timeout);
+    ret = i2c_wait(i2c, I2C_SR1_ADDR, 0, timeout);
+    if (ret != I2C_BUS_SUCCESS)
+        return ret;
     irqstatus_t flag = irq_save();
     uint32_t sr2 = i2c->SR2;
     if (addr & 0x01 && xfer_len == 1)
@@ -171,9 +178,11 @@ i2c_send_byte(I2C_TypeDef *i2c, uint8_t b, uint32_t timeout)
 }
 
 static uint8_t
-i2c_read_byte(I2C_TypeDef *i2c, uint32_t timeout, uint8_t remaining)
+i2c_read_byte(I2C_TypeDef *i2c, uint32_t timeout, uint8_t remaining, int *ret)
 {
-    i2c_wait(i2c, I2C_SR1_RXNE, 0, timeout);
+    *ret = i2c_wait(i2c, I2C_SR1_RXNE, 0, timeout);
+    if (*ret != I2C_BUS_SUCCESS)
+        return 0;
     irqstatus_t flag = irq_save();
     uint8_t b = i2c->DR;
     if (remaining == 1)
@@ -232,9 +241,10 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
         ret = I2C_BUS_START_READ_NACK;
     if (ret != I2C_BUS_SUCCESS)
         goto abrt;
-    while(read_len--) {
-        *read = i2c_read_byte(i2c, timeout, read_len);
-        read++;
+    while (read_len--) {
+        *read++ = i2c_read_byte(i2c, timeout, read_len, &ret);
+        if (ret != I2C_BUS_SUCCESS)
+            goto abrt;
     }
     // covers read timeout
     return i2c_wait(i2c, 0, I2C_SR1_RXNE, timeout);
