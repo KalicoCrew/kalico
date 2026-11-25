@@ -137,9 +137,18 @@ class ZThermalAdjuster:
             self.ref_temp_override = False
             self.z_adjust_mm = 0.0
 
+    def _can_update_adjust(self, pos):
+        # Never change the offset while disabled or while Z is unhomed;
+        # otherwise a stale offset leaks into pure XY moves.
+        if not self.adjust_enable or pos[2] >= self.off_above_z:
+            return False
+        eventtime = self.printer.get_reactor().monotonic()
+        homed = self.toolhead.get_status(eventtime)["homed_axes"]
+        return "z" in homed
+
     def calc_adjust(self, pos):
         "Z adjustment calculation"
-        if pos[2] < self.off_above_z:
+        if self._can_update_adjust(pos):
             delta_t = self.smoothed_temp - self.ref_temperature
 
             # Calculate Z adjustment
@@ -165,7 +174,7 @@ class ZThermalAdjuster:
 
     def get_position(self):
         position = self.calc_unadjust(self.next_transform.get_position())
-        self.last_position = self.calc_adjust(position)
+        self.last_position = list(position)
         return position
 
     def move(self, newpos, speed):
