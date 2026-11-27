@@ -78,24 +78,16 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping, gcmd):
         % (max_accel, max_velocity)
     )
     kin = toolhead.get_kinematics()
-    old_max_velocities = getattr(kin, "max_velocities", None)
-    if old_max_velocities is not None:
-        kin.max_velocities = [
-            max_velocity,
-            max_velocity,
-            old_max_velocities[-1],
-        ]
-    old_max_accels = getattr(kin, "max_accels", None)
-    if old_max_accels is not None:
-        kin.max_accels = [max_accel, max_accel, old_max_accels[-1]]
-    # FIXME: could be cleaner if limited_corexy were using the same format than
-    # limited_cartesian
-    old_max_x_accel = getattr(kin, "max_x_accel", None)
-    if old_max_x_accel is not None:
-        kin.max_x_accel = max_accel
-    old_max_y_accel = getattr(kin, "max_y_accel", None)
-    if old_max_y_accel is not None:
-        kin.max_y_accel = max_accel
+    old_axis_limits = {}
+    for name, value in (
+        ("max_x_velocity", max_velocity),
+        ("max_y_velocity", max_velocity),
+        ("max_x_accel", max_accel),
+        ("max_y_accel", max_accel),
+    ):
+        if hasattr(kin, name):
+            old_axis_limits[name] = getattr(kin, name)
+            setattr(kin, name, value)
     old_scale_per_axis = getattr(kin, "scale_per_axis", None)
     if old_scale_per_axis is not None:
         kin.scale_per_axis = False
@@ -111,14 +103,8 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping, gcmd):
             "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f VELOCITY=%.3f"
             % (old_max_accel, old_minimum_cruise_ratio, old_max_velocity)
         )
-        if old_max_velocities is not None:
-            kin.max_velocities = old_max_velocities
-        if old_max_accels is not None:
-            kin.max_accels = old_max_accels
-        if old_max_x_accel is not None:
-            kin.max_x_accel = old_max_x_accel
-        if old_max_y_accel is not None:
-            kin.max_y_accel = old_max_y_accel
+        for name, value in old_axis_limits.items():
+            setattr(kin, name, value)
         if old_scale_per_axis is not None:
             kin.scale_per_axis = old_scale_per_axis
 
