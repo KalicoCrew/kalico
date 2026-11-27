@@ -654,6 +654,13 @@ class ToolHead:
                 "square_corner_velocity": self.square_corner_velocity,
             }
         )
+        for axis in "xyz":
+            for limit in ("velocity", "accel"):
+                name = f"max_{axis}_{limit}"
+                if hasattr(self.kin, name):
+                    res[name] = getattr(self.kin, name)
+        if hasattr(self.kin, "scale_per_axis"):
+            res["scale_xy_accel"] = self.kin.scale_per_axis
         return res
 
     def _handle_shutdown(self):
