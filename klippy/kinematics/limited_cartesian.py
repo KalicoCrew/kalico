@@ -64,22 +64,24 @@ class LimitedCartKinematics(cartesian.CartKinematics):
         max_velocity, max_accel = toolhead.get_max_velocity()
         self.config_max_velocity = max_velocity
         self.config_max_accel = max_accel
-        self.max_velocities = [
-            config.getfloat(
+        for ax in "xyz":
+            setattr(
+                self,
                 f"max_{ax}_velocity",
-                SQRT2 * max_velocity,
-                above=0.0,
-                maxval=max_velocity,
+                config.getfloat(
+                    f"max_{ax}_velocity",
+                    SQRT2 * max_velocity,
+                    above=0.0,
+                    maxval=max_velocity,
+                ),
             )
-            for ax in "xyz"
-        ]
-        self.max_accels = [
-            config.getfloat(
-                f"max_{ax}_accel", max_accel, above=0.0, maxval=max_accel
+            setattr(
+                self,
+                f"max_{ax}_accel",
+                config.getfloat(
+                    f"max_{ax}_accel", max_accel, above=0.0, maxval=max_accel
+                ),
             )
-            for ax in "xyz"
-        ]
-        self.xy_hypot_accel = hypot(*self.max_accels[:2])
         self.scale_per_axis = config.getboolean("scale_xy_accel", False)
         config.get_printer().lookup_object("gcode").register_command(
             "SET_KINEMATICS_LIMIT",
@@ -91,24 +93,33 @@ class LimitedCartKinematics(cartesian.CartKinematics):
     cmd_SET_KINEMATICS_LIMIT_help = "Set/get cartesian per axis velocity limits"
 
     def cmd_SET_KINEMATICS_LIMIT(self, gcmd):
-        self.max_velocities = [
-            gcmd.get_float(f"{ax}_VELOCITY", max_v, above=0.0)
-            for max_v, ax in zip(self.max_velocities, "XYZ")
-        ]
-        self.max_accels = [
-            gcmd.get_float(f"{ax}_ACCEL", max_a, above=0.0)
-            for max_a, ax in zip(self.max_accels, "XYZ")
-        ]
-        self.xy_hypot_accel = hypot(*self.max_accels[:2])
+        for ax in "xyz":
+            for limit in ("velocity", "accel"):
+                name = f"max_{ax}_{limit}"
+                setattr(
+                    self,
+                    name,
+                    gcmd.get_float(
+                        f"{ax.upper()}_{limit.upper()}",
+                        getattr(self, name),
+                        above=0.0,
+                    ),
+                )
         self.scale_per_axis = bool(
             gcmd.get_int("SCALE", self.scale_per_axis, minval=0, maxval=1)
         )
 
         if gcmd.get_command_parameters():
             return
+        max_velocities = [
+            self.max_x_velocity,
+            self.max_y_velocity,
+            self.max_z_velocity,
+        ]
+        max_accels = [self.max_x_accel, self.max_y_accel, self.max_z_accel]
         msg = [
-            f"x,y,z max_velocities: {self.max_velocities!r}",
-            f"x,y,z max_accels: {self.max_accels!r}",
+            f"x,y,z max_velocities: {max_velocities!r}",
+            f"x,y,z max_accels: {max_accels!r}",
         ]
         if self.scale_per_axis:
             msg.append(
@@ -118,13 +129,13 @@ class LimitedCartKinematics(cartesian.CartKinematics):
             msg.append(
                 "Per axis accelerations limits are independent of current acceleration."
             )
-        max_velocity = hypot(self.max_velocities[0], self.max_velocities[1])
-        max_v_angle = atan2(self.max_velocities[1], self.max_velocities[0])
+        max_velocity = hypot(self.max_x_velocity, self.max_y_velocity)
+        max_v_angle = atan2(self.max_y_velocity, self.max_x_velocity)
         msg.append(
             f"Maximum XY velocity of {max_velocity:.1f} mm/s reached on {max_v_angle * 180 / pi:.0f}° diagonals."
         )
-        max_accel = hypot(self.max_accels[0], self.max_accels[1])
-        max_a_angle = atan2(self.max_accels[1], self.max_accels[0])
+        max_accel = hypot(self.max_x_accel, self.max_y_accel)
+        max_a_angle = atan2(self.max_y_accel, self.max_x_accel)
         msg.append(
             f"Maximum XY acceleration of {max_accel:.1f} mm/s reached on {max_a_angle * 180 / pi:.0f}° diagonals."
         )
@@ -135,19 +146,17 @@ class LimitedCartKinematics(cartesian.CartKinematics):
             return
         self._check_endstops(move)
         x_r, y_r, z_r = move.axes_r[:3]
-        x_max_v, y_max_v, z_max_v = self.max_velocities
-        x_max_a, y_max_a, z_max_a = self.max_accels
         x_r = max(abs(x_r), EPSILON)
         y_r = max(abs(y_r), EPSILON)
-        max_v = min(x_max_v / x_r, y_max_v / y_r)
-        max_a = min(x_max_a / x_r, y_max_a / y_r)
+        max_v = min(self.max_x_velocity / x_r, self.max_y_velocity / y_r)
+        max_a = min(self.max_x_accel / x_r, self.max_y_accel / y_r)
         if self.scale_per_axis:
             _, toolhead_max_a = move.toolhead.get_max_velocity()
-            max_a *= toolhead_max_a / self.xy_hypot_accel
+            max_a *= toolhead_max_a / hypot(self.max_x_accel, self.max_y_accel)
         if z_r:
             z_r = abs(z_r)
-            max_v = min(max_v, z_max_v / z_r)
-            max_a = min(max_a, z_max_a / z_r)
+            max_v = min(max_v, self.max_z_velocity / z_r)
+            max_a = min(max_a, self.max_z_accel / z_r)
         move.limit_speed(max_v, max_a)
 
 
