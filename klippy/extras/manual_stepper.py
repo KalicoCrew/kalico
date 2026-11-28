@@ -253,8 +253,11 @@ class ManualStepper:
     def get_position(self):
         return [self.commanded_pos, 0.0, 0.0, 0.0]
 
-    def set_position(self, newpos, homing_axes=""):
-        self.do_set_position(newpos[0])
+    def set_position(
+        self, newpos, homing_axes="", extra_axes=(), kinematic_axes=True
+    ):
+        if kinematic_axes:
+            self.do_set_position(newpos[0])
 
     def get_last_move_time(self):
         self.sync_print_time()
