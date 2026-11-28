@@ -97,7 +97,8 @@ class IndxToolboard:
 
     def get_status(self, eventtime):
         return {
-            "last_dock_measurement": self.dock_measurement.last_dock_measurement
+            "last_dock_measurement": self.dock_measurement.last_dock_measurement,
+            "last_extruder_move": self.heater._last_extruder_move_info,
         }
 
     def cmd_LED_FORCE_COLOR(self, gcmd):

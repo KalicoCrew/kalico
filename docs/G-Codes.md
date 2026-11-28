@@ -1099,12 +1099,24 @@ default) the measured values are applied and staged for SAVE_CONFIG.
 (no filament compensation). Run SAVE_CONFIG to persist.
 
 #### INDX_EXTRUDER_MOVE
-`INDX_EXTRUDER_MOVE DISTANCE=<mm> SPEED=<mm/s> CURRENT=<amps>`:
+`INDX_EXTRUDER_MOVE DISTANCE=<mm> SPEED=<mm/s> CURRENT=<amps>
+[STALL=<sg4_thrs>] [FORCE=<grams>]`:
 Perform an extruder move that bypasses the cold extrude check, with
 the TMC run current temporarily lowered to CURRENT (think of it as
 M302 plus a move in a single command). Mainly intended for loading
 and unloading INDX tools without needing to set a low minimum
 extrusion temperature.
+
+When specified, `STALL=` allows halting movement when the
+Stallguard4 triggers on the extruder motor. See the relevant
+documentation for sensorless homing of TMC2240 in the
+[TMC drivers documentation](TMC_Drivers.md#sensorless-homing). A
+valid `tmc2240` driver block must exist for the extruder.
+
+When specified, `FORCE=` allows halting movement when the
+attached extruder load cell senses a reading that differs by
+more than the requested amount since the start of the movement.
+A valid `load_cell_probe` section must exist for the extruder.
 
 #### INDX_SET_MODEL_PARAMS
 `INDX_SET_MODEL_PARAMS [MAX_POWER=<value>]
