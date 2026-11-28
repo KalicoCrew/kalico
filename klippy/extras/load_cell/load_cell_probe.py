@@ -305,6 +305,7 @@ class ContinuousTareFilter:
 @dataclass(frozen=True)
 class LoadCellTareParams:
     tare_samples: int
+    tare_offset: float
     trigger_force: int
     force_safety_limit: int
     drift_safety_limit: int
@@ -421,6 +422,9 @@ class LoadCellProbeConfigHelper:
         self._tare_time_param = floatParamHelper(
             config, "tare_time", default=5.0 / 50.0, minval=0.01, maxval=1.0
         )
+        self._tare_offset_param = floatParamHelper(
+            config, "tare_offset", default=0.0
+        )
         # triggering options
         self._trigger_force_param = intParamHelper(
             config, "trigger_force", default=75, minval=10, maxval=250
@@ -454,6 +458,9 @@ class LoadCellProbeConfigHelper:
 
     def get_trigger_force_grams(self, gcmd: GCodeCommand) -> int:
         return self._trigger_force_param.get(gcmd)
+
+    def get_tare_offset_grams(self, gcmd: GCodeCommand) -> float:
+        return self._tare_offset_param.get(gcmd)
 
     def get_safety_limit_grams(self, gcmd: GCodeCommand) -> int:
         return self._force_safety_limit_param.get(gcmd)
@@ -499,17 +506,18 @@ class LoadCellProbeConfigHelper:
             )
         return safety_min, safety_max
 
-    # check if tare_counts is within the force_safety_limit
-    def assert_force_safety_limit(self, force_safety_limit: int) -> None:
+    # Check measured counts against the calibrated zero-force reference.
+    def assert_force_safety_limit(
+        self, force_safety_limit: int, counts: int
+    ) -> None:
         limit: int = force_safety_limit
         # zero limit disables this check
         if limit == 0:
             return
         safety_min, safety_max = self.get_reference_safety_range(limit)
-        tare_counts: int = self._load_cell.tare_counts
-        if tare_counts <= safety_min or tare_counts >= safety_max:
+        if counts <= safety_min or counts >= safety_max:
             force: float = self._load_cell.counts_to_grams(
-                tare_counts, ZeroReference.REFERENCE_TARE
+                counts, ZeroReference.REFERENCE_TARE
             )
             raise self._printer.command_error(
                 f"Load Cell Probe Error: current absolute force of "
@@ -713,6 +721,7 @@ class LoadCellPrimitives:
     def build_tare_params(self, gcmd: GCodeCommand) -> LoadCellTareParams:
         return LoadCellTareParams(
             tare_samples=self._config_helper.get_tare_samples(gcmd),
+            tare_offset=self._config_helper.get_tare_offset_grams(gcmd),
             trigger_force=self._config_helper.get_trigger_force_grams(gcmd),
             force_safety_limit=self._config_helper.get_safety_limit_grams(gcmd),
             drift_safety_limit=self._config_helper.get_drift_safety_limit(gcmd),
@@ -726,8 +735,22 @@ class LoadCellPrimitives:
         tare_counts_per_channel = self._load_cell.avg_counts(
             params.tare_samples
         )
+        self._config_helper.assert_force_safety_limit(
+            params.force_safety_limit, sum(tare_counts_per_channel)
+        )
+        offset_counts = round(
+            params.tare_offset
+            * self._load_cell.get_counts_per_gram()
+            * self._load_cell.invert
+        )
+        # Split the offset evenly, assigning one extra count to each of the
+        # first remainder channels.
+        offset, remainder = divmod(offset_counts, len(tare_counts_per_channel))
+        tare_counts_per_channel = tuple(
+            counts - offset - (channel < remainder)
+            for channel, counts in enumerate(tare_counts_per_channel)
+        )
         self._load_cell.tare(tare_counts_per_channel)
-        self._config_helper.assert_force_safety_limit(params.force_safety_limit)
         self._continuous_tare_filter_helper.update_filter(
             params.filter, self._printer.command_error
         )

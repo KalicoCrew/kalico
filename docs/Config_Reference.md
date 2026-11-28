@@ -6326,6 +6326,9 @@ sensor_type:
 #   Controls how narrow the range of frequencies are that the notch filter
 #   removes. Larger numbers produce a narrower filter. Minimum value is 0.5 and
 #   maximum is 3.0. Default: 2.0
+#tare_offset: 0.0
+#   Signed force in grams to read immediately after taring. For example,
+#   400 makes the tared reading 400g. The default is 0.
 #tare_time:
 #   The time in seconds used for taring the load_cell before each probe. The
 #   default value is: 5 / 50 = 0.1. This collects samples from 5 cycles of
